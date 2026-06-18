@@ -17,6 +17,8 @@ type
     [Test]
     procedure FormInstallIsScopedAndIdempotent;
     [Test]
+    procedure FormInstallHandlesUiaGetObjectThroughDefaultProvider;
+    [Test]
     procedure DestroyedFormIsRemovedFromInstallState;
     [Test]
     procedure InstallerFailureDoesNotMarkFormInstalled;
@@ -29,14 +31,49 @@ type
 implementation
 
 uses
-  System.Classes, System.Generics.Collections, System.SysUtils, Vcl.Forms,
-  MaxLogic.Accessibility.Manager;
+  System.Classes, System.Generics.Collections, System.SysUtils, System.Variants, Winapi.Messages, Winapi.Windows,
+  Vcl.Forms, Vcl.StdCtrls, MaxLogic.Accessibility.Manager, MaxLogic.Accessibility.ProviderCore,
+  MaxLogic.Accessibility.UIAutomationCore;
 
 type
   IFormInstallRecorder = interface(IAccessibilityFormInstaller)
     ['{89B798B7-0880-4AE5-B799-58E4EB14DF22}']
     function CountFor(aForm: TCustomForm): Integer;
     procedure FailNextInstall;
+  end;
+
+  IManagerTestUiaApi = interface(IAccessibilityUiaApi)
+    ['{40F38FD9-3290-4894-A855-082E2884C0C1}']
+    function DisconnectCalls: Integer;
+    function LastHwnd: HWND;
+    function LastLParam: LPARAM;
+    function ReturnCalls: Integer;
+  end;
+
+  TManagerTestUiaApi = class(TInterfacedObject, IManagerTestUiaApi)
+  private
+    fDisconnectCalls: Integer;
+    fLastHwnd: HWND;
+    fLastLParam: LPARAM;
+    fReturnCalls: Integer;
+  public
+    function ClientsAreListening: Boolean;
+    function DisconnectProvider(const aProvider: IRawElementProviderSimple): HRESULT;
+    function DisconnectCalls: Integer;
+    function HostProviderFromHwnd(aHwnd: HWND; out aProvider: IRawElementProviderSimple): HRESULT;
+    function LastHwnd: HWND;
+    function LastLParam: LPARAM;
+    function RaiseAutomationEvent(const aProvider: IRawElementProviderSimple; aEventId: EVENTID): HRESULT;
+    function RaiseAutomationPropertyChanged(const aProvider: IRawElementProviderSimple; aPropertyId: PROPERTYID;
+      const aOldValue: OleVariant; const aNewValue: OleVariant): HRESULT;
+    function RaiseNotification(const aProvider: IRawElementProviderSimple; aNotificationKind: NotificationKind;
+      aNotificationProcessing: NotificationProcessing; const aDisplayString: WideString;
+      const aActivityId: WideString): HRESULT;
+    function RaiseStructureChanged(const aProvider: IRawElementProviderSimple; aStructureChangeType: StructureChangeType;
+      const aRuntimeId: TArray<Integer>): HRESULT;
+    function ReturnCalls: Integer;
+    function ReturnRawElementProvider(aHwnd: HWND; aWParam: WPARAM; aLParam: LPARAM;
+      const aProvider: IRawElementProviderSimple): LRESULT;
   end;
 
   TFormInstallRecorder = class(TInterfacedObject, IFormInstallRecorder)
@@ -129,6 +166,78 @@ procedure ResetManager;
 begin
   TAccessibilityManager.Uninstall;
   TAccessibilityManagerInternals.SetFormInstaller(nil);
+  TAccessibilityManagerInternals.SetUiaApi(nil);
+end;
+
+function TManagerTestUiaApi.ClientsAreListening: Boolean;
+begin
+  Result := False;
+end;
+
+function TManagerTestUiaApi.DisconnectProvider(const aProvider: IRawElementProviderSimple): HRESULT;
+begin
+  Inc(fDisconnectCalls);
+  Result := S_OK;
+end;
+
+function TManagerTestUiaApi.DisconnectCalls: Integer;
+begin
+  Result := fDisconnectCalls;
+end;
+
+function TManagerTestUiaApi.HostProviderFromHwnd(aHwnd: HWND; out aProvider: IRawElementProviderSimple): HRESULT;
+begin
+  aProvider := nil;
+  Result := S_FALSE;
+end;
+
+function TManagerTestUiaApi.LastHwnd: HWND;
+begin
+  Result := fLastHwnd;
+end;
+
+function TManagerTestUiaApi.LastLParam: LPARAM;
+begin
+  Result := fLastLParam;
+end;
+
+function TManagerTestUiaApi.RaiseAutomationEvent(const aProvider: IRawElementProviderSimple;
+  aEventId: EVENTID): HRESULT;
+begin
+  Result := S_OK;
+end;
+
+function TManagerTestUiaApi.RaiseAutomationPropertyChanged(const aProvider: IRawElementProviderSimple;
+  aPropertyId: PROPERTYID; const aOldValue: OleVariant; const aNewValue: OleVariant): HRESULT;
+begin
+  Result := S_OK;
+end;
+
+function TManagerTestUiaApi.RaiseNotification(const aProvider: IRawElementProviderSimple;
+  aNotificationKind: NotificationKind; aNotificationProcessing: NotificationProcessing; const aDisplayString: WideString;
+  const aActivityId: WideString): HRESULT;
+begin
+  Result := S_OK;
+end;
+
+function TManagerTestUiaApi.RaiseStructureChanged(const aProvider: IRawElementProviderSimple;
+  aStructureChangeType: StructureChangeType; const aRuntimeId: TArray<Integer>): HRESULT;
+begin
+  Result := S_OK;
+end;
+
+function TManagerTestUiaApi.ReturnCalls: Integer;
+begin
+  Result := fReturnCalls;
+end;
+
+function TManagerTestUiaApi.ReturnRawElementProvider(aHwnd: HWND; aWParam: WPARAM; aLParam: LPARAM;
+  const aProvider: IRawElementProviderSimple): LRESULT;
+begin
+  Inc(fReturnCalls);
+  fLastHwnd := aHwnd;
+  fLastLParam := aLParam;
+  Result := 2468;
 end;
 
 procedure TAccessibilityManagerTests.ApplicationInstallDiscoversFutureFormsAndChainsActiveFormChange;
@@ -215,6 +324,44 @@ begin
     end;
   finally
     lFirst.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallHandlesUiaGetObjectThroughDefaultProvider;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lLabel: TLabel;
+  lMessage: TMessage;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lLabel := TLabel.Create(lForm);
+    lLabel.Caption := '&Customer';
+    lLabel.Parent := lForm;
+
+    TAccessibilityManager.Install(lForm);
+
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.WParam := 7;
+    lMessage.LParam := UiaRootObjectId;
+    lForm.WindowProc(lMessage);
+
+    Assert.AreEqual(2468, lMessage.Result);
+    Assert.AreEqual(1, lApi.ReturnCalls);
+    Assert.AreEqual(lForm.Handle, lApi.LastHwnd);
+    Assert.AreEqual(LPARAM(UiaRootObjectId), lApi.LastLParam);
+
+    TAccessibilityManager.Uninstall;
+
+    Assert.IsTrue(lApi.DisconnectCalls > 0);
+  finally
+    lForm.Free;
     ResetManager;
   end;
 end;

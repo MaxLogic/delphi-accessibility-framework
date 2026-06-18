@@ -3,7 +3,8 @@ unit MaxLogic.Accessibility.Manager;
 interface
 
 uses
-  Vcl.Forms;
+  Vcl.Forms,
+  MaxLogic.Accessibility.ProviderCore;
 
 type
   IAccessibilityFormInstaller = interface
@@ -22,17 +23,45 @@ type
   public
     class function InstalledFormCount: Integer; static;
     class procedure SetFormInstaller(const aInstaller: IAccessibilityFormInstaller); static;
+    class procedure SetUiaApi(const aApi: IAccessibilityUiaApi); static;
   end;
 
 implementation
 
 uses
-  System.Classes, System.SysUtils;
+  System.Classes, System.Generics.Collections, System.SysUtils, Winapi.Messages, Winapi.Windows, Vcl.Controls,
+  MaxLogic.Accessibility.UIAutomationCore, MaxLogic.Accessibility.VclAdapters;
 
 type
+  TAccessibilityFormWindowHook = class;
+
   TAccessibilityInstalledFormMarker = class(TComponent)
+  private
+    fHook: TAccessibilityFormWindowHook;
   public
+    destructor Destroy; override;
     class function FindOn(aForm: TCustomForm): TAccessibilityInstalledFormMarker; static;
+    procedure InstallDefaultProvider(aForm: TCustomForm; const aApi: IAccessibilityUiaApi);
+  end;
+
+  TAccessibilityFormWindowHook = class(TComponent)
+  private
+    fApi: IAccessibilityUiaApi;
+    fForm: TCustomForm;
+    fOriginalWindowProc: TWndMethod;
+    fPassive: Boolean;
+    fProvider: IAccessibilityProviderNode;
+    procedure Detach;
+    procedure DisconnectProvider;
+    function Passivate: Boolean;
+  protected
+    procedure Notification(aComponent: TComponent; aOperation: TOperation); override;
+  public
+    class procedure ReleaseRetainedHooks; static;
+    constructor Create(aForm: TCustomForm; const aProvider: IAccessibilityProviderNode;
+      const aApi: IAccessibilityUiaApi); reintroduce;
+    destructor Destroy; override;
+    procedure WindowProc(var aMessage: TMessage);
   end;
 
   TAccessibilityManagerState = class
@@ -41,6 +70,7 @@ type
     fFormInstaller: IAccessibilityFormInstaller;
     fPreviousActiveFormChange: TNotifyEvent;
     fScreenHookInstalled: Boolean;
+    fUiaApi: IAccessibilityUiaApi;
     procedure ActiveFormChanged(aSender: TObject);
     procedure HookScreen;
     procedure RemoveInstalledMarkers;
@@ -53,13 +83,20 @@ type
     procedure InstallApplication(aApplication: TApplication);
     procedure InstallForm(aForm: TCustomForm);
     procedure SetFormInstaller(const aInstaller: IAccessibilityFormInstaller);
+    procedure SetUiaApi(const aApi: IAccessibilityUiaApi);
     procedure Uninstall;
   end;
 
 var
   gManagerState: TAccessibilityManagerState;
+  gRetainedFormHooks: TList<TAccessibilityFormWindowHook>;
 
 function SameNotifyEvent(const aLeft: TNotifyEvent; const aRight: TNotifyEvent): Boolean;
+begin
+  Result := (TMethod(aLeft).Code = TMethod(aRight).Code) and (TMethod(aLeft).Data = TMethod(aRight).Data);
+end;
+
+function SameWndMethod(const aLeft: TWndMethod; const aRight: TWndMethod): Boolean;
 begin
   Result := (TMethod(aLeft).Code = TMethod(aRight).Code) and (TMethod(aLeft).Data = TMethod(aRight).Data);
 end;
@@ -72,6 +109,20 @@ begin
   end;
 
   Result := gManagerState;
+end;
+
+destructor TAccessibilityInstalledFormMarker.Destroy;
+begin
+  if fHook <> nil then
+  begin
+    if not fHook.Passivate then
+    begin
+      fHook.Free;
+    end;
+    fHook := nil;
+  end;
+
+  inherited Destroy;
 end;
 
 class function TAccessibilityInstalledFormMarker.FindOn(aForm: TCustomForm): TAccessibilityInstalledFormMarker;
@@ -91,6 +142,146 @@ begin
       Exit(TAccessibilityInstalledFormMarker(aForm.Components[i]));
     end;
   end;
+end;
+
+procedure TAccessibilityInstalledFormMarker.InstallDefaultProvider(aForm: TCustomForm;
+  const aApi: IAccessibilityUiaApi);
+begin
+  if fHook <> nil then
+  begin
+    Exit;
+  end;
+
+  fHook := TAccessibilityFormWindowHook.Create(aForm, TAccessibilityVclProviderBuilder.BuildForm(aForm, nil, aApi),
+    aApi);
+end;
+
+constructor TAccessibilityFormWindowHook.Create(aForm: TCustomForm; const aProvider: IAccessibilityProviderNode;
+  const aApi: IAccessibilityUiaApi);
+begin
+  inherited Create(nil);
+  if aForm = nil then
+  begin
+    raise EArgumentException.Create('Form must not be nil.');
+  end;
+
+  fApi := aApi;
+  fForm := aForm;
+  fProvider := aProvider;
+  fOriginalWindowProc := aForm.WindowProc;
+  fForm.FreeNotification(Self);
+  fForm.WindowProc := WindowProc;
+end;
+
+destructor TAccessibilityFormWindowHook.Destroy;
+begin
+  if not fPassive then
+  begin
+    Detach;
+  end;
+
+  DisconnectProvider;
+  inherited Destroy;
+end;
+
+procedure TAccessibilityFormWindowHook.Detach;
+begin
+  if fForm <> nil then
+  begin
+    if SameWndMethod(fForm.WindowProc, WindowProc) then
+    begin
+      fForm.WindowProc := fOriginalWindowProc;
+    end;
+
+    fForm.RemoveFreeNotification(Self);
+    fForm := nil;
+  end;
+end;
+
+procedure TAccessibilityFormWindowHook.DisconnectProvider;
+begin
+  if fProvider <> nil then
+  begin
+    fProvider.Disconnect;
+    fProvider := nil;
+  end;
+end;
+
+procedure TAccessibilityFormWindowHook.Notification(aComponent: TComponent; aOperation: TOperation);
+begin
+  inherited Notification(aComponent, aOperation);
+  if (aOperation = opRemove) and (aComponent = fForm) then
+  begin
+    if SameWndMethod(fForm.WindowProc, WindowProc) then
+    begin
+      fForm.WindowProc := fOriginalWindowProc;
+    end;
+
+    fForm := nil;
+    DisconnectProvider;
+  end;
+end;
+
+function TAccessibilityFormWindowHook.Passivate: Boolean;
+begin
+  Result := False;
+  DisconnectProvider;
+  fApi := nil;
+  if fForm = nil then
+  begin
+    Exit;
+  end;
+
+  if SameWndMethod(fForm.WindowProc, WindowProc) then
+  begin
+    Detach;
+  end else begin
+    fPassive := True;
+    Result := True;
+    if gRetainedFormHooks = nil then
+    begin
+      gRetainedFormHooks := TList<TAccessibilityFormWindowHook>.Create;
+    end;
+
+    if not gRetainedFormHooks.Contains(Self) then
+    begin
+      gRetainedFormHooks.Add(Self);
+    end;
+  end;
+end;
+
+class procedure TAccessibilityFormWindowHook.ReleaseRetainedHooks;
+var
+  lHook: TAccessibilityFormWindowHook;
+begin
+  if gRetainedFormHooks = nil then
+  begin
+    Exit;
+  end;
+
+  while gRetainedFormHooks.Count > 0 do
+  begin
+    lHook := gRetainedFormHooks[Pred(gRetainedFormHooks.Count)];
+    gRetainedFormHooks.Delete(Pred(gRetainedFormHooks.Count));
+    lHook.fPassive := False;
+    lHook.Detach;
+    lHook.Free;
+  end;
+end;
+
+procedure TAccessibilityFormWindowHook.WindowProc(var aMessage: TMessage);
+var
+  lResult: Winapi.Windows.LRESULT;
+begin
+  if (not fPassive) and (fForm <> nil) and (fProvider <> nil) and (aMessage.Msg = WM_GETOBJECT) and
+    TAccessibilityProviderWindowMessages.TryHandleGetObject(fForm.Handle, aMessage.WParam, aMessage.LParam,
+    fProvider.RawElementProvider, fApi, lResult) then
+  begin
+    aMessage.Result := lResult;
+    Exit;
+  end;
+
+  fOriginalWindowProc(aMessage);
 end;
 
 constructor TAccessibilityManagerState.Create;
@@ -171,6 +362,8 @@ begin
 end;
 
 procedure TAccessibilityManagerState.InstallForm(aForm: TCustomForm);
+var
+  lMarker: TAccessibilityInstalledFormMarker;
 begin
   if aForm = nil then
   begin
@@ -182,12 +375,18 @@ begin
     Exit;
   end;
 
+  lMarker := TAccessibilityInstalledFormMarker.Create(aForm);
+  try
   if fFormInstaller <> nil then
   begin
     fFormInstaller.InstallForm(aForm);
+  end else begin
+    lMarker.InstallDefaultProvider(aForm, fUiaApi);
   end;
-
-  TAccessibilityInstalledFormMarker.Create(aForm);
+  except
+    lMarker.Free;
+    raise;
+  end;
 end;
 
 procedure TAccessibilityManagerState.RemoveInstalledMarkers;
@@ -241,6 +440,11 @@ begin
   fFormInstaller := aInstaller;
 end;
 
+procedure TAccessibilityManagerState.SetUiaApi(const aApi: IAccessibilityUiaApi);
+begin
+  fUiaApi := aApi;
+end;
+
 procedure TAccessibilityManagerState.Uninstall;
 begin
   fAppInstalled := False;
@@ -273,10 +477,17 @@ begin
   ManagerState.SetFormInstaller(aInstaller);
 end;
 
+class procedure TAccessibilityManagerInternals.SetUiaApi(const aApi: IAccessibilityUiaApi);
+begin
+  ManagerState.SetUiaApi(aApi);
+end;
+
 initialization
   gManagerState := TAccessibilityManagerState.Create;
 
 finalization
   gManagerState.Free;
+  TAccessibilityFormWindowHook.ReleaseRetainedHooks;
+  gRetainedFormHooks.Free;
 
 end.

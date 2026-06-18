@@ -10,6 +10,7 @@ uses
   DUnitX.TestRunner,
   MaxLogic.Accessibility.Manager.Tests in 'src\MaxLogic.Accessibility.Manager.Tests.pas',
   MaxLogic.Accessibility.ProviderCore.Tests in 'src\MaxLogic.Accessibility.ProviderCore.Tests.pas',
+  MaxLogic.Accessibility.Scanner.Tests in 'src\MaxLogic.Accessibility.Scanner.Tests.pas',
   MaxLogic.Accessibility.Smoke.Tests in 'src\MaxLogic.Accessibility.Smoke.Tests.pas',
   MaxLogic.Accessibility.UIAutomationCore.Tests in 'src\MaxLogic.Accessibility.UIAutomationCore.Tests.pas';
 

@@ -84,6 +84,7 @@
     </DelphiCompile>
     <DCCReference Include="..\src\MaxLogic.Accessibility.Framework.pas"/>
     <DCCReference Include="..\src\MaxLogic.Accessibility.Manager.pas"/>
+    <DCCReference Include="..\src\MaxLogic.Accessibility.Scanner.pas"/>
     <BuildConfiguration Include="Base">
       <Key>Base</Key>
     </BuildConfiguration>

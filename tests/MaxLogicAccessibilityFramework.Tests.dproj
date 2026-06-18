@@ -84,11 +84,13 @@
     </DelphiCompile>
     <DCCReference Include="src\MaxLogic.Accessibility.Manager.Tests.pas"/>
     <DCCReference Include="src\MaxLogic.Accessibility.ProviderCore.Tests.pas"/>
+    <DCCReference Include="src\MaxLogic.Accessibility.Scanner.Tests.pas"/>
     <DCCReference Include="src\MaxLogic.Accessibility.Smoke.Tests.pas"/>
     <DCCReference Include="src\MaxLogic.Accessibility.UIAutomationCore.Tests.pas"/>
     <DCCReference Include="..\src\MaxLogic.Accessibility.Framework.pas"/>
     <DCCReference Include="..\src\MaxLogic.Accessibility.Manager.pas"/>
     <DCCReference Include="..\src\MaxLogic.Accessibility.ProviderCore.pas"/>
+    <DCCReference Include="..\src\MaxLogic.Accessibility.Scanner.pas"/>
     <DCCReference Include="..\src\MaxLogic.Accessibility.UIAutomationCore.pas"/>
     <BuildConfiguration Include="Base">
       <Key>Base</Key>

@@ -83,7 +83,9 @@
       <MainSource>MainSource</MainSource>
     </DelphiCompile>
     <DCCReference Include="src\MaxLogic.Accessibility.Smoke.Tests.pas"/>
+    <DCCReference Include="src\MaxLogic.Accessibility.UIAutomationCore.Tests.pas"/>
     <DCCReference Include="..\src\MaxLogic.Accessibility.Framework.pas"/>
+    <DCCReference Include="..\src\MaxLogic.Accessibility.UIAutomationCore.pas"/>
     <BuildConfiguration Include="Base">
       <Key>Base</Key>
     </BuildConfiguration>

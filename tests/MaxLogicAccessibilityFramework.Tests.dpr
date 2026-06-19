@@ -8,6 +8,7 @@ uses
   DUnitX.Loggers.Console,
   DUnitX.TestFramework,
   DUnitX.TestRunner,
+  MaxLogic.Accessibility.AdvStringGrid.Tests in 'src\MaxLogic.Accessibility.AdvStringGrid.Tests.pas',
   MaxLogic.Accessibility.Hints.Tests in 'src\MaxLogic.Accessibility.Hints.Tests.pas',
   MaxLogic.Accessibility.Manager.Tests in 'src\MaxLogic.Accessibility.Manager.Tests.pas',
   MaxLogic.Accessibility.ProviderCore.Tests in 'src\MaxLogic.Accessibility.ProviderCore.Tests.pas',

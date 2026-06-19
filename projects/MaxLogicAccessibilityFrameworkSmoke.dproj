@@ -87,6 +87,7 @@
     <DCCReference Include="..\src\MaxLogic.Accessibility.Manager.pas"/>
     <DCCReference Include="..\src\MaxLogic.Accessibility.ProviderCore.pas"/>
     <DCCReference Include="..\src\MaxLogic.Accessibility.Scanner.pas"/>
+    <DCCReference Include="..\src\MaxLogic.Accessibility.TmsAdvStringGridAdapters.pas"/>
     <DCCReference Include="..\src\MaxLogic.Accessibility.UIAutomationCore.pas"/>
     <DCCReference Include="..\src\MaxLogic.Accessibility.VclAdapters.pas"/>
     <BuildConfiguration Include="Base">

@@ -7,6 +7,12 @@ uses
   MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.Scanner;
 
 type
+  IAccessibilityVclProviderAdapter = interface
+    ['{D5B0E9EE-408D-426B-9FF8-7E3A2BB90057}']
+    function CreateProvider(aControl: TControl; aRuntimeId: Integer; const aName: string; const aHelpText: string;
+      const aApi: IAccessibilityUiaApi): IAccessibilityProviderNode;
+  end;
+
   TAccessibilityVclAdapters = record
   public
     class function CreateDefaultRegistry: IAccessibilityAdapterRegistry; static;
@@ -44,9 +50,11 @@ type
     function CreateInfo(aControl: TControl; const aFallback: TAccessibilityTextInfo): TAccessibilityControlInfo;
   end;
 
-  TStringGridAdapter = class(TInterfacedObject, IAccessibilityControlAdapter)
+  TStringGridAdapter = class(TInterfacedObject, IAccessibilityControlAdapter, IAccessibilityVclProviderAdapter)
   public
     function CreateInfo(aControl: TControl; const aFallback: TAccessibilityTextInfo): TAccessibilityControlInfo;
+    function CreateProvider(aControl: TControl; aRuntimeId: Integer; const aName: string; const aHelpText: string;
+      const aApi: IAccessibilityUiaApi): IAccessibilityProviderNode;
   end;
 
   TAccessibilityVclFormProviderRoot = class(TAccessibilityProviderRoot, IAccessibilityVclRootProvider)
@@ -327,14 +335,20 @@ begin
   Result := UIA_TextControlTypeId;
 end;
 
-function CreateProviderForNode(const aNode: IAccessibilityScanNode; var aNextRuntimeId: Integer;
-  const aApi: IAccessibilityUiaApi): IAccessibilityProviderNode;
+function CreateProviderForNode(const aNode: IAccessibilityScanNode; const aRegistry: IAccessibilityAdapterRegistry;
+  var aNextRuntimeId: Integer; const aApi: IAccessibilityUiaApi): IAccessibilityProviderNode;
+var
+  lAdapter: IAccessibilityControlAdapter;
+  lProviderAdapter: IAccessibilityVclProviderAdapter;
 begin
   Inc(aNextRuntimeId);
-  if aNode.Control is TStringGrid then
+  if aRegistry <> nil then
   begin
-    Exit(TAccessibilityStringGridProvider.Create(TStringGrid(aNode.Control), aNextRuntimeId, aNode.Name,
-      aNode.HelpText, aApi) as IAccessibilityProviderNode);
+    lAdapter := aRegistry.ResolveAdapter(aNode.Control);
+    if Supports(lAdapter, IAccessibilityVclProviderAdapter, lProviderAdapter) then
+    begin
+      Exit(lProviderAdapter.CreateProvider(aNode.Control, aNextRuntimeId, aNode.Name, aNode.HelpText, aApi));
+    end;
   end;
 
   Result := TAccessibilityVclControlProvider.Create(aNode.Control, [aNextRuntimeId], ControlTypeFor(aNode.Control),
@@ -342,23 +356,29 @@ begin
 end;
 
 procedure AddProviderChildren(const aProvider: IAccessibilityProviderNode; const aScanNode: IAccessibilityScanNode;
-  var aNextRuntimeId: Integer; const aApi: IAccessibilityUiaApi; const aRootProvider: IAccessibilityVclRootProvider);
+  const aRegistry: IAccessibilityAdapterRegistry; var aNextRuntimeId: Integer; const aApi: IAccessibilityUiaApi;
+  const aRootProvider: IAccessibilityVclRootProvider);
 var
   i: Integer;
   lChildHitTestRoot: IRawElementProviderFragmentRoot;
+  lChildManagesOwnTree: Boolean;
   lChildProvider: IAccessibilityProviderNode;
 begin
   for i := 0 to Pred(aScanNode.ChildCount) do
   begin
-    lChildProvider := CreateProviderForNode(aScanNode.Child(i), aNextRuntimeId, aApi);
+    lChildProvider := CreateProviderForNode(aScanNode.Child(i), aRegistry, aNextRuntimeId, aApi);
     aProvider.AddChild(lChildProvider);
-    if (aRootProvider <> nil) and Supports(lChildProvider.RawElementProvider, IRawElementProviderFragmentRoot,
-      lChildHitTestRoot) then
+    lChildManagesOwnTree := Supports(lChildProvider.RawElementProvider, IRawElementProviderFragmentRoot,
+      lChildHitTestRoot);
+    if (aRootProvider <> nil) and lChildManagesOwnTree then
     begin
       aRootProvider.AddHitTestRoot(lChildHitTestRoot);
     end;
 
-    AddProviderChildren(lChildProvider, aScanNode.Child(i), aNextRuntimeId, aApi, aRootProvider);
+    if not lChildManagesOwnTree then
+    begin
+      AddProviderChildren(lChildProvider, aScanNode.Child(i), aRegistry, aNextRuntimeId, aApi, aRootProvider);
+    end;
   end;
 end;
 
@@ -398,6 +418,13 @@ begin
   end else begin
     Result := TAccessibilityControlInfo.Omit;
   end;
+end;
+
+function TStringGridAdapter.CreateProvider(aControl: TControl; aRuntimeId: Integer; const aName: string;
+  const aHelpText: string; const aApi: IAccessibilityUiaApi): IAccessibilityProviderNode;
+begin
+  Result := TAccessibilityStringGridProvider.Create(TStringGrid(aControl), aRuntimeId, aName, aHelpText, aApi) as
+    IAccessibilityProviderNode;
 end;
 
 procedure TAccessibilityVclFormProviderRoot.AddHitTestRoot(const aRoot: IRawElementProviderFragmentRoot);
@@ -1203,7 +1230,7 @@ begin
 
   lNextRuntimeId := 1;
   Supports(Result, IAccessibilityVclRootProvider, lRootProvider);
-  AddProviderChildren(Result, lTree.Root, lNextRuntimeId, aApi, lRootProvider);
+  AddProviderChildren(Result, lTree.Root, lRegistry, lNextRuntimeId, aApi, lRootProvider);
 end;
 
 end.

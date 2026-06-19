@@ -83,6 +83,7 @@
       <MainSource>MainSource</MainSource>
     </DelphiCompile>
     <DCCReference Include="src\MaxLogic.Accessibility.Hints.Tests.pas"/>
+    <DCCReference Include="src\MaxLogic.Accessibility.AdvStringGrid.Tests.pas"/>
     <DCCReference Include="src\MaxLogic.Accessibility.Manager.Tests.pas"/>
     <DCCReference Include="src\MaxLogic.Accessibility.ProviderCore.Tests.pas"/>
     <DCCReference Include="src\MaxLogic.Accessibility.Scanner.Tests.pas"/>
@@ -95,6 +96,7 @@
     <DCCReference Include="..\src\MaxLogic.Accessibility.Manager.pas"/>
     <DCCReference Include="..\src\MaxLogic.Accessibility.ProviderCore.pas"/>
     <DCCReference Include="..\src\MaxLogic.Accessibility.Scanner.pas"/>
+    <DCCReference Include="..\src\MaxLogic.Accessibility.TmsAdvStringGridAdapters.pas"/>
     <DCCReference Include="..\src\MaxLogic.Accessibility.UIAutomationCore.pas"/>
     <DCCReference Include="..\src\MaxLogic.Accessibility.VclAdapters.pas"/>
     <BuildConfiguration Include="Base">

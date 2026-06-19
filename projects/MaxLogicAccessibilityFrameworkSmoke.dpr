@@ -4,11 +4,12 @@ program MaxLogicAccessibilityFrameworkSmoke;
 
 uses
   System.SysUtils, System.Types, System.Variants, Winapi.ActiveX, Winapi.Messages, Winapi.Windows, Vcl.Buttons,
-  Vcl.Controls, Vcl.ExtCtrls, Vcl.Forms, Vcl.Grids, Vcl.StdCtrls,
+  Vcl.Controls, Vcl.ExtCtrls, Vcl.Forms, Vcl.Grids, Vcl.StdCtrls, AdvGrid,
   MaxLogic.Accessibility.Framework in '..\src\MaxLogic.Accessibility.Framework.pas',
   MaxLogic.Accessibility.Hints in '..\src\MaxLogic.Accessibility.Hints.pas',
   MaxLogic.Accessibility.Manager in '..\src\MaxLogic.Accessibility.Manager.pas',
   MaxLogic.Accessibility.ProviderCore in '..\src\MaxLogic.Accessibility.ProviderCore.pas',
+  MaxLogic.Accessibility.TmsAdvStringGridAdapters in '..\src\MaxLogic.Accessibility.TmsAdvStringGridAdapters.pas',
   MaxLogic.Accessibility.UIAutomationCore in '..\src\MaxLogic.Accessibility.UIAutomationCore.pas',
   MaxLogic.Accessibility.VclAdapters in '..\src\MaxLogic.Accessibility.VclAdapters.pas';
 
@@ -244,6 +245,61 @@ begin
     (lCellRect.Top + lCellRect.Bottom) div 2));
 end;
 
+function AdvCellVisibleRect(aGrid: TAdvStringGrid; aCol: Integer; aRow: Integer; out aRect: TRect): Boolean;
+var
+  lBaseCell: TPoint;
+  lCellRect: TRect;
+  lExpectedCell: TPoint;
+  lHitCell: TPoint;
+  lHitCol: Integer;
+  lHitPoint: TPoint;
+  lHitRow: Integer;
+  lRealCell: TPoint;
+  lRealHitCell: TPoint;
+begin
+  aRect := TRect.Empty;
+  lRealCell := Point(aGrid.RealColIndex(aCol), aRow);
+  if aGrid.IsHiddenColumn(lRealCell.X) or aGrid.IsHiddenRow(aGrid.RealRowIndex(aRow)) or
+    aGrid.IsMergedNonBaseCell(lRealCell.X, lRealCell.Y) then
+  begin
+    Exit(False);
+  end;
+
+  lCellRect := aGrid.CellRect(aCol, aRow);
+  if not ((lCellRect.Width > 0) and (lCellRect.Height > 0) and
+    IntersectRect(aRect, lCellRect, Rect(0, 0, aGrid.ClientWidth, aGrid.ClientHeight)) and
+    (aRect.Width > 0) and (aRect.Height > 0)) then
+  begin
+    Exit(False);
+  end;
+
+  lHitPoint := Point((aRect.Left + aRect.Right) div 2, (aRect.Top + aRect.Bottom) div 2);
+  lHitPoint := aGrid.ClientToScreen(lHitPoint);
+  aGrid.ScreenToCell(lHitPoint, lHitCol, lHitRow);
+  lExpectedCell := Point(aCol, aRow);
+  lHitCell := Point(lHitCol, lHitRow);
+  if (lHitCol >= 0) and (lHitCol < aGrid.ColCount) and (lHitRow >= 0) and (lHitRow < aGrid.RowCount) then
+  begin
+    lRealHitCell := Point(aGrid.RealColIndex(lHitCol), lHitRow);
+    if aGrid.IsMergedNonBaseCell(lRealHitCell.X, lRealHitCell.Y) then
+    begin
+      lBaseCell := aGrid.BaseCell(lRealHitCell.X, lRealHitCell.Y);
+      lHitCell := Point(aGrid.DisplColIndex(lBaseCell.X), lBaseCell.Y);
+    end;
+  end;
+
+  Result := (lHitCell.X = lExpectedCell.X) and (lHitCell.Y = lExpectedCell.Y);
+end;
+
+function ScreenAdvCellCenter(aGrid: TAdvStringGrid; aCol: Integer; aRow: Integer): TPoint;
+var
+  lCellRect: TRect;
+begin
+  Require(AdvCellVisibleRect(aGrid, aCol, aRow, lCellRect), 'Probe target TMS cell is not visible.');
+  Result := aGrid.ClientToScreen(Point((lCellRect.Left + lCellRect.Right) div 2,
+    (lCellRect.Top + lCellRect.Bottom) div 2));
+end;
+
 function ChildNameExists(const aGridFragment: IRawElementProviderFragment; const aName: string): Boolean;
 var
   lCell: IRawElementProviderFragment;
@@ -473,6 +529,112 @@ begin
   end;
 end;
 
+procedure RunTAdvStringGridCellsProbe;
+var
+  lCellFragment: IRawElementProviderFragment;
+  lCellProvider: IRawElementProviderSimple;
+  lFocus: IRawElementProviderFragment;
+  lForm: TForm;
+  lGrid: TAdvStringGrid;
+  lGridFragment: IRawElementProviderFragment;
+  lGridPattern: IGridProvider;
+  lHit: IRawElementProviderFragment;
+  lPattern: IUnknown;
+  lPoint: TPoint;
+  lProvider: IAccessibilityProviderNode;
+  lRoot: IRawElementProviderFragmentRoot;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(ScaleValue(100), ScaleValue(100), ScaleValue(440), ScaleValue(280));
+
+    lGrid := TAdvStringGrid.Create(lForm);
+    lGrid.Name := 'AdvOrdersGrid';
+    lGrid.Parent := lForm;
+    lGrid.SetBounds(ScaleValue(8), ScaleValue(8), ScaleValue(280), ScaleValue(135));
+    lGrid.ColCount := 8;
+    lGrid.RowCount := 8;
+    lGrid.FixedCols := 1;
+    lGrid.FixedRows := 1;
+    lGrid.DefaultColWidth := ScaleValue(50);
+    lGrid.DefaultRowHeight := ScaleValue(22);
+    lGrid.Cells[1, 0] := 'Name';
+    lGrid.Cells[2, 0] := 'Notes';
+    lGrid.Cells[1, 1] := '<b>Alice</b>';
+    lGrid.WideCells[2, 1] := 'Zazolc gesla jazn';
+    lGrid.Cells[3, 1] := 'Hidden TMS column';
+    lGrid.Cells[4, 1] := 'After hidden TMS column';
+    lGrid.Cells[1, 3] := 'Hidden TMS row';
+    lGrid.Cells[1, 4] := 'After hidden TMS row';
+    lGrid.Cells[7, 7] := 'Scrolled TMS cell';
+    lGrid.HideColumn(3);
+    lGrid.HideRow(3);
+    lGrid.Col := 2;
+    lGrid.Row := 1;
+    lForm.ActiveControl := lGrid;
+    lForm.HandleNeeded;
+    lGrid.HandleNeeded;
+
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm,
+      TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+    lRoot := FragmentRoot(lProvider);
+    lGridFragment := FirstChild(lProvider, 'TMS string grid fragment');
+    Require(ProviderIntProperty(lGridFragment, UIA_ControlTypePropertyId) = UIA_DataGridControlTypeId,
+      'TMS string grid did not expose the DataGrid control type.');
+
+    lPattern := PatternProvider(lGridFragment, UIA_GridPatternId);
+    Require(Supports(lPattern, IGridProvider, lGridPattern), 'TMS string grid did not expose Grid pattern.');
+    Require(lGridPattern.GetItem(1, 1, lCellProvider) = S_OK, 'TMS grid pattern GetItem failed.');
+    lCellFragment := FragmentFromSimple(lCellProvider);
+    Require(ProviderStringProperty(lCellFragment, UIA_NamePropertyId) = 'Alice',
+      'TMS grid HTML cell was not stripped.');
+    Require(ProviderIntProperty(lCellFragment, UIA_ControlTypePropertyId) = UIA_DataItemControlTypeId,
+      'TMS grid cell did not expose the DataItem control type.');
+
+    Require(lGridPattern.GetItem(1, 2, lCellProvider) = S_OK, 'TMS grid wide-cell GetItem failed.');
+    Require(ProviderStringProperty(FragmentFromSimple(lCellProvider), UIA_NamePropertyId) = 'Zazolc gesla jazn',
+      'TMS grid wide-cell fallback mismatch.');
+    Require(not ChildNameExists(lGridFragment, 'Hidden TMS column'), 'Hidden TMS grid column was exposed.');
+    Require(lGridPattern.GetItem(1, 3, lCellProvider) = S_OK, 'TMS grid after-hidden-column GetItem failed.');
+    Require(ProviderStringProperty(FragmentFromSimple(lCellProvider), UIA_NamePropertyId) =
+      'After hidden TMS column', 'TMS grid visible column after hidden column was not exposed.');
+    Require(not ChildNameExists(lGridFragment, 'Hidden TMS row'), 'Hidden TMS grid row was exposed.');
+    Require(lGridPattern.GetItem(3, 1, lCellProvider) = S_OK, 'TMS grid after-hidden-row GetItem failed.');
+    Require(ProviderStringProperty(FragmentFromSimple(lCellProvider), UIA_NamePropertyId) = 'After hidden TMS row',
+      'TMS grid visible row after hidden row was not exposed.');
+
+    lPoint := ScreenAdvCellCenter(lGrid, 1, 1);
+    Require(lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit) = S_OK, 'TMS grid hit testing failed.');
+    Require(lHit <> nil, 'TMS grid hit testing returned no cell provider.');
+    Require(ProviderStringProperty(lHit, UIA_NamePropertyId) = 'Alice',
+      'TMS grid hit testing returned the wrong cell provider.');
+    Require(Pos('row', LowerCase(ProviderStringProperty(lHit, UIA_NamePropertyId))) = 0,
+      'TMS grid hit testing added row context to the default cell name.');
+    Require(Pos('column', LowerCase(ProviderStringProperty(lHit, UIA_NamePropertyId))) = 0,
+      'TMS grid hit testing added column context to the default cell name.');
+
+    Require(lRoot.GetFocus(lFocus) = S_OK, 'TMS grid focus query failed.');
+    Require(lFocus <> nil, 'TMS grid focus query returned no cell provider.');
+    Require(ProviderStringProperty(lFocus, UIA_NamePropertyId) = 'Zazolc gesla jazn',
+      'TMS grid focus query did not return the current cell.');
+
+    lGrid.ScrollInView(6, 6);
+    lPoint := ScreenAdvCellCenter(lGrid, 6, 6);
+    Require(lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit) = S_OK,
+      'Scrolled TMS grid hit testing failed.');
+    Require(lHit <> nil, 'Scrolled TMS grid hit testing returned no cell provider.');
+    Require(ProviderStringProperty(lHit, UIA_NamePropertyId) = 'Scrolled TMS cell',
+      'Scrolled TMS grid hit testing returned the wrong cell provider.');
+
+    lGrid.ScrollInView(1, 1);
+    Require(not ChildNameExists(lGridFragment, 'Scrolled TMS cell'), 'Scrolled-out TMS grid cell was exposed.');
+
+    Writeln('UIA_PROBE_OK TAdvStringGridCells: opt-in TMS DataGrid provider, stripped HTML text, wide-cell fallback, per-cell hit testing, current-cell focus, hidden-column and hidden-row remapping, hidden-cell omission, and scrolled-cell pruning confirmed.');
+  finally
+    lForm.Free;
+  end;
+end;
+
 procedure RunHintsProbe;
 var
   lApi: IProbeUiaApi;
@@ -560,6 +722,9 @@ begin
   end else if (ParamCount = 2) and SameText(ParamStr(1), '--uia-probe') and SameText(ParamStr(2), 'TStringGridCells') then
   begin
     RunTStringGridCellsProbe;
+  end else if (ParamCount = 2) and SameText(ParamStr(1), '--uia-probe') and SameText(ParamStr(2), 'TAdvStringGridCells') then
+  begin
+    RunTAdvStringGridCellsProbe;
   end else begin
     Writeln(cAccessibilityFrameworkName);
   end;

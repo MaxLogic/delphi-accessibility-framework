@@ -63,7 +63,7 @@ lProvider := TAccessibilityVclProviderBuilder.BuildForm(
   TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
 ```
 
-The opt-in TMS registry includes the default VCL adapters plus `TAdvStringGrid` DataGrid/DataItem support for stripped HTML text, wide text fallback, per-cell hit testing, current-cell focus, hidden column and hidden row remapping, and scrolled-cell pruning.
+The opt-in TMS registry includes the default VCL adapters plus `TAdvStringGrid` DataGrid/DataItem support for stripped HTML text, wide text fallback, per-cell hit testing, current-cell focus, hidden column and hidden row remapping, merged-cell spans that count visible coordinates, and scrolled-cell pruning.
 
 MaxLogicFoundation remains independent. The framework can be used without MaxLogicFoundation, and MaxLogicFoundation does not depend on this framework.
 
@@ -97,5 +97,5 @@ See also:
 - `TAccessibilityManager.Install(Application)` discovers future forms when `Screen.OnActiveFormChange` fires. Forms that are created and never become active should call `TAccessibilityManager.Install(Form)` explicitly after their controls exist.
 - The public manager API currently uses the default VCL registry. TMS `TAdvStringGrid` support is opt-in through `MaxLogic.Accessibility.TmsAdvStringGridAdapters`, and the custom-registry manager install path is deferred.
 - Automatic label-to-input relationships such as `LabeledBy` inference are not implemented yet.
-- TMS merged-span behavior is covered for base/non-base cell text normalization, but mixed hidden-coordinate span edge cases are deferred to the follow-up task.
+- TMS merged cells whose base cell is hidden are omitted rather than promoted from a visible merged fragment, because TMS stores text and span metadata on the hidden base coordinate.
 - Screen-reader speech varies by reader and settings. The UIA probe is automated proof of provider behavior; the NVDA checklist remains the manual acceptance pass for spoken output.

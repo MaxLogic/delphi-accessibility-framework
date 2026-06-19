@@ -2,6 +2,7 @@
 
 ## 2026-06-18
 ### Fixed
+- TMS `TAdvStringGrid` merged-cell UIA spans now count only visible rows and columns when hidden coordinates are inside the merged range.
 - Custom/balloon hint announcements now use the final hint text after a control mutates `Hint` in `OnMouseEnter`.
 - Disabled `TSpeedButton` UIA Invoke/Toggle automation no longer triggers button clicks or toggles `Down`.
 

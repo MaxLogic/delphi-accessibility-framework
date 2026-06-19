@@ -15,6 +15,12 @@ type
     [Test]
     procedure OptInProviderExposesDataGridPatternsAndCellText;
     [Test]
+    procedure OptInProviderColumnSpanCountsOnlyVisibleMergedColumns;
+    [Test]
+    procedure OptInProviderRowSpanCountsOnlyVisibleMergedRows;
+    [Test]
+    procedure OptInProviderRowSpanIgnoresHiddenRowsBeforeMerge;
+    [Test]
     procedure OptInProviderHitTestingReturnsOnlyTheCellUnderThePointer;
     [Test]
     procedure OptInProviderFocusReturnsTheCurrentCell;
@@ -115,6 +121,111 @@ begin
   aGrid.HandleNeeded;
 end;
 
+procedure CreateHiddenColumnMergedAdvGridFixture(out aForm: TForm; out aGrid: TAdvStringGrid);
+var
+  lCol: Integer;
+  lRow: Integer;
+begin
+  aForm := TForm.Create(nil);
+  aForm.SetBounds(ScaleValue(100), ScaleValue(100), ScaleValue(440), ScaleValue(280));
+
+  aGrid := TAdvStringGrid.Create(aForm);
+  aGrid.Name := 'HiddenColumnMergedAdvGrid';
+  aGrid.Parent := aForm;
+  aGrid.SetBounds(ScaleValue(8), ScaleValue(8), ScaleValue(260), ScaleValue(95));
+  aGrid.ColCount := 5;
+  aGrid.RowCount := 3;
+  aGrid.FixedCols := 0;
+  aGrid.FixedRows := 0;
+  aGrid.DefaultColWidth := ScaleValue(50);
+  aGrid.DefaultRowHeight := ScaleValue(22);
+  for lCol := 0 to Pred(aGrid.ColCount) do
+  begin
+    aGrid.ColWidths[lCol] := ScaleValue(50);
+  end;
+
+  for lRow := 0 to Pred(aGrid.RowCount) do
+  begin
+    aGrid.RowHeights[lRow] := ScaleValue(22);
+  end;
+
+  aGrid.MergeCells(1, 1, 3, 1);
+  aGrid.Cells[1, 1] := 'Merged visible columns';
+  aGrid.HideColumn(2);
+  aForm.HandleNeeded;
+  aGrid.HandleNeeded;
+end;
+
+procedure CreateHiddenRowMergedAdvGridFixture(out aForm: TForm; out aGrid: TAdvStringGrid);
+var
+  lCol: Integer;
+  lRow: Integer;
+begin
+  aForm := TForm.Create(nil);
+  aForm.SetBounds(ScaleValue(100), ScaleValue(100), ScaleValue(440), ScaleValue(280));
+
+  aGrid := TAdvStringGrid.Create(aForm);
+  aGrid.Name := 'HiddenRowMergedAdvGrid';
+  aGrid.Parent := aForm;
+  aGrid.SetBounds(ScaleValue(8), ScaleValue(8), ScaleValue(260), ScaleValue(120));
+  aGrid.ColCount := 3;
+  aGrid.RowCount := 5;
+  aGrid.FixedCols := 0;
+  aGrid.FixedRows := 0;
+  aGrid.DefaultColWidth := ScaleValue(55);
+  aGrid.DefaultRowHeight := ScaleValue(22);
+  for lCol := 0 to Pred(aGrid.ColCount) do
+  begin
+    aGrid.ColWidths[lCol] := ScaleValue(55);
+  end;
+
+  for lRow := 0 to Pred(aGrid.RowCount) do
+  begin
+    aGrid.RowHeights[lRow] := ScaleValue(22);
+  end;
+
+  aGrid.MergeCells(1, 1, 1, 3);
+  aGrid.Cells[1, 1] := 'Merged visible rows';
+  aGrid.HideRow(2);
+  aForm.HandleNeeded;
+  aGrid.HandleNeeded;
+end;
+
+procedure CreateHiddenBeforeMergedRowAdvGridFixture(out aForm: TForm; out aGrid: TAdvStringGrid);
+var
+  lCol: Integer;
+  lRow: Integer;
+begin
+  aForm := TForm.Create(nil);
+  aForm.SetBounds(ScaleValue(100), ScaleValue(100), ScaleValue(440), ScaleValue(280));
+
+  aGrid := TAdvStringGrid.Create(aForm);
+  aGrid.Name := 'HiddenBeforeMergedRowAdvGrid';
+  aGrid.Parent := aForm;
+  aGrid.SetBounds(ScaleValue(8), ScaleValue(8), ScaleValue(260), ScaleValue(140));
+  aGrid.ColCount := 3;
+  aGrid.RowCount := 6;
+  aGrid.FixedCols := 0;
+  aGrid.FixedRows := 0;
+  aGrid.DefaultColWidth := ScaleValue(55);
+  aGrid.DefaultRowHeight := ScaleValue(22);
+  for lCol := 0 to Pred(aGrid.ColCount) do
+  begin
+    aGrid.ColWidths[lCol] := ScaleValue(55);
+  end;
+
+  for lRow := 0 to Pred(aGrid.RowCount) do
+  begin
+    aGrid.RowHeights[lRow] := ScaleValue(22);
+  end;
+
+  aGrid.MergeCells(1, 2, 1, 3);
+  aGrid.Cells[1, 2] := 'Merged rows after hidden row';
+  aGrid.HideRow(1);
+  aForm.HandleNeeded;
+  aGrid.HandleNeeded;
+end;
+
 function TmsRegistry: IAccessibilityAdapterRegistry;
 begin
   Result := TAccessibilityTmsAdvStringGridAdapters.CreateRegistry;
@@ -161,6 +272,15 @@ end;
 function ProviderPattern(const aFragment: IRawElementProviderFragment; aPatternId: PATTERNID): IUnknown;
 begin
   Assert.AreEqual(S_OK, SimpleProvider(aFragment).GetPatternProvider(aPatternId, Result));
+end;
+
+function GridItemPattern(const aProvider: IRawElementProviderSimple): IGridItemProvider;
+var
+  lPattern: IUnknown;
+begin
+  lPattern := nil;
+  Assert.AreEqual(S_OK, aProvider.GetPatternProvider(UIA_GridItemPatternId, lPattern));
+  Assert.IsTrue(Supports(lPattern, IGridItemProvider, Result));
 end;
 
 function ProviderStringProperty(const aFragment: IRawElementProviderFragment; aPropertyId: PROPERTYID): string;
@@ -331,18 +451,54 @@ begin
   end;
 end;
 
-procedure TAdvStringGridAccessibilityTests.OptInProviderExposesDataGridPatternsAndCellText;
+procedure TAdvStringGridAccessibilityTests.OptInProviderColumnSpanCountsOnlyVisibleMergedColumns;
 var
-  lCellFragment: IRawElementProviderFragment;
-  lCellSimple: IRawElementProviderSimple;
-  lColumnCount: Integer;
+  lColumnSpan: Integer;
   lForm: TForm;
   lGrid: TAdvStringGrid;
   lGridFragment: IRawElementProviderFragment;
+  lGridItem: IGridItemProvider;
   lGridPattern: IGridProvider;
   lMergedSimple: IRawElementProviderSimple;
   lPattern: IUnknown;
   lProvider: IAccessibilityProviderNode;
+  lRowSpan: Integer;
+begin
+  CreateHiddenColumnMergedAdvGridFixture(lForm, lGrid);
+  try
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm, TmsRegistry);
+    lGridFragment := FirstChildFragment(lProvider.FragmentProvider);
+    lPattern := ProviderPattern(lGridFragment, UIA_GridPatternId);
+    Assert.IsTrue(Supports(lPattern, IGridProvider, lGridPattern));
+
+    Assert.AreEqual(S_OK, lGridPattern.GetItem(1, 1, lMergedSimple));
+    Assert.IsNotNull(lMergedSimple);
+    lGridItem := GridItemPattern(lMergedSimple);
+
+    Assert.AreEqual(S_OK, lGridItem.Get_ColumnSpan(lColumnSpan));
+    Assert.AreEqual(2, lColumnSpan);
+    Assert.AreEqual(S_OK, lGridItem.Get_RowSpan(lRowSpan));
+    Assert.AreEqual(1, lRowSpan);
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAdvStringGridAccessibilityTests.OptInProviderExposesDataGridPatternsAndCellText;
+var
+  lCellFragment: IRawElementProviderFragment;
+  lCellSimple: IRawElementProviderSimple;
+  lColumnSpan: Integer;
+  lColumnCount: Integer;
+  lForm: TForm;
+  lGrid: TAdvStringGrid;
+  lGridFragment: IRawElementProviderFragment;
+  lGridItem: IGridItemProvider;
+  lGridPattern: IGridProvider;
+  lMergedSimple: IRawElementProviderSimple;
+  lPattern: IUnknown;
+  lProvider: IAccessibilityProviderNode;
+  lRowSpan: Integer;
   lRowCount: Integer;
 begin
   CreateAdvGridFixture(lForm, lGrid);
@@ -381,12 +537,80 @@ begin
 
     Assert.AreEqual(S_OK, lGridPattern.GetItem(2, 2, lMergedSimple));
     Assert.AreEqual('Merged TMS cell', ProviderStringProperty(FragmentFromSimple(lMergedSimple), UIA_NamePropertyId));
+    lGridItem := GridItemPattern(lMergedSimple);
+    Assert.AreEqual(S_OK, lGridItem.Get_ColumnSpan(lColumnSpan));
+    Assert.AreEqual(2, lColumnSpan);
+    Assert.AreEqual(S_OK, lGridItem.Get_RowSpan(lRowSpan));
+    Assert.AreEqual(1, lRowSpan);
     Assert.AreEqual(VisibleAdvCellCount(lGrid), ChildFragmentCount(lGridFragment));
     Assert.IsTrue(ChildNameExists(lGridFragment, 'Merged TMS cell'));
     Assert.IsFalse(ChildNameExists(lGridFragment, 'Hidden TMS column'));
     Assert.IsTrue(ChildNameExists(lGridFragment, 'After hidden TMS column'));
     Assert.IsFalse(ChildNameExists(lGridFragment, 'Hidden TMS row'));
     Assert.IsTrue(ChildNameExists(lGridFragment, 'After hidden TMS row'));
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAdvStringGridAccessibilityTests.OptInProviderRowSpanCountsOnlyVisibleMergedRows;
+var
+  lColumnSpan: Integer;
+  lForm: TForm;
+  lGrid: TAdvStringGrid;
+  lGridFragment: IRawElementProviderFragment;
+  lGridItem: IGridItemProvider;
+  lGridPattern: IGridProvider;
+  lMergedSimple: IRawElementProviderSimple;
+  lPattern: IUnknown;
+  lProvider: IAccessibilityProviderNode;
+  lRowSpan: Integer;
+begin
+  CreateHiddenRowMergedAdvGridFixture(lForm, lGrid);
+  try
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm, TmsRegistry);
+    lGridFragment := FirstChildFragment(lProvider.FragmentProvider);
+    lPattern := ProviderPattern(lGridFragment, UIA_GridPatternId);
+    Assert.IsTrue(Supports(lPattern, IGridProvider, lGridPattern));
+
+    Assert.AreEqual(S_OK, lGridPattern.GetItem(1, 1, lMergedSimple));
+    Assert.IsNotNull(lMergedSimple);
+    lGridItem := GridItemPattern(lMergedSimple);
+
+    Assert.AreEqual(S_OK, lGridItem.Get_RowSpan(lRowSpan));
+    Assert.AreEqual(2, lRowSpan);
+    Assert.AreEqual(S_OK, lGridItem.Get_ColumnSpan(lColumnSpan));
+    Assert.AreEqual(1, lColumnSpan);
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAdvStringGridAccessibilityTests.OptInProviderRowSpanIgnoresHiddenRowsBeforeMerge;
+var
+  lForm: TForm;
+  lGrid: TAdvStringGrid;
+  lGridFragment: IRawElementProviderFragment;
+  lGridItem: IGridItemProvider;
+  lGridPattern: IGridProvider;
+  lMergedSimple: IRawElementProviderSimple;
+  lPattern: IUnknown;
+  lProvider: IAccessibilityProviderNode;
+  lRowSpan: Integer;
+begin
+  CreateHiddenBeforeMergedRowAdvGridFixture(lForm, lGrid);
+  try
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm, TmsRegistry);
+    lGridFragment := FirstChildFragment(lProvider.FragmentProvider);
+    lPattern := ProviderPattern(lGridFragment, UIA_GridPatternId);
+    Assert.IsTrue(Supports(lPattern, IGridProvider, lGridPattern));
+
+    Assert.AreEqual(S_OK, lGridPattern.GetItem(1, 1, lMergedSimple));
+    Assert.IsNotNull(lMergedSimple);
+    lGridItem := GridItemPattern(lMergedSimple);
+
+    Assert.AreEqual(S_OK, lGridItem.Get_RowSpan(lRowSpan));
+    Assert.AreEqual(3, lRowSpan);
   finally
     lForm.Free;
   end;

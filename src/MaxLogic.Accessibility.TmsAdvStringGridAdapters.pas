@@ -71,8 +71,11 @@ type
     function GridOwnsFocus: Boolean;
     function IsVisibleCell(aCol: Integer; aRow: Integer): Boolean;
     function NormalizedCell(aCol: Integer; aRow: Integer): TPoint;
+    function PointHitsCell(const aPoint: TPoint; const aExpectedCell: TPoint): Boolean;
     function RealCell(aCol: Integer; aRow: Integer): TPoint;
     function VisibleCellRect(aCol: Integer; aRow: Integer; out aRect: TRect): Boolean;
+    function VisibleColumnSpan(aCol: Integer; aRow: Integer): Integer;
+    function VisibleRowSpan(aCol: Integer; aRow: Integer): Integer;
     procedure RefreshVisibleCells;
   protected
     function DoGetBoundingRectangle(out aValue: UiaRect): Boolean; override;
@@ -234,9 +237,6 @@ begin
 end;
 
 function TAccessibilityAdvStringGridCellProvider.Get_ColumnSpan(out aRetVal: Integer): HResult;
-var
-  lCell: TPoint;
-  lSpan: TPoint;
 begin
   aRetVal := 1;
   if IsDisconnected or (fGrid = nil) or (fGridProvider = nil) then
@@ -244,13 +244,7 @@ begin
     Exit(UIA_E_ELEMENTNOTAVAILABLE);
   end;
 
-  lCell := fGridProvider.RealCell(fCol, fRow);
-  lSpan := fGrid.CellSpan(lCell.X, lCell.Y);
-  if lSpan.X > 0 then
-  begin
-    aRetVal := lSpan.X + 1;
-  end;
-
+  aRetVal := fGridProvider.VisibleColumnSpan(fCol, fRow);
   Result := S_OK;
 end;
 
@@ -295,9 +289,6 @@ begin
 end;
 
 function TAccessibilityAdvStringGridCellProvider.Get_RowSpan(out aRetVal: Integer): HResult;
-var
-  lCell: TPoint;
-  lSpan: TPoint;
 begin
   aRetVal := 1;
   if IsDisconnected or (fGrid = nil) or (fGridProvider = nil) then
@@ -305,13 +296,7 @@ begin
     Exit(UIA_E_ELEMENTNOTAVAILABLE);
   end;
 
-  lCell := fGridProvider.RealCell(fCol, fRow);
-  lSpan := fGrid.CellSpan(lCell.X, lCell.Y);
-  if lSpan.Y > 0 then
-  begin
-    aRetVal := lSpan.Y + 1;
-  end;
-
+  aRetVal := fGridProvider.VisibleRowSpan(fCol, fRow);
   Result := S_OK;
 end;
 
@@ -682,6 +667,26 @@ begin
   end;
 end;
 
+function TAccessibilityAdvStringGridProvider.PointHitsCell(const aPoint: TPoint;
+  const aExpectedCell: TPoint): Boolean;
+var
+  lHitCell: TPoint;
+  lHitCol: Integer;
+  lHitPoint: TPoint;
+  lHitRow: Integer;
+begin
+  Result := False;
+  if fGrid = nil then
+  begin
+    Exit;
+  end;
+
+  lHitPoint := fGrid.ClientToScreen(aPoint);
+  fGrid.ScreenToCell(lHitPoint, lHitCol, lHitRow);
+  lHitCell := NormalizedCell(lHitCol, lHitRow);
+  Result := (lHitCell.X = aExpectedCell.X) and (lHitCell.Y = aExpectedCell.Y);
+end;
+
 function TAccessibilityAdvStringGridProvider.RealCell(aCol: Integer; aRow: Integer): TPoint;
 begin
   Result := Point(aCol, aRow);
@@ -696,12 +701,13 @@ function TAccessibilityAdvStringGridProvider.VisibleCellRect(aCol: Integer; aRow
 var
   lCellRect: TRect;
   lClientRect: TRect;
-  lHitCell: TPoint;
-  lHitCol: Integer;
+  lBottom: Integer;
   lHitPoint: TPoint;
-  lHitRow: Integer;
   lExpectedCell: TPoint;
+  lLeft: Integer;
   lRealCell: TPoint;
+  lRight: Integer;
+  lTop: Integer;
   lVisibleRect: TRect;
 begin
   aRect := TRect.Empty;
@@ -728,17 +734,106 @@ begin
 
   lHitPoint := Point((lVisibleRect.Left + lVisibleRect.Right) div 2,
     (lVisibleRect.Top + lVisibleRect.Bottom) div 2);
-  lHitPoint := fGrid.ClientToScreen(lHitPoint);
-  fGrid.ScreenToCell(lHitPoint, lHitCol, lHitRow);
-  lHitCell := NormalizedCell(lHitCol, lHitRow);
   lExpectedCell := NormalizedCell(aCol, aRow);
-  if (lHitCell.X <> lExpectedCell.X) or (lHitCell.Y <> lExpectedCell.Y) then
+  if not PointHitsCell(lHitPoint, lExpectedCell) then
   begin
-    Exit;
+    lLeft := lVisibleRect.Left;
+    lRight := Pred(lVisibleRect.Right);
+    lTop := lVisibleRect.Top;
+    lBottom := Pred(lVisibleRect.Bottom);
+    if lRight > lLeft then
+    begin
+      Inc(lLeft);
+      Dec(lRight);
+    end;
+
+    if lBottom > lTop then
+    begin
+      Inc(lTop);
+      Dec(lBottom);
+    end;
+
+    if not (PointHitsCell(Point(lLeft, lTop), lExpectedCell) or
+      PointHitsCell(Point(lRight, lTop), lExpectedCell) or
+      PointHitsCell(Point(lLeft, lBottom), lExpectedCell) or
+      PointHitsCell(Point(lRight, lBottom), lExpectedCell)) then
+    begin
+      Exit;
+    end;
   end;
 
   aRect := lVisibleRect;
   Result := True;
+end;
+
+function TAccessibilityAdvStringGridProvider.VisibleColumnSpan(aCol: Integer; aRow: Integer): Integer;
+var
+  lCell: TPoint;
+  lCol: Integer;
+  lSpan: TPoint;
+begin
+  Result := 1;
+  if (fGrid = nil) or (aCol < 0) or (aCol >= fGrid.ColCount) or (aRow < 0) or (aRow >= fGrid.RowCount) then
+  begin
+    Exit;
+  end;
+
+  lCell := RealCell(aCol, aRow);
+  lSpan := fGrid.CellSpan(lCell.X, lCell.Y);
+  if lSpan.X <= 0 then
+  begin
+    Exit;
+  end;
+
+  Result := 0;
+  for lCol := lCell.X to lCell.X + lSpan.X do
+  begin
+    if not fGrid.IsHiddenColumn(lCol) then
+    begin
+      Inc(Result);
+    end;
+  end;
+
+  if Result = 0 then
+  begin
+    Result := 1;
+  end;
+end;
+
+function TAccessibilityAdvStringGridProvider.VisibleRowSpan(aCol: Integer; aRow: Integer): Integer;
+var
+  lBaseRow: Integer;
+  lCell: TPoint;
+  lRow: Integer;
+  lSpan: TPoint;
+begin
+  Result := 1;
+  if (fGrid = nil) or (aCol < 0) or (aCol >= fGrid.ColCount) or (aRow < 0) or (aRow >= fGrid.RowCount) then
+  begin
+    Exit;
+  end;
+
+  lCell := RealCell(aCol, aRow);
+  lSpan := fGrid.CellSpan(lCell.X, lCell.Y);
+  if lSpan.Y <= 0 then
+  begin
+    Exit;
+  end;
+
+  Result := 0;
+  lBaseRow := fGrid.RealRowIndex(lCell.Y);
+  for lRow := lBaseRow to lBaseRow + lSpan.Y do
+  begin
+    if not fGrid.IsHiddenRow(lRow) then
+    begin
+      Inc(Result);
+    end;
+  end;
+
+  if Result = 0 then
+  begin
+    Result := 1;
+  end;
 end;
 
 procedure TAccessibilityAdvStringGridProvider.PrepareChildrenForNavigation;

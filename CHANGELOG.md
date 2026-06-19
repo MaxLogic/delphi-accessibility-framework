@@ -2,6 +2,7 @@
 
 ## 2026-06-18
 ### Added
+- Added UIA DataGrid/cell provider support for VCL `TStringGrid`, including per-cell hit testing, current-cell focus, and hidden-cell omission.
 - Added UIA notification support for VCL hints and balloon hints, including app-wide/scoped install wiring and duplicate-speech suppression.
 - Added UIA-first VCL adapters and probe coverage for labels, speed buttons, panels, and generic graphic controls.
 - Added a VCL form scanner, adapter registry, text extraction fallback pipeline, and runtime control-change observer.

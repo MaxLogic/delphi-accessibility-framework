@@ -68,6 +68,8 @@ type
     function DoGetPatternProvider(aPatternId: PATTERNID): IUnknown; virtual;
     function DoGetPropertyValue(aPropertyId: PROPERTYID; out aValue: OleVariant): Boolean; virtual;
     function DoSetFocus: HResult; virtual;
+    procedure PrepareChildrenForNavigation; virtual;
+    procedure RemoveChildNode(const aChild: IAccessibilityProviderNode; aDisconnect: Boolean);
   public
     destructor Destroy; override;
     procedure AddChild(const aChild: IAccessibilityProviderNode);
@@ -598,6 +600,7 @@ function TAccessibilityProviderNode.Navigate(aDirection: NavigateDirection;
   out aRetVal: IRawElementProviderFragment): HResult;
 var
   lIndex: Integer;
+  lParent: TAccessibilityProviderNode;
 begin
   aRetVal := nil;
   if fDisconnected then
@@ -614,30 +617,50 @@ begin
     NavigateDirection_NextSibling:
       if fParent <> nil then
       begin
-        lIndex := fParent.ChildIndex(Self);
-        if (lIndex >= 0) and (lIndex < Pred(fParent.fChildren.Count)) then
+        lParent := fParent;
+        lParent.PrepareChildrenForNavigation;
+        if fDisconnected or (fParent <> lParent) then
         begin
-          aRetVal := fParent.fChildren[lIndex + 1].FragmentProvider;
+          Exit(S_OK);
+        end;
+
+        lIndex := lParent.ChildIndex(Self);
+        if (lIndex >= 0) and (lIndex < Pred(lParent.fChildren.Count)) then
+        begin
+          aRetVal := lParent.fChildren[lIndex + 1].FragmentProvider;
         end;
       end;
     NavigateDirection_PreviousSibling:
       if fParent <> nil then
       begin
-        lIndex := fParent.ChildIndex(Self);
+        lParent := fParent;
+        lParent.PrepareChildrenForNavigation;
+        if fDisconnected or (fParent <> lParent) then
+        begin
+          Exit(S_OK);
+        end;
+
+        lIndex := lParent.ChildIndex(Self);
         if lIndex > 0 then
         begin
-          aRetVal := fParent.fChildren[lIndex - 1].FragmentProvider;
+          aRetVal := lParent.fChildren[lIndex - 1].FragmentProvider;
         end;
       end;
     NavigateDirection_FirstChild:
-      if fChildren.Count > 0 then
       begin
-        aRetVal := fChildren[0].FragmentProvider;
+        PrepareChildrenForNavigation;
+        if fChildren.Count > 0 then
+        begin
+          aRetVal := fChildren[0].FragmentProvider;
+        end;
       end;
     NavigateDirection_LastChild:
-      if fChildren.Count > 0 then
       begin
-        aRetVal := fChildren[Pred(fChildren.Count)].FragmentProvider;
+        PrepareChildrenForNavigation;
+        if fChildren.Count > 0 then
+        begin
+          aRetVal := fChildren[Pred(fChildren.Count)].FragmentProvider;
+        end;
       end;
   else
     Result := E_INVALIDARG;
@@ -650,6 +673,36 @@ end;
 function TAccessibilityProviderNode.ProviderObject: TObject;
 begin
   Result := Self;
+end;
+
+procedure TAccessibilityProviderNode.PrepareChildrenForNavigation;
+begin
+end;
+
+procedure TAccessibilityProviderNode.RemoveChildNode(const aChild: IAccessibilityProviderNode;
+  aDisconnect: Boolean);
+var
+  lChild: TAccessibilityProviderNode;
+  lIndex: Integer;
+begin
+  if aChild = nil then
+  begin
+    Exit;
+  end;
+
+  lChild := FromNode(aChild);
+  lIndex := ChildIndex(lChild);
+  if lIndex < 0 then
+  begin
+    Exit;
+  end;
+
+  fChildren.Delete(lIndex);
+  lChild.fParent := nil;
+  if aDisconnect then
+  begin
+    aChild.Disconnect;
+  end;
 end;
 
 function TAccessibilityProviderNode.RawElementProvider: IRawElementProviderSimple;

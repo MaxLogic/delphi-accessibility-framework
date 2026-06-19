@@ -3,8 +3,8 @@ program MaxLogicAccessibilityFrameworkSmoke;
 {$APPTYPE CONSOLE}
 
 uses
-  System.SysUtils, System.Variants, Winapi.ActiveX, Winapi.Messages, Winapi.Windows, Vcl.Buttons, Vcl.Controls,
-  Vcl.ExtCtrls, Vcl.Forms, Vcl.StdCtrls,
+  System.SysUtils, System.Types, System.Variants, Winapi.ActiveX, Winapi.Messages, Winapi.Windows, Vcl.Buttons,
+  Vcl.Controls, Vcl.ExtCtrls, Vcl.Forms, Vcl.Grids, Vcl.StdCtrls,
   MaxLogic.Accessibility.Framework in '..\src\MaxLogic.Accessibility.Framework.pas',
   MaxLogic.Accessibility.Hints in '..\src\MaxLogic.Accessibility.Hints.pas',
   MaxLogic.Accessibility.Manager in '..\src\MaxLogic.Accessibility.Manager.pas',
@@ -142,10 +142,28 @@ begin
   end;
 end;
 
+function ScaleValue(aValue: Integer): Integer;
+begin
+  Result := MulDiv(aValue, Screen.PixelsPerInch, 96);
+end;
+
 function FragmentProvider(const aFragment: IRawElementProviderFragment): IRawElementProviderSimple;
 begin
   Result := nil;
   Require(Supports(aFragment, IRawElementProviderSimple, Result), 'Fragment does not expose simple provider.');
+end;
+
+function FragmentFromSimple(const aProvider: IRawElementProviderSimple): IRawElementProviderFragment;
+begin
+  Result := nil;
+  Require(Supports(aProvider, IRawElementProviderFragment, Result), 'Simple provider is not a fragment.');
+end;
+
+function FragmentRoot(const aProvider: IAccessibilityProviderNode): IRawElementProviderFragmentRoot;
+begin
+  Result := nil;
+  Require(Supports(aProvider.RawElementProvider, IRawElementProviderFragmentRoot, Result),
+    'Provider does not expose a fragment root.');
 end;
 
 function NavigateFragment(const aFragment: IRawElementProviderFragment; aDirection: NavigateDirection;
@@ -214,6 +232,33 @@ begin
   lResult := FragmentProvider(aFragment).GetPropertyValue(aPropertyId, lValue);
   Require(lResult = S_OK, Format('Property %d returned 0x%x.', [aPropertyId, Cardinal(lResult)]));
   Result := string(lValue);
+end;
+
+function ScreenCellCenter(aGrid: TStringGrid; aCol: Integer; aRow: Integer): TPoint;
+var
+  lCellRect: TRect;
+begin
+  lCellRect := aGrid.CellRect(aCol, aRow);
+  Require((lCellRect.Width > 0) and (lCellRect.Height > 0), 'Probe target cell is not visible.');
+  Result := aGrid.ClientToScreen(Point((lCellRect.Left + lCellRect.Right) div 2,
+    (lCellRect.Top + lCellRect.Bottom) div 2));
+end;
+
+function ChildNameExists(const aGridFragment: IRawElementProviderFragment; const aName: string): Boolean;
+var
+  lCell: IRawElementProviderFragment;
+begin
+  Result := False;
+  lCell := NavigateFragment(aGridFragment, NavigateDirection_FirstChild, 'first grid cell fragment', False);
+  while lCell <> nil do
+  begin
+    if ProviderStringProperty(lCell, UIA_NamePropertyId) = aName then
+    begin
+      Exit(True);
+    end;
+
+    lCell := NavigateFragment(lCell, NavigateDirection_NextSibling, 'next grid cell fragment', False);
+  end;
 end;
 
 procedure RequireProvider(const aFragment: IRawElementProviderFragment; aControlTypeId: Integer; const aName: string;
@@ -348,6 +393,86 @@ begin
   end;
 end;
 
+procedure RunTStringGridCellsProbe;
+var
+  lCellFragment: IRawElementProviderFragment;
+  lCellProvider: IRawElementProviderSimple;
+  lFocus: IRawElementProviderFragment;
+  lForm: TForm;
+  lGrid: TStringGrid;
+  lGridFragment: IRawElementProviderFragment;
+  lGridPattern: IGridProvider;
+  lHit: IRawElementProviderFragment;
+  lPattern: IUnknown;
+  lPoint: TPoint;
+  lProvider: IAccessibilityProviderNode;
+  lRoot: IRawElementProviderFragmentRoot;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(ScaleValue(100), ScaleValue(100), ScaleValue(420), ScaleValue(260));
+
+    lGrid := TStringGrid.Create(lForm);
+    lGrid.Name := 'OrdersGrid';
+    lGrid.Parent := lForm;
+    lGrid.SetBounds(ScaleValue(8), ScaleValue(8), ScaleValue(250), ScaleValue(115));
+    lGrid.ColCount := 4;
+    lGrid.RowCount := 4;
+    lGrid.FixedCols := 1;
+    lGrid.FixedRows := 1;
+    lGrid.DefaultColWidth := ScaleValue(55);
+    lGrid.DefaultRowHeight := ScaleValue(20);
+    lGrid.ColWidths[3] := 0;
+    lGrid.RowHeights[3] := 0;
+    lGrid.Cells[0, 0] := 'ID';
+    lGrid.Cells[1, 0] := 'Name';
+    lGrid.Cells[2, 0] := 'Status';
+    lGrid.Cells[0, 1] := '100';
+    lGrid.Cells[1, 1] := 'Alice';
+    lGrid.Cells[2, 1] := 'Running';
+    lGrid.Cells[3, 3] := 'Hidden far cell';
+    lGrid.Col := 2;
+    lGrid.Row := 1;
+    lForm.ActiveControl := lGrid;
+    lForm.HandleNeeded;
+    lGrid.HandleNeeded;
+
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lRoot := FragmentRoot(lProvider);
+    lGridFragment := FirstChild(lProvider, 'string grid fragment');
+    Require(ProviderIntProperty(lGridFragment, UIA_ControlTypePropertyId) = UIA_DataGridControlTypeId,
+      'String grid did not expose the DataGrid control type.');
+
+    lPattern := PatternProvider(lGridFragment, UIA_GridPatternId);
+    Require(Supports(lPattern, IGridProvider, lGridPattern), 'String grid did not expose Grid pattern.');
+    Require(lGridPattern.GetItem(1, 1, lCellProvider) = S_OK, 'Grid pattern GetItem failed.');
+    lCellFragment := FragmentFromSimple(lCellProvider);
+    Require(ProviderStringProperty(lCellFragment, UIA_NamePropertyId) = 'Alice', 'Grid cell name mismatch.');
+    Require(ProviderIntProperty(lCellFragment, UIA_ControlTypePropertyId) = UIA_DataItemControlTypeId,
+      'Grid cell did not expose the DataItem control type.');
+    Require(not ChildNameExists(lGridFragment, 'Hidden far cell'), 'Hidden grid cell was exposed.');
+
+    lPoint := ScreenCellCenter(lGrid, 1, 1);
+    Require(lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit) = S_OK, 'Grid hit testing failed.');
+    Require(lHit <> nil, 'Grid hit testing returned no cell provider.');
+    Require(ProviderStringProperty(lHit, UIA_NamePropertyId) = 'Alice',
+      'Grid hit testing returned the wrong cell provider.');
+    Require(Pos('row', LowerCase(ProviderStringProperty(lHit, UIA_NamePropertyId))) = 0,
+      'Grid hit testing added row context to the default cell name.');
+    Require(Pos('column', LowerCase(ProviderStringProperty(lHit, UIA_NamePropertyId))) = 0,
+      'Grid hit testing added column context to the default cell name.');
+
+    Require(lRoot.GetFocus(lFocus) = S_OK, 'Grid focus query failed.');
+    Require(lFocus <> nil, 'Grid focus query returned no cell provider.');
+    Require(ProviderStringProperty(lFocus, UIA_NamePropertyId) = 'Running',
+      'Grid focus query did not return the current cell.');
+
+    Writeln('UIA_PROBE_OK TStringGridCells: DataGrid provider, visible cell fragments, per-cell provider hit testing, current-cell focus, hidden-cell omission, and cell-only names confirmed.');
+  finally
+    lForm.Free;
+  end;
+end;
+
 procedure RunHintsProbe;
 var
   lApi: IProbeUiaApi;
@@ -432,6 +557,9 @@ begin
   end else if (ParamCount = 2) and SameText(ParamStr(1), '--uia-probe') and SameText(ParamStr(2), 'Hints') then
   begin
     RunHintsProbe;
+  end else if (ParamCount = 2) and SameText(ParamStr(1), '--uia-probe') and SameText(ParamStr(2), 'TStringGridCells') then
+  begin
+    RunTStringGridCellsProbe;
   end else begin
     Writeln(cAccessibilityFrameworkName);
   end;

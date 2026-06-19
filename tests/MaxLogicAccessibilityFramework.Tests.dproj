@@ -87,6 +87,7 @@
     <DCCReference Include="src\MaxLogic.Accessibility.ProviderCore.Tests.pas"/>
     <DCCReference Include="src\MaxLogic.Accessibility.Scanner.Tests.pas"/>
     <DCCReference Include="src\MaxLogic.Accessibility.Smoke.Tests.pas"/>
+    <DCCReference Include="src\MaxLogic.Accessibility.StringGrid.Tests.pas"/>
     <DCCReference Include="src\MaxLogic.Accessibility.UIAutomationCore.Tests.pas"/>
     <DCCReference Include="src\MaxLogic.Accessibility.VclAdapters.Tests.pas"/>
     <DCCReference Include="..\src\MaxLogic.Accessibility.Framework.pas"/>

@@ -59,11 +59,16 @@ type
   TAccessibilityHintControlHook = class(TComponent)
   private
     fControl: TWinControl;
+    fDispatchDepth: Integer;
     fObserver: TAccessibilityHintFormObserver;
     fOriginalWindowProc: TWndMethod;
     fPassive: Boolean;
+    fReleaseAfterDispatch: Boolean;
+    procedure BeginDispatch;
     procedure Detach;
+    procedure EndDispatch;
     function Passivate: Boolean;
+    procedure RetainPassively;
   protected
     procedure Notification(aComponent: TComponent; aOperation: TOperation); override;
   public
@@ -219,6 +224,11 @@ begin
   inherited Destroy;
 end;
 
+procedure TAccessibilityHintControlHook.BeginDispatch;
+begin
+  Inc(fDispatchDepth);
+end;
+
 procedure TAccessibilityHintControlHook.Detach;
 begin
   if fControl <> nil then
@@ -230,6 +240,18 @@ begin
 
     fControl.RemoveFreeNotification(Self);
     fControl := nil;
+  end;
+end;
+
+procedure TAccessibilityHintControlHook.EndDispatch;
+var
+  lReleaseAfterDispatch: Boolean;
+begin
+  Dec(fDispatchDepth);
+  lReleaseAfterDispatch := (fDispatchDepth = 0) and fReleaseAfterDispatch;
+  if lReleaseAfterDispatch then
+  begin
+    Free;
   end;
 end;
 
@@ -256,6 +278,25 @@ function TAccessibilityHintControlHook.Passivate: Boolean;
 begin
   Result := False;
   fObserver := nil;
+  if fDispatchDepth > 0 then
+  begin
+    if (fControl <> nil) and (not SameWndMethod(fControl.WindowProc, WindowProc)) then
+    begin
+      RetainPassively;
+    end else begin
+      if fControl <> nil then
+      begin
+        Detach;
+      end;
+
+      fPassive := True;
+      fReleaseAfterDispatch := True;
+    end;
+
+    Result := True;
+    Exit;
+  end;
+
   if fControl = nil then
   begin
     Exit;
@@ -265,17 +306,22 @@ begin
   begin
     Detach;
   end else begin
-    fPassive := True;
+    RetainPassively;
     Result := True;
-    if gRetainedHintControlHooks = nil then
-    begin
-      gRetainedHintControlHooks := TList<TAccessibilityHintControlHook>.Create;
-    end;
+  end;
+end;
 
-    if not gRetainedHintControlHooks.Contains(Self) then
-    begin
-      gRetainedHintControlHooks.Add(Self);
-    end;
+procedure TAccessibilityHintControlHook.RetainPassively;
+begin
+  fPassive := True;
+  if gRetainedHintControlHooks = nil then
+  begin
+    gRetainedHintControlHooks := TList<TAccessibilityHintControlHook>.Create;
+  end;
+
+  if not gRetainedHintControlHooks.Contains(Self) then
+  begin
+    gRetainedHintControlHooks.Add(Self);
   end;
 end;
 
@@ -283,20 +329,31 @@ procedure TAccessibilityHintControlHook.WindowProc(var aMessage: TMessage);
 var
   lOriginalWindowProc: TWndMethod;
 begin
-  if (not fPassive) and (fObserver <> nil) and (aMessage.Msg = CM_MOUSEENTER) then
-  begin
-    fObserver.ControlMouseEnter(fControl, aMessage);
-  end;
+  BeginDispatch;
+  try
+    lOriginalWindowProc := fOriginalWindowProc;
 
-  if (not fPassive) and (fObserver <> nil) and
-    (((aMessage.Msg = CM_CONTROLCHANGE) and (aMessage.LParam <> 0)) or
-    ((aMessage.Msg = CM_CONTROLLISTCHANGE) and (aMessage.LParam = 0))) then
-  begin
-    fObserver.ControlChanged;
-  end;
+    if (not fPassive) and (fObserver <> nil) and (aMessage.Msg = CM_MOUSEENTER) then
+    begin
+      lOriginalWindowProc(aMessage);
+      if (not fPassive) and (fObserver <> nil) and (fControl <> nil) then
+      begin
+        fObserver.ControlMouseEnter(fControl, aMessage);
+      end;
+      Exit;
+    end;
 
-  lOriginalWindowProc := fOriginalWindowProc;
-  lOriginalWindowProc(aMessage);
+    if (not fPassive) and (fObserver <> nil) and
+      (((aMessage.Msg = CM_CONTROLCHANGE) and (aMessage.LParam <> 0)) or
+      ((aMessage.Msg = CM_CONTROLLISTCHANGE) and (aMessage.LParam = 0))) then
+    begin
+      fObserver.ControlChanged;
+    end;
+
+    lOriginalWindowProc(aMessage);
+  finally
+    EndDispatch;
+  end;
 end;
 
 constructor TAccessibilityHintFormObserver.Create(aController: TAccessibilityHintController; aForm: TCustomForm);

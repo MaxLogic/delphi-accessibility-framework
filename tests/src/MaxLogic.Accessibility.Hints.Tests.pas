@@ -23,9 +23,13 @@ type
     [Test]
     procedure ManagerApplicationInstallObservesControlBalloonHintsOnMouseEnter;
     [Test]
+    procedure ManagerApplicationInstallUsesFinalControlHintAfterMouseEnterMutation;
+    [Test]
     procedure BalloonDescriptionSuppressionIsOneShot;
     [Test]
     procedure FormInstallObservesControlBalloonHintsOnMouseEnter;
+    [Test]
+    procedure FormInstallUsesFinalControlHintAfterMouseEnterMutation;
     [Test]
     procedure FormInstallDoesNotHookApplicationHintEvents;
     [Test]
@@ -97,6 +101,14 @@ type
   public
     procedure HandleHint(aSender: TObject);
     property Calls: Integer read fCalls;
+  end;
+
+  THintMutationProbe = class
+  private
+    fNewHint: string;
+  public
+    constructor Create(const aNewHint: string);
+    procedure HandleMouseEnter(aSender: TObject);
   end;
 
   THintUninstallProbe = class
@@ -180,6 +192,20 @@ end;
 procedure THintChainProbe.HandleHint(aSender: TObject);
 begin
   Inc(fCalls);
+end;
+
+constructor THintMutationProbe.Create(const aNewHint: string);
+begin
+  inherited Create;
+  fNewHint := aNewHint;
+end;
+
+procedure THintMutationProbe.HandleMouseEnter(aSender: TObject);
+begin
+  if aSender is TControl then
+  begin
+    TControl(aSender).Hint := fNewHint;
+  end;
 end;
 
 procedure THintUninstallProbe.HandleMouseEnter(aSender: TObject);
@@ -403,6 +429,54 @@ begin
   end;
 end;
 
+procedure TAccessibilityHintTests.ManagerApplicationInstallUsesFinalControlHintAfterMouseEnterMutation;
+var
+  lApi: IHintTestUiaApi;
+  lBalloonHint: TBalloonHint;
+  lForm: TForm;
+  lOriginalHint: TNotifyEvent;
+  lOriginalHintText: string;
+  lOriginalShowHint: TShowHintEvent;
+  lPanel: TPanel;
+  lProbe: THintMutationProbe;
+begin
+  TAccessibilityManager.Uninstall;
+  lOriginalHint := Application.OnHint;
+  lOriginalShowHint := Application.OnShowHint;
+  lOriginalHintText := Application.Hint;
+  lApi := THintTestUiaApi.Create;
+  lForm := TForm.Create(nil);
+  lBalloonHint := TBalloonHint.Create(nil);
+  lProbe := THintMutationProbe.Create('Final title|Final description');
+  try
+    lPanel := TPanel.Create(lForm);
+    lPanel.Hint := 'Initial title|Initial description';
+    lPanel.CustomHint := lBalloonHint;
+    lPanel.ShowHint := True;
+    lPanel.OnMouseEnter := lProbe.HandleMouseEnter;
+    lPanel.Parent := lForm;
+
+    TAccessibilityManagerInternals.SetUiaApi(lApi);
+    lApi.SetClientsAreListening(True);
+    TAccessibilityManager.Install(Application);
+
+    lPanel.Perform(CM_MOUSEENTER, 0, 0);
+
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('Final title: Final description', lApi.LastDisplayString);
+  finally
+    TAccessibilityManager.Uninstall;
+    TAccessibilityManagerInternals.SetUiaApi(nil);
+    Application.OnHint := nil;
+    Application.Hint := lOriginalHintText;
+    Application.OnHint := lOriginalHint;
+    Application.OnShowHint := lOriginalShowHint;
+    lProbe.Free;
+    lBalloonHint.Free;
+    lForm.Free;
+  end;
+end;
+
 procedure TAccessibilityHintTests.BalloonDescriptionSuppressionIsOneShot;
 var
   lApi: IHintTestUiaApi;
@@ -464,6 +538,54 @@ begin
     Application.Hint := lOriginalHintText;
     Application.OnHint := lOriginalHint;
     Application.OnShowHint := lOriginalShowHint;
+    lBalloonHint.Free;
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityHintTests.FormInstallUsesFinalControlHintAfterMouseEnterMutation;
+var
+  lApi: IHintTestUiaApi;
+  lBalloonHint: TBalloonHint;
+  lForm: TForm;
+  lOriginalHint: TNotifyEvent;
+  lOriginalHintText: string;
+  lOriginalShowHint: TShowHintEvent;
+  lPanel: TPanel;
+  lProbe: THintMutationProbe;
+begin
+  TAccessibilityManager.Uninstall;
+  lOriginalHint := Application.OnHint;
+  lOriginalShowHint := Application.OnShowHint;
+  lOriginalHintText := Application.Hint;
+  lApi := THintTestUiaApi.Create;
+  lForm := TForm.Create(nil);
+  lBalloonHint := TBalloonHint.Create(nil);
+  lProbe := THintMutationProbe.Create('Scoped final title|Scoped final description');
+  try
+    lPanel := TPanel.Create(lForm);
+    lPanel.Hint := 'Scoped initial title|Scoped initial description';
+    lPanel.CustomHint := lBalloonHint;
+    lPanel.ShowHint := True;
+    lPanel.OnMouseEnter := lProbe.HandleMouseEnter;
+    lPanel.Parent := lForm;
+
+    TAccessibilityManagerInternals.SetUiaApi(lApi);
+    lApi.SetClientsAreListening(True);
+    TAccessibilityManager.Install(lForm);
+
+    lPanel.Perform(CM_MOUSEENTER, 0, 0);
+
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('Scoped final title: Scoped final description', lApi.LastDisplayString);
+  finally
+    TAccessibilityManager.Uninstall;
+    TAccessibilityManagerInternals.SetUiaApi(nil);
+    Application.OnHint := nil;
+    Application.Hint := lOriginalHintText;
+    Application.OnHint := lOriginalHint;
+    Application.OnShowHint := lOriginalShowHint;
+    lProbe.Free;
     lBalloonHint.Free;
     lForm.Free;
   end;
@@ -838,6 +960,7 @@ begin
     lPanel.Perform(CM_MOUSEENTER, 0, 0);
 
     Assert.AreEqual(0, TAccessibilityManagerInternals.InstalledFormCount);
+    Assert.AreEqual(0, lApi.NotificationCalls);
   finally
     TAccessibilityManager.Uninstall;
     TAccessibilityManagerInternals.SetUiaApi(nil);

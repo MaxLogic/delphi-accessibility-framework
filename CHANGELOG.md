@@ -2,6 +2,7 @@
 
 ## 2026-06-18
 ### Fixed
+- Custom/balloon hint announcements now use the final hint text after a control mutates `Hint` in `OnMouseEnter`.
 - Disabled `TSpeedButton` UIA Invoke/Toggle automation no longer triggers button clicks or toggles `Down`.
 
 ### Added

@@ -581,13 +581,21 @@ begin
 end;
 
 function TAccessibilityVclControlProvider.Invoke: HResult;
+var
+  lButton: TSpeedButton;
 begin
   if IsDisconnected or not (fControl is TSpeedButton) then
   begin
     Exit(UIA_E_ELEMENTNOTAVAILABLE);
   end;
 
-  TSpeedButton(fControl).Click;
+  lButton := TSpeedButton(fControl);
+  if not lButton.Enabled then
+  begin
+    Exit(S_OK);
+  end;
+
+  lButton.Click;
   Result := S_OK;
 end;
 
@@ -609,6 +617,11 @@ begin
   if not SpeedButtonSupportsToggle(lButton) then
   begin
     Exit(E_NOTIMPL);
+  end;
+
+  if not lButton.Enabled then
+  begin
+    Exit(S_OK);
   end;
 
   if lButton.Down and not lButton.AllowAllUp then

@@ -1,6 +1,9 @@
 # Changelog
 
 ## 2026-06-18
+### Fixed
+- Disabled `TSpeedButton` UIA Invoke/Toggle automation no longer triggers button clicks or toggles `Down`.
+
 ### Added
 - Added adoption documentation, UIA probe documentation, and an NVDA manual checklist for the current VCL accessibility coverage.
 - Added opt-in UIA DataGrid/cell provider support for TMS `TAdvStringGrid`, including stripped HTML text, wide text fallback, per-cell hit testing, current-cell focus, hidden row/column remapping, and scrolled-cell pruning.

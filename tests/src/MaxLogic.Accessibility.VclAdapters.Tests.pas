@@ -13,6 +13,8 @@ type
     [Test]
     procedure DefaultAdaptersExposeUsefulNonWindowedControlsOnly;
     [Test]
+    procedure DisabledSpeedButtonAutomationDoesNotInvokeClickOrToggle;
+    [Test]
     procedure ProviderTreeExposesVclControlProperties;
     [Test]
     procedure SpeedButtonProviderSupportsInvokeAndOptionalToggle;
@@ -43,6 +45,14 @@ type
     property Clicks: Integer read fClicks;
   end;
 
+  TProbeSpeedButton = class(TSpeedButton)
+  private
+    fClickCalls: Integer;
+  public
+    procedure Click; override;
+    property ClickCalls: Integer read fClickCalls;
+  end;
+
 procedure TCaptionGraphicControl.Paint;
 begin
 end;
@@ -50,6 +60,12 @@ end;
 procedure TClickRecorder.Click(aSender: TObject);
 begin
   Inc(fClicks);
+end;
+
+procedure TProbeSpeedButton.Click;
+begin
+  Inc(fClickCalls);
+  inherited Click;
 end;
 
 function FirstChildFragment(const aProvider: IAccessibilityProviderNode): IRawElementProviderFragment;
@@ -159,6 +175,63 @@ begin
     Assert.AreEqual('Custom graphic', lTree.FindNode(lGraphic).Name);
     Assert.AreEqual('Graphic help', lTree.FindNode(lGraphic).HelpText);
     Assert.IsNull(lTree.FindNode(lDecorativeGraphic));
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityVclAdaptersTests.DisabledSpeedButtonAutomationDoesNotInvokeClickOrToggle;
+var
+  lForm: TForm;
+  lInvoke: IInvokeProvider;
+  lInvokeFragment: IRawElementProviderFragment;
+  lPattern: IUnknown;
+  lProvider: IAccessibilityProviderNode;
+  lRunButton: TProbeSpeedButton;
+  lToggle: IToggleProvider;
+  lToggleButton: TProbeSpeedButton;
+  lToggleFragment: IRawElementProviderFragment;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lRunButton := TProbeSpeedButton.Create(lForm);
+    lRunButton.Caption := '&Run';
+    lRunButton.Enabled := False;
+    lRunButton.Parent := lForm;
+
+    lToggleButton := TProbeSpeedButton.Create(lForm);
+    lToggleButton.Caption := '&Pinned';
+    lToggleButton.GroupIndex := 1;
+    lToggleButton.AllowAllUp := True;
+    lToggleButton.Down := False;
+    lToggleButton.Enabled := False;
+    lToggleButton.Parent := lForm;
+
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lInvokeFragment := FirstChildFragment(lProvider);
+    lToggleFragment := NextSiblingFragment(lInvokeFragment);
+
+    lPattern := ProviderPattern(lInvokeFragment, UIA_InvokePatternId);
+    Assert.IsTrue(Supports(lPattern, IInvokeProvider, lInvoke));
+    lInvoke.Invoke;
+    Assert.AreEqual(0, lRunButton.ClickCalls);
+
+    lPattern := ProviderPattern(lToggleFragment, UIA_InvokePatternId);
+    Assert.IsTrue(Supports(lPattern, IInvokeProvider, lInvoke));
+    lInvoke.Invoke;
+    Assert.AreEqual(0, lToggleButton.ClickCalls);
+    Assert.IsFalse(lToggleButton.Down);
+
+    lPattern := ProviderPattern(lToggleFragment, UIA_TogglePatternId);
+    Assert.IsTrue(Supports(lPattern, IToggleProvider, lToggle));
+    lToggle.Toggle;
+    Assert.AreEqual(0, lToggleButton.ClickCalls);
+    Assert.IsFalse(lToggleButton.Down);
+
+    lToggleButton.Down := True;
+    lToggle.Toggle;
+    Assert.AreEqual(0, lToggleButton.ClickCalls);
+    Assert.IsTrue(lToggleButton.Down);
   finally
     lForm.Free;
   end;
@@ -283,6 +356,7 @@ begin
     Assert.AreEqual(ToggleState_Off, lToggleState);
     Assert.AreEqual(S_OK, lToggle.Toggle);
     Assert.IsTrue(lToggleButton.Down);
+    Assert.AreEqual(3, lRecorder.Clicks);
     Assert.AreEqual(S_OK, lToggle.Get_ToggleState(lToggleState));
     Assert.AreEqual(ToggleState_On, lToggleState);
   finally

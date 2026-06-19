@@ -51,7 +51,7 @@ implementation
 
 uses
   System.SysUtils, Winapi.Messages, Vcl.StdActns,
-  MaxLogic.Accessibility.UIAutomationCore;
+  MaxLogic.Accessibility.Text, MaxLogic.Accessibility.UIAutomationCore;
 
 type
   TAccessibilityHintFormObserver = class;
@@ -92,32 +92,6 @@ var
   gRetainedHintControllers: TList<TAccessibilityHintController>;
   gRetainedHintControlHooks: TList<TAccessibilityHintControlHook>;
 
-function CleanText(const aText: string): string;
-var
-  i: Integer;
-begin
-  Result := '';
-  i := 1;
-  while i <= Length(aText) do
-  begin
-    if aText[i] = '&' then
-    begin
-      if (i < Length(aText)) and (aText[i + 1] = '&') then
-      begin
-        Result := Result + '&';
-        Inc(i, 2);
-      end else begin
-        Inc(i);
-      end;
-    end else begin
-      Result := Result + aText[i];
-      Inc(i);
-    end;
-  end;
-
-  Result := Trim(Result);
-end;
-
 function SameNotifyEvent(const aLeft: TNotifyEvent; const aRight: TNotifyEvent): Boolean;
 begin
   Result := (TMethod(aLeft).Code = TMethod(aRight).Code) and (TMethod(aLeft).Data = TMethod(aRight).Data);
@@ -133,18 +107,18 @@ begin
   Result := (TMethod(aLeft).Code = TMethod(aRight).Code) and (TMethod(aLeft).Data = TMethod(aRight).Data);
 end;
 
-procedure SplitHint(const aHint: string; out aShortHint: string; out aLongHint: string);
+procedure SplitVisibleHintParts(const aHint: string; out aShortHint: string; out aLongHint: string);
 begin
-  aShortHint := CleanText(GetShortHint(aHint));
-  aLongHint := CleanText(GetLongHint(aHint));
+  aShortHint := TAccessibilityText.Clean(GetShortHint(aHint));
+  aLongHint := TAccessibilityText.Clean(GetLongHint(aHint));
 end;
 
 function HintDisplayText(const aHint: string): string;
 begin
-  Result := CleanText(GetLongHint(aHint));
+  Result := TAccessibilityText.Clean(GetLongHint(aHint));
   if Result = '' then
   begin
-    Result := CleanText(GetShortHint(aHint));
+    Result := TAccessibilityText.Clean(GetShortHint(aHint));
   end;
 end;
 
@@ -153,8 +127,8 @@ var
   lDescription: string;
   lTitle: string;
 begin
-  lTitle := CleanText(aTitle);
-  lDescription := CleanText(aDescription);
+  lTitle := TAccessibilityText.Clean(aTitle);
+  lDescription := TAccessibilityText.Clean(aDescription);
   if (lTitle <> '') and (lDescription <> '') then
   begin
     Result := lTitle + ': ' + lDescription;
@@ -179,11 +153,11 @@ function StripBalloonImageIndex(const aDescription: string): string;
 var
   lDelimiter: Integer;
 begin
-  Result := CleanText(aDescription);
+  Result := TAccessibilityText.Clean(aDescription);
   lDelimiter := Pos('|', Result);
   if lDelimiter > 0 then
   begin
-    Result := CleanText(Copy(Result, 1, Pred(lDelimiter)));
+    Result := TAccessibilityText.Clean(Copy(Result, 1, Pred(lDelimiter)));
   end;
 end;
 
@@ -580,9 +554,9 @@ var
   lFollowUpHint: string;
   lTitle: string;
 begin
-  lTitle := CleanText(aTitle);
-  lDescription := CleanText(aDescription);
-  lFollowUpHint := CleanText(aFollowUpHint);
+  lTitle := TAccessibilityText.Clean(aTitle);
+  lDescription := TAccessibilityText.Clean(aDescription);
+  lFollowUpHint := TAccessibilityText.Clean(aFollowUpHint);
   Result := NotifyText(BalloonDisplayText(aTitle, aDescription), 'vcl-balloon-hint');
   if not Result then
   begin
@@ -621,7 +595,7 @@ begin
     Exit;
   end;
 
-  lTitle := CleanText(GetShortHint(aControl.Hint));
+  lTitle := TAccessibilityText.Clean(GetShortHint(aControl.Hint));
   if Pos('|', aControl.Hint) <> 0 then
   begin
     lFollowUpHint := GetLongHint(aControl.Hint);
@@ -639,7 +613,7 @@ var
   lText: string;
 begin
   Result := False;
-  lText := CleanText(aText);
+  lText := TAccessibilityText.Clean(aText);
   if (lText = '') or (lText = fLastNotificationText) or (fProvider = nil) then
   begin
     Exit;
@@ -745,14 +719,14 @@ begin
     Exit;
   end;
 
-  SplitHint(aHintInfo.HintControl.Hint, lShortHint, lLongHint);
-  Result := (lShortHint <> '') and (lLongHint <> '') and (CleanText(aHint) = lShortHint) and
+  SplitVisibleHintParts(aHintInfo.HintControl.Hint, lShortHint, lLongHint);
+  Result := (lShortHint <> '') and (lLongHint <> '') and (TAccessibilityText.Clean(aHint) = lShortHint) and
     (lLongHint = fLastNotificationText);
 end;
 
 procedure TAccessibilityHintController.NotifyBalloonHint(const aTitle: string; const aDescription: string);
 begin
-  if CleanText(aDescription) <> '' then
+  if TAccessibilityText.Clean(aDescription) <> '' then
   begin
     NotifyBalloonHintCore(aTitle, aDescription, aDescription);
   end else begin
@@ -780,7 +754,7 @@ var
   lText: string;
 begin
   lText := HintDisplayText(aHint);
-  lCleanHint := CleanText(aHint);
+  lCleanHint := TAccessibilityText.Clean(aHint);
   lStrippedHint := StripBalloonImageIndex(aHint);
   lPendingFollowUpHint := fPendingBalloonFollowUpHint;
   lPendingFollowUpText := fPendingBalloonFollowUpText;

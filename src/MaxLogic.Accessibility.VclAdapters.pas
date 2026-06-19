@@ -32,7 +32,8 @@ implementation
 
 uses
   System.Actions, System.Generics.Collections, System.SysUtils, System.Types, System.TypInfo, Winapi.ActiveX,
-  Winapi.Windows, Vcl.Buttons, Vcl.ExtCtrls, Vcl.Grids, Vcl.StdCtrls, MaxLogic.Accessibility.UIAutomationCore;
+  Winapi.Windows, Vcl.Buttons, Vcl.ExtCtrls, Vcl.Grids, Vcl.StdCtrls, MaxLogic.Accessibility.Text,
+  MaxLogic.Accessibility.UIAutomationCore;
 
 type
   IAccessibilityVclRootProvider = interface
@@ -167,54 +168,6 @@ begin
   Result := (aCellRect.Width > 0) and (aCellRect.Height > 0);
 end;
 
-function CleanText(const aText: string): string;
-var
-  i: Integer;
-begin
-  Result := '';
-  i := 1;
-  while i <= Length(aText) do
-  begin
-    if aText[i] = '&' then
-    begin
-      if (i < Length(aText)) and (aText[i + 1] = '&') then
-      begin
-        Result := Result + '&';
-        Inc(i, 2);
-      end else begin
-        Inc(i);
-      end;
-    end else begin
-      Result := Result + aText[i];
-      Inc(i);
-    end;
-  end;
-
-  Result := Trim(Result);
-end;
-
-function IsIconFontOnlyText(const aText: string): Boolean;
-var
-  i: Integer;
-  lHasGlyph: Boolean;
-begin
-  lHasGlyph := False;
-  for i := 1 to Length(aText) do
-  begin
-    if not CharInSet(aText[i], [#0..#32]) then
-    begin
-      if (Ord(aText[i]) < $E000) or (Ord(aText[i]) > $F8FF) then
-      begin
-        Exit(False);
-      end;
-
-      lHasGlyph := True;
-    end;
-  end;
-
-  Result := lHasGlyph;
-end;
-
 function ReadObjectProperty(aObject: TObject; const aPropertyName: string): TObject;
 var
   lPropInfo: PPropInfo;
@@ -235,24 +188,7 @@ begin
   lPropInfo := GetPropInfo(aObject.ClassInfo, aPropertyName);
   if (lPropInfo <> nil) and (lPropInfo.PropType^.Kind in [tkString, tkLString, tkWString, tkUString]) then
   begin
-    Result := CleanText(GetStrProp(aObject, lPropInfo));
-  end;
-end;
-
-procedure SplitHint(const aHint: string; out aName: string; out aHelpText: string);
-var
-  lDelimiter: Integer;
-  lHint: string;
-begin
-  lHint := Trim(aHint);
-  lDelimiter := Pos('|', lHint);
-  if lDelimiter > 0 then
-  begin
-    aName := CleanText(Copy(lHint, 1, Pred(lDelimiter)));
-    aHelpText := CleanText(Copy(lHint, lDelimiter + 1, MaxInt));
-  end else begin
-    aName := CleanText(lHint);
-    aHelpText := aName;
+    Result := TAccessibilityText.Clean(GetStrProp(aObject, lPropInfo));
   end;
 end;
 
@@ -261,7 +197,7 @@ var
   lText: string;
 begin
   lText := ReadStringProperty(aControl, aPropertyName);
-  Result := (lText <> '') and not IsIconFontOnlyText(lText);
+  Result := (lText <> '') and not TAccessibilityText.IsIconFontOnly(lText);
 end;
 
 function HasUsefulExplicitText(aControl: TControl): Boolean;
@@ -282,7 +218,7 @@ begin
     Exit(True);
   end;
 
-  SplitHint(ReadStringProperty(aControl, 'Hint'), lHintName, lHelpText);
+  TAccessibilityText.SplitHint(ReadStringProperty(aControl, 'Hint'), lHintName, lHelpText);
   if (lHintName <> '') or (lHelpText <> '') then
   begin
     Exit(True);
@@ -291,8 +227,8 @@ begin
   lAction := ReadObjectProperty(aControl, 'Action');
   if lAction is TContainedAction then
   begin
-    if (CleanText(TContainedAction(lAction).Caption) <> '') or
-      (CleanText(TContainedAction(lAction).Hint) <> '') then
+    if (TAccessibilityText.Clean(TContainedAction(lAction).Caption) <> '') or
+      (TAccessibilityText.Clean(TContainedAction(lAction).Hint) <> '') then
     begin
       Exit(True);
     end;

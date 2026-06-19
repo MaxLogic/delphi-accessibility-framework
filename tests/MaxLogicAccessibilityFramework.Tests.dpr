@@ -16,6 +16,7 @@ uses
   MaxLogic.Accessibility.Scanner.Tests in 'src\MaxLogic.Accessibility.Scanner.Tests.pas',
   MaxLogic.Accessibility.Smoke.Tests in 'src\MaxLogic.Accessibility.Smoke.Tests.pas',
   MaxLogic.Accessibility.StringGrid.Tests in 'src\MaxLogic.Accessibility.StringGrid.Tests.pas',
+  MaxLogic.Accessibility.Text.Tests in 'src\MaxLogic.Accessibility.Text.Tests.pas',
   MaxLogic.Accessibility.UIAutomationCore.Tests in 'src\MaxLogic.Accessibility.UIAutomationCore.Tests.pas',
   MaxLogic.Accessibility.VclAdapters.Tests in 'src\MaxLogic.Accessibility.VclAdapters.Tests.pas';
 

@@ -83,7 +83,7 @@ type
 implementation
 
 uses
-  System.Actions, System.Classes, System.SysUtils, System.TypInfo, Winapi.Messages;
+  System.Actions, System.Classes, System.SysUtils, System.TypInfo, Winapi.Messages, MaxLogic.Accessibility.Text;
 
 type
   TAccessibilityScanNode = class(TInterfacedObject, IAccessibilityScanNode)
@@ -158,54 +158,6 @@ type
 var
   gRetainedHooks: TList<TAccessibilityControlHook>;
 
-function CleanText(const aText: string): string;
-var
-  i: Integer;
-begin
-  Result := '';
-  i := 1;
-  while i <= Length(aText) do
-  begin
-    if aText[i] = '&' then
-    begin
-      if (i < Length(aText)) and (aText[i + 1] = '&') then
-      begin
-        Result := Result + '&';
-        Inc(i, 2);
-      end else begin
-        Inc(i);
-      end;
-    end else begin
-      Result := Result + aText[i];
-      Inc(i);
-    end;
-  end;
-
-  Result := Trim(Result);
-end;
-
-function IsIconFontOnlyText(const aText: string): Boolean;
-var
-  i: Integer;
-  lHasGlyph: Boolean;
-begin
-  lHasGlyph := False;
-  for i := 1 to Length(aText) do
-  begin
-    if not CharInSet(aText[i], [#0..#32]) then
-    begin
-      if (Ord(aText[i]) < $E000) or (Ord(aText[i]) > $F8FF) then
-      begin
-        Exit(False);
-      end;
-
-      lHasGlyph := True;
-    end;
-  end;
-
-  Result := lHasGlyph;
-end;
-
 function SameWndMethod(const aLeft: TWndMethod; const aRight: TWndMethod): Boolean;
 begin
   Result := (TMethod(aLeft).Code = TMethod(aRight).Code) and (TMethod(aLeft).Data = TMethod(aRight).Data);
@@ -231,7 +183,7 @@ begin
   lPropInfo := GetPropInfo(aObject.ClassInfo, aPropertyName);
   if (lPropInfo <> nil) and (lPropInfo.PropType^.Kind in [tkString, tkLString, tkWString, tkUString]) then
   begin
-    Result := CleanText(GetStrProp(aObject, lPropInfo));
+    Result := TAccessibilityText.Clean(GetStrProp(aObject, lPropInfo));
   end;
 end;
 
@@ -268,23 +220,6 @@ begin
       Result[j] := lTemp;
       Dec(j);
     end;
-  end;
-end;
-
-procedure SplitHint(const aHint: string; out aName: string; out aHelpText: string);
-var
-  lDelimiter: Integer;
-  lHint: string;
-begin
-  lHint := Trim(aHint);
-  lDelimiter := Pos('|', lHint);
-  if lDelimiter > 0 then
-  begin
-    aName := CleanText(Copy(lHint, 1, Pred(lDelimiter)));
-    aHelpText := CleanText(Copy(lHint, lDelimiter + 1, MaxInt));
-  end else begin
-    aName := CleanText(lHint);
-    aHelpText := aName;
   end;
 end;
 
@@ -376,7 +311,7 @@ begin
 
   Result.Name := ReadStringProperty(aControl, 'AccessibleName');
   lHint := ReadStringProperty(aControl, 'Hint');
-  SplitHint(lHint, lActionHintName, Result.HelpText);
+  TAccessibilityText.SplitHint(lHint, lActionHintName, Result.HelpText);
   if Result.Name <> '' then
   begin
     Exit;
@@ -385,8 +320,8 @@ begin
   lAction := ReadObjectProperty(aControl, 'Action');
   if lAction is TContainedAction then
   begin
-    Result.Name := CleanText(TContainedAction(lAction).Caption);
-    SplitHint(TContainedAction(lAction).Hint, lActionHintName, lHelpText);
+    Result.Name := TAccessibilityText.Clean(TContainedAction(lAction).Caption);
+    TAccessibilityText.SplitHint(TContainedAction(lAction).Hint, lActionHintName, lHelpText);
     if lHelpText <> '' then
     begin
       Result.HelpText := lHelpText;
@@ -407,7 +342,7 @@ begin
   lCaption := ReadStringProperty(aControl, 'Caption');
   if lCaption <> '' then
   begin
-    lIconOnly := IsIconFontOnlyText(lCaption);
+    lIconOnly := TAccessibilityText.IsIconFontOnly(lCaption);
     if not lIconOnly then
     begin
       Result.Name := lCaption;
@@ -418,8 +353,8 @@ begin
   lText := ReadStringProperty(aControl, 'Text');
   if lText <> '' then
   begin
-    lIconOnly := lIconOnly or IsIconFontOnlyText(lText);
-    if not IsIconFontOnlyText(lText) then
+    lIconOnly := lIconOnly or TAccessibilityText.IsIconFontOnly(lText);
+    if not TAccessibilityText.IsIconFontOnly(lText) then
     begin
       Result.Name := lText;
       Exit;
@@ -438,7 +373,7 @@ begin
     Exit;
   end;
 
-  Result.Name := CleanText(aControl.Name);
+  Result.Name := TAccessibilityText.Clean(aControl.Name);
 end;
 
 constructor TAccessibilityScanNode.Create(aControl: TControl; const aName: string; const aHelpText: string);
@@ -819,7 +754,8 @@ begin
     raise EArgumentException.Create('Form must not be nil.');
   end;
 
-  lRoot := TAccessibilityScanNode.Create(aForm, CleanText(aForm.Caption), CleanText(aForm.Hint));
+  lRoot := TAccessibilityScanNode.Create(aForm, TAccessibilityText.Clean(aForm.Caption),
+    TAccessibilityText.Clean(aForm.Hint));
   ScanControlChildren(aForm, lRoot, aRegistry);
   Result := TAccessibilityScanTree.Create(lRoot, 1);
 end;

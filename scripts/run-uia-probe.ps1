@@ -45,6 +45,10 @@ function Invoke-BasicVclControlsProbe {
     if ($lText -notmatch 'UIA_PROBE_OK BasicVclControls:') {
         throw 'BasicVclControls provider probe did not confirm UIA fragment properties.'
     }
+
+    if ($lText -notmatch 'install-path=manager-wm-getobject') {
+        throw 'BasicVclControls provider probe did not enter through TAccessibilityManager.Install(Form) and WM_GETOBJECT.'
+    }
 }
 
 function Invoke-HintsProbe {

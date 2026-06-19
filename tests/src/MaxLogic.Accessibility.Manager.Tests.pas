@@ -19,6 +19,8 @@ type
     [Test]
     procedure FormInstallHandlesUiaGetObjectThroughDefaultProvider;
     [Test]
+    procedure LaterWindowProcHookCanCallManagerAfterUninstallWithoutUiaReturn;
+    [Test]
     procedure DestroyedFormIsRemovedFromInstallState;
     [Test]
     procedure InstallerFailureDoesNotMarkFormInstalled;
@@ -32,7 +34,7 @@ implementation
 
 uses
   System.Classes, System.Generics.Collections, System.SysUtils, System.Variants, Winapi.Messages, Winapi.Windows,
-  Vcl.Forms, Vcl.StdCtrls, MaxLogic.Accessibility.Manager, MaxLogic.Accessibility.ProviderCore,
+  Vcl.Controls, Vcl.Forms, Vcl.StdCtrls, MaxLogic.Accessibility.Manager, MaxLogic.Accessibility.ProviderCore,
   MaxLogic.Accessibility.UIAutomationCore;
 
 type
@@ -106,6 +108,16 @@ type
     property Prior: TNotifyEvent read fPrior write fPrior;
   end;
 
+  TWindowProcProbe = class
+  private
+    fCalls: Integer;
+    fPrior: TWndMethod;
+  public
+    procedure WindowProc(var aMessage: TMessage);
+    property Calls: Integer read fCalls;
+    property Prior: TWndMethod read fPrior write fPrior;
+  end;
+
 constructor TFormInstallRecorder.Create;
 begin
   inherited Create;
@@ -159,6 +171,15 @@ begin
   if Assigned(fPrior) then
   begin
     fPrior(aSender);
+  end;
+end;
+
+procedure TWindowProcProbe.WindowProc(var aMessage: TMessage);
+begin
+  Inc(fCalls);
+  if Assigned(fPrior) then
+  begin
+    fPrior(aMessage);
   end;
 end;
 
@@ -363,6 +384,55 @@ begin
   finally
     lForm.Free;
     ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.LaterWindowProcHookCanCallManagerAfterUninstallWithoutUiaReturn;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lLabel: TLabel;
+  lMessage: TMessage;
+  lOriginalWindowProc: TWndMethod;
+  lProbe: TWindowProcProbe;
+begin
+  ResetManager;
+  lForm := nil;
+  lOriginalWindowProc := nil;
+  lProbe := nil;
+  lApi := TManagerTestUiaApi.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  try
+    lForm := TForm.Create(nil);
+    lProbe := TWindowProcProbe.Create;
+    lOriginalWindowProc := lForm.WindowProc;
+    lLabel := TLabel.Create(lForm);
+    lLabel.Caption := '&Customer';
+    lLabel.Parent := lForm;
+
+    TAccessibilityManager.Install(lForm);
+    lProbe.Prior := lForm.WindowProc;
+    lForm.WindowProc := lProbe.WindowProc;
+
+    TAccessibilityManager.Uninstall;
+    Assert.IsTrue(lApi.DisconnectCalls > 0);
+
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.LParam := UiaRootObjectId;
+    lForm.WindowProc(lMessage);
+
+    Assert.AreEqual(1, lProbe.Calls);
+    Assert.AreEqual(0, lApi.ReturnCalls);
+    Assert.AreEqual(0, lMessage.Result);
+  finally
+    if (lForm <> nil) and Assigned(lOriginalWindowProc) then
+    begin
+      lForm.WindowProc := lOriginalWindowProc;
+    end;
+    lForm.Free;
+    ResetManager;
+    lProbe.Free;
   end;
 end;
 

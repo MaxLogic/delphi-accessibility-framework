@@ -36,6 +36,7 @@ type
     ['{6CA4B57C-626A-48B6-98C9-7313E69692E2}']
     function LastDisplayString: string;
     function NotificationCalls: Integer;
+    function ReturnedProvider: IRawElementProviderSimple;
     procedure SetClientsAreListening(aValue: Boolean);
   end;
 
@@ -44,12 +45,14 @@ type
     fClientsAreListening: Boolean;
     fLastDisplayString: string;
     fNotificationCalls: Integer;
+    fReturnedProvider: IRawElementProviderSimple;
   public
     function ClientsAreListening: Boolean;
     function DisconnectProvider(const aProvider: IRawElementProviderSimple): HRESULT;
     function HostProviderFromHwnd(aHwnd: HWND; out aProvider: IRawElementProviderSimple): HRESULT;
     function LastDisplayString: string;
     function NotificationCalls: Integer;
+    function ReturnedProvider: IRawElementProviderSimple;
     function RaiseAutomationEvent(const aProvider: IRawElementProviderSimple; aEventId: EVENTID): HRESULT;
     function RaiseAutomationPropertyChanged(const aProvider: IRawElementProviderSimple; aPropertyId: PROPERTYID;
       const aOldValue: OleVariant; const aNewValue: OleVariant): HRESULT;
@@ -98,6 +101,11 @@ begin
   Result := fNotificationCalls;
 end;
 
+function TProbeUiaApi.ReturnedProvider: IRawElementProviderSimple;
+begin
+  Result := fReturnedProvider;
+end;
+
 function TProbeUiaApi.RaiseAutomationEvent(const aProvider: IRawElementProviderSimple; aEventId: EVENTID): HRESULT;
 begin
   Result := S_OK;
@@ -127,7 +135,8 @@ end;
 function TProbeUiaApi.ReturnRawElementProvider(aHwnd: HWND; aWParam: WPARAM; aLParam: LPARAM;
   const aProvider: IRawElementProviderSimple): LRESULT;
 begin
-  Result := 0;
+  fReturnedProvider := aProvider;
+  Result := 97531;
 end;
 
 procedure TProbeUiaApi.SetClientsAreListening(aValue: Boolean);
@@ -336,15 +345,17 @@ var
   lGraphic: TProbeGraphicControl;
   lGraphicFragment: IRawElementProviderFragment;
   lInvoke: IInvokeProvider;
+  lApi: IProbeUiaApi;
   lLabel: TLabel;
   lLabelFragment: IRawElementProviderFragment;
+  lMessage: TMessage;
   lNestedFragment: IRawElementProviderFragment;
   lNestedLabel: TLabel;
   lPanel: TPanel;
   lPanelFragment: IRawElementProviderFragment;
   lPattern: IUnknown;
-  lProvider: IAccessibilityProviderNode;
   lRecorder: TProbeClickRecorder;
+  lRootFragment: IRawElementProviderFragment;
   lRunButton: TSpeedButton;
   lRunFragment: IRawElementProviderFragment;
   lToggle: IToggleProvider;
@@ -402,8 +413,25 @@ begin
     lDecorativeGraphic.Name := 'DecorativeGraphic';
     lDecorativeGraphic.Parent := lForm;
 
-    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
-    lLabelFragment := FirstChild(lProvider, 'label fragment');
+    lApi := TProbeUiaApi.Create;
+    TAccessibilityManagerInternals.SetUiaApi(lApi);
+    try
+      TAccessibilityManager.Install(lForm);
+      lForm.HandleNeeded;
+
+      lMessage := Default(TMessage);
+      lMessage.Msg := WM_GETOBJECT;
+      lMessage.LParam := UiaRootObjectId;
+      lForm.WindowProc(lMessage);
+      Require(lMessage.Result = 97531, 'Manager install path did not return a UIA provider message result.');
+      Require(lApi.ReturnedProvider <> nil, 'Manager install path did not pass a provider to UIA.');
+
+      lRootFragment := FragmentFromSimple(lApi.ReturnedProvider);
+    finally
+      TAccessibilityManagerInternals.SetUiaApi(nil);
+    end;
+
+    lLabelFragment := FirstNestedChild(lRootFragment, 'label fragment');
     lRunFragment := NextSibling(lLabelFragment, 'run speed-button fragment');
     lToggleFragment := NextSibling(lRunFragment, 'toggle speed-button fragment');
     lPanelFragment := NextSibling(lToggleFragment, 'panel fragment');
@@ -442,8 +470,9 @@ begin
     Require(lToggle.Get_ToggleState(lToggleState) = S_OK, 'Post-toggle state query failed.');
     Require(lToggleState = ToggleState_On, 'Post-toggle state mismatch.');
 
-    Writeln('UIA_PROBE_OK BasicVclControls: label provider=text name/help; speed button provider=button invoke/toggle; panel provider=pane with child; generic graphic-control provider=text; decorative controls omitted.');
+    Writeln('UIA_PROBE_OK BasicVclControls: install-path=manager-wm-getobject; label provider=text name/help; speed button provider=button invoke/toggle; panel provider=pane with child; generic graphic-control provider=text; decorative controls omitted.');
   finally
+    TAccessibilityManager.Uninstall;
     lRecorder.Free;
     lForm.Free;
   end;

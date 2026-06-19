@@ -3,9 +3,11 @@ program MaxLogicAccessibilityFrameworkSmoke;
 {$APPTYPE CONSOLE}
 
 uses
-  System.SysUtils, System.Variants, Winapi.ActiveX, Winapi.Windows, Vcl.Buttons, Vcl.Controls, Vcl.ExtCtrls,
-  Vcl.Forms, Vcl.StdCtrls,
+  System.SysUtils, System.Variants, Winapi.ActiveX, Winapi.Messages, Winapi.Windows, Vcl.Buttons, Vcl.Controls,
+  Vcl.ExtCtrls, Vcl.Forms, Vcl.StdCtrls,
   MaxLogic.Accessibility.Framework in '..\src\MaxLogic.Accessibility.Framework.pas',
+  MaxLogic.Accessibility.Hints in '..\src\MaxLogic.Accessibility.Hints.pas',
+  MaxLogic.Accessibility.Manager in '..\src\MaxLogic.Accessibility.Manager.pas',
   MaxLogic.Accessibility.ProviderCore in '..\src\MaxLogic.Accessibility.ProviderCore.pas',
   MaxLogic.Accessibility.UIAutomationCore in '..\src\MaxLogic.Accessibility.UIAutomationCore.pas',
   MaxLogic.Accessibility.VclAdapters in '..\src\MaxLogic.Accessibility.VclAdapters.pas';
@@ -28,6 +30,38 @@ type
     property Clicks: Integer read fClicks;
   end;
 
+  // The probe records UIA notifications locally because real delivery depends on an external UIA client.
+  IProbeUiaApi = interface(IAccessibilityUiaApi)
+    ['{6CA4B57C-626A-48B6-98C9-7313E69692E2}']
+    function LastDisplayString: string;
+    function NotificationCalls: Integer;
+    procedure SetClientsAreListening(aValue: Boolean);
+  end;
+
+  TProbeUiaApi = class(TInterfacedObject, IProbeUiaApi)
+  private
+    fClientsAreListening: Boolean;
+    fLastDisplayString: string;
+    fNotificationCalls: Integer;
+  public
+    function ClientsAreListening: Boolean;
+    function DisconnectProvider(const aProvider: IRawElementProviderSimple): HRESULT;
+    function HostProviderFromHwnd(aHwnd: HWND; out aProvider: IRawElementProviderSimple): HRESULT;
+    function LastDisplayString: string;
+    function NotificationCalls: Integer;
+    function RaiseAutomationEvent(const aProvider: IRawElementProviderSimple; aEventId: EVENTID): HRESULT;
+    function RaiseAutomationPropertyChanged(const aProvider: IRawElementProviderSimple; aPropertyId: PROPERTYID;
+      const aOldValue: OleVariant; const aNewValue: OleVariant): HRESULT;
+    function RaiseNotification(const aProvider: IRawElementProviderSimple; aNotificationKind: NotificationKind;
+      aNotificationProcessing: NotificationProcessing; const aDisplayString: WideString;
+      const aActivityId: WideString): HRESULT;
+    function RaiseStructureChanged(const aProvider: IRawElementProviderSimple; aStructureChangeType: StructureChangeType;
+      const aRuntimeId: TArray<Integer>): HRESULT;
+    function ReturnRawElementProvider(aHwnd: HWND; aWParam: WPARAM; aLParam: LPARAM;
+      const aProvider: IRawElementProviderSimple): LRESULT;
+    procedure SetClientsAreListening(aValue: Boolean);
+  end;
+
 procedure TProbeGraphicControl.Paint;
 begin
 end;
@@ -35,6 +69,69 @@ end;
 procedure TProbeClickRecorder.Click(aSender: TObject);
 begin
   Inc(fClicks);
+end;
+
+function TProbeUiaApi.ClientsAreListening: Boolean;
+begin
+  Result := fClientsAreListening;
+end;
+
+function TProbeUiaApi.DisconnectProvider(const aProvider: IRawElementProviderSimple): HRESULT;
+begin
+  Result := S_OK;
+end;
+
+function TProbeUiaApi.HostProviderFromHwnd(aHwnd: HWND; out aProvider: IRawElementProviderSimple): HRESULT;
+begin
+  aProvider := nil;
+  Result := S_FALSE;
+end;
+
+function TProbeUiaApi.LastDisplayString: string;
+begin
+  Result := fLastDisplayString;
+end;
+
+function TProbeUiaApi.NotificationCalls: Integer;
+begin
+  Result := fNotificationCalls;
+end;
+
+function TProbeUiaApi.RaiseAutomationEvent(const aProvider: IRawElementProviderSimple; aEventId: EVENTID): HRESULT;
+begin
+  Result := S_OK;
+end;
+
+function TProbeUiaApi.RaiseAutomationPropertyChanged(const aProvider: IRawElementProviderSimple;
+  aPropertyId: PROPERTYID; const aOldValue: OleVariant; const aNewValue: OleVariant): HRESULT;
+begin
+  Result := S_OK;
+end;
+
+function TProbeUiaApi.RaiseNotification(const aProvider: IRawElementProviderSimple; aNotificationKind: NotificationKind;
+  aNotificationProcessing: NotificationProcessing; const aDisplayString: WideString;
+  const aActivityId: WideString): HRESULT;
+begin
+  Inc(fNotificationCalls);
+  fLastDisplayString := aDisplayString;
+  Result := S_OK;
+end;
+
+function TProbeUiaApi.RaiseStructureChanged(const aProvider: IRawElementProviderSimple;
+  aStructureChangeType: StructureChangeType; const aRuntimeId: TArray<Integer>): HRESULT;
+begin
+  Result := S_OK;
+end;
+
+function TProbeUiaApi.ReturnRawElementProvider(aHwnd: HWND; aWParam: WPARAM; aLParam: LPARAM;
+  const aProvider: IRawElementProviderSimple): LRESULT;
+begin
+  Result := 0;
+end;
+
+procedure TProbeUiaApi.SetClientsAreListening(aValue: Boolean);
+begin
+  fClientsAreListening := aValue;
 end;
 
 procedure Require(aCondition: Boolean; const aMessage: string);
@@ -251,11 +348,90 @@ begin
   end;
 end;
 
+procedure RunHintsProbe;
+var
+  lApi: IProbeUiaApi;
+  lBalloonHint: TBalloonHint;
+  lBalloonLabel: TLabel;
+  lController: TAccessibilityHintController;
+  lForm: TForm;
+  lHintProvider: IAccessibilityProviderNode;
+  lLabel: TLabel;
+  lLabelFragment: IRawElementProviderFragment;
+  lMessage: TMessage;
+  lProvider: IAccessibilityProviderNode;
+begin
+  lApi := TProbeUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  lForm := TForm.Create(nil);
+  lBalloonHint := TBalloonHint.Create(nil);
+  try
+    lLabel := TLabel.Create(lForm);
+    lLabel.Caption := '&Name';
+    lLabel.Hint := 'Short hint|Long help text';
+    lLabel.Parent := lForm;
+
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm, nil, lApi);
+    lLabelFragment := FirstChild(lProvider, 'hint label fragment');
+    Require(ProviderStringProperty(lLabelFragment, UIA_HelpTextPropertyId) = 'Long help text',
+      'Label hint was not exposed as UIA HelpText.');
+
+    lHintProvider := TAccessibilityProviderFactory.CreateRoot([710], 0, lApi);
+    lController := TAccessibilityHintController.Create(nil, lHintProvider, lApi);
+    try
+      lController.NotifyVisibleHint('Short hint|Long help text');
+      Require(lApi.NotificationCalls = 1, 'Visible hint notification was not raised.');
+      Require(lApi.LastDisplayString = 'Long help text', 'Visible hint notification text mismatch.');
+
+      lController.NotifyVisibleHint('Short hint|Long help text');
+      Require(lApi.NotificationCalls = 1, 'Duplicate hint notification was not throttled.');
+
+      lController.NotifyBalloonHint('Upload complete', '5 files were processed');
+      Require(lApi.NotificationCalls = 2, 'Balloon hint notification was not raised.');
+      Require(lApi.LastDisplayString = 'Upload complete: 5 files were processed',
+        'Balloon hint notification text mismatch.');
+    finally
+      lController.Free;
+    end;
+
+    lBalloonLabel := TLabel.Create(lForm);
+    lBalloonLabel.Caption := 'Upload';
+    lBalloonLabel.Hint := 'Processed|Custom hint text';
+    lBalloonLabel.CustomHint := lBalloonHint;
+    lBalloonLabel.ShowHint := True;
+    lBalloonLabel.Parent := lForm;
+
+    TAccessibilityManagerInternals.SetUiaApi(lApi);
+    try
+      TAccessibilityManager.Install(Application);
+      lMessage := Default(TMessage);
+      lMessage.Msg := CM_MOUSEENTER;
+      lMessage.LParam := Winapi.Windows.LPARAM(lBalloonLabel);
+      lForm.WindowProc(lMessage);
+    finally
+      TAccessibilityManager.Uninstall;
+      TAccessibilityManagerInternals.SetUiaApi(nil);
+    end;
+
+    Require(lApi.NotificationCalls = 3, 'Manager-installed balloon hint observer did not raise one event.');
+    Require(lApi.LastDisplayString = 'Processed: Custom hint text',
+      'Manager-installed balloon hint observer text mismatch.');
+
+    Writeln('UIA_PROBE_OK Hints: help text, visible hint notification, duplicate throttling, direct balloon notification, and manager-installed balloon mouse-enter notification confirmed.');
+  finally
+    lBalloonHint.Free;
+    lForm.Free;
+  end;
+end;
+
 procedure Run;
 begin
   if (ParamCount = 2) and SameText(ParamStr(1), '--uia-probe') and SameText(ParamStr(2), 'BasicVclControls') then
   begin
     RunBasicVclControlsProbe;
+  end else if (ParamCount = 2) and SameText(ParamStr(1), '--uia-probe') and SameText(ParamStr(2), 'Hints') then
+  begin
+    RunHintsProbe;
   end else begin
     Writeln(cAccessibilityFrameworkName);
   end;

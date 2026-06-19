@@ -30,7 +30,7 @@ implementation
 
 uses
   System.Classes, System.Generics.Collections, System.SysUtils, Winapi.Messages, Winapi.Windows, Vcl.Controls,
-  MaxLogic.Accessibility.UIAutomationCore, MaxLogic.Accessibility.VclAdapters;
+  MaxLogic.Accessibility.Hints, MaxLogic.Accessibility.UIAutomationCore, MaxLogic.Accessibility.VclAdapters;
 
 type
   TAccessibilityFormWindowHook = class;
@@ -67,13 +67,17 @@ type
   TAccessibilityManagerState = class
   private
     fAppInstalled: Boolean;
+    fHintController: TAccessibilityHintController;
+    fHintControllerAppWide: Boolean;
     fFormInstaller: IAccessibilityFormInstaller;
     fPreviousActiveFormChange: TNotifyEvent;
     fScreenHookInstalled: Boolean;
     fUiaApi: IAccessibilityUiaApi;
     procedure ActiveFormChanged(aSender: TObject);
     procedure HookScreen;
+    procedure InstallHintController(aApplication: TApplication; aAppWide: Boolean);
     procedure RemoveInstalledMarkers;
+    procedure ReleaseHintController;
     procedure RestoreScreenHook;
     procedure ScanCurrentForms;
   public
@@ -331,6 +335,33 @@ begin
   fScreenHookInstalled := True;
 end;
 
+procedure TAccessibilityManagerState.InstallHintController(aApplication: TApplication; aAppWide: Boolean);
+var
+  lProvider: IAccessibilityProviderNode;
+begin
+  if fHintController <> nil then
+  begin
+    if (not aAppWide) or fHintControllerAppWide then
+    begin
+      Exit;
+    end;
+
+    ReleaseHintController;
+  end;
+
+  lProvider := TAccessibilityProviderFactory.CreateRoot([2], 0, fUiaApi);
+  lProvider.SetProperty(UIA_NamePropertyId, 'VCL hints');
+  lProvider.SetProperty(UIA_ControlTypePropertyId, UIA_ToolTipControlTypeId);
+  lProvider.SetProperty(UIA_ClassNamePropertyId, 'TAccessibilityHintController');
+  if aAppWide then
+  begin
+    fHintController := TAccessibilityHintController.Create(aApplication, lProvider, fUiaApi);
+  end else begin
+    fHintController := TAccessibilityHintController.Create(nil, lProvider, fUiaApi);
+  end;
+  fHintControllerAppWide := aAppWide;
+end;
+
 function TAccessibilityManagerState.InstalledFormCount: Integer;
 var
   i: Integer;
@@ -358,6 +389,7 @@ begin
     HookScreen;
   end;
 
+  InstallHintController(aApplication, True);
   ScanCurrentForms;
 end;
 
@@ -370,22 +402,36 @@ begin
     raise EArgumentException.Create('Form must not be nil.');
   end;
 
+  if fHintController = nil then
+  begin
+    InstallHintController(nil, False);
+  end;
+
   if TAccessibilityInstalledFormMarker.FindOn(aForm) <> nil then
   begin
+    if fHintController <> nil then
+    begin
+      fHintController.ObserveForm(aForm);
+    end;
     Exit;
   end;
 
   lMarker := TAccessibilityInstalledFormMarker.Create(aForm);
   try
-  if fFormInstaller <> nil then
-  begin
-    fFormInstaller.InstallForm(aForm);
-  end else begin
-    lMarker.InstallDefaultProvider(aForm, fUiaApi);
-  end;
+    if fFormInstaller <> nil then
+    begin
+      fFormInstaller.InstallForm(aForm);
+    end else begin
+      lMarker.InstallDefaultProvider(aForm, fUiaApi);
+    end;
   except
     lMarker.Free;
     raise;
+  end;
+
+  if fHintController <> nil then
+  begin
+    fHintController.ObserveForm(aForm);
   end;
 end;
 
@@ -404,6 +450,22 @@ begin
       end;
     until lMarker = nil;
   end;
+end;
+
+procedure TAccessibilityManagerState.ReleaseHintController;
+begin
+  if fHintController = nil then
+  begin
+    Exit;
+  end;
+
+  if not fHintController.Passivate then
+  begin
+    fHintController.Free;
+  end;
+
+  fHintController := nil;
+  fHintControllerAppWide := False;
 end;
 
 procedure TAccessibilityManagerState.RestoreScreenHook;
@@ -448,6 +510,7 @@ end;
 procedure TAccessibilityManagerState.Uninstall;
 begin
   fAppInstalled := False;
+  ReleaseHintController;
   RemoveInstalledMarkers;
   RestoreScreenHook;
 end;

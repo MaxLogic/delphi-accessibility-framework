@@ -83,6 +83,7 @@
       <MainSource>MainSource</MainSource>
     </DelphiCompile>
     <DCCReference Include="..\src\MaxLogic.Accessibility.Framework.pas"/>
+    <DCCReference Include="..\src\MaxLogic.Accessibility.Hints.pas"/>
     <DCCReference Include="..\src\MaxLogic.Accessibility.Manager.pas"/>
     <DCCReference Include="..\src\MaxLogic.Accessibility.ProviderCore.pas"/>
     <DCCReference Include="..\src\MaxLogic.Accessibility.Scanner.pas"/>

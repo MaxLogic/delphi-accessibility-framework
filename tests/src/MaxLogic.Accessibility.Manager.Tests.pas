@@ -13,9 +13,27 @@ type
     [Test]
     procedure ApplicationInstallDiscoversFutureFormsAndChainsActiveFormChange;
     [Test]
+    procedure ApplicationInstallWithCustomRegistryDiscoversFutureTmsForms;
+    [Test]
+    procedure ApplicationInstallWithCustomRegistryScansCurrentTmsForms;
+    [Test]
+    procedure ApplicationCustomRegistryRejectsDefaultFormInstall;
+    [Test]
+    procedure ApplicationRegistrySwitchRequiresUninstall;
+    [Test]
+    procedure ApplicationCustomRegistryRejectsInstalledDefaultFormWithoutPartialHook;
+    [Test]
+    procedure DefaultFormInstallLeavesTmsGridOnDefaultRegistry;
+    [Test]
     procedure ApplicationInstallScansCurrentFormsAndIsIdempotent;
     [Test]
     procedure FormInstallIsScopedAndIdempotent;
+    [Test]
+    procedure FormInstallWithCustomRegistryUsesTmsProviderThroughWmGetObject;
+    [Test]
+    procedure FormRegistrySwitchRequiresUninstall;
+    [Test]
+    procedure FormCustomRegistryRejectsActiveDefaultApplicationInstall;
     [Test]
     procedure FormInstallHandlesUiaGetObjectThroughDefaultProvider;
     [Test]
@@ -33,9 +51,10 @@ type
 implementation
 
 uses
-  System.Classes, System.Generics.Collections, System.SysUtils, System.Variants, Winapi.Messages, Winapi.Windows,
-  Vcl.Controls, Vcl.Forms, Vcl.StdCtrls, MaxLogic.Accessibility.Manager, MaxLogic.Accessibility.ProviderCore,
-  MaxLogic.Accessibility.UIAutomationCore;
+  System.Classes, System.Generics.Collections, System.SysUtils, System.Types, System.Variants, Winapi.Messages,
+  Winapi.Windows, Vcl.Controls, Vcl.Forms, Vcl.StdCtrls, AdvGrid, MaxLogic.Accessibility.Manager,
+  MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.Scanner,
+  MaxLogic.Accessibility.TmsAdvStringGridAdapters, MaxLogic.Accessibility.UIAutomationCore;
 
 type
   IFormInstallRecorder = interface(IAccessibilityFormInstaller)
@@ -49,6 +68,7 @@ type
     function DisconnectCalls: Integer;
     function LastHwnd: HWND;
     function LastLParam: LPARAM;
+    function ReturnedProvider: IRawElementProviderSimple;
     function ReturnCalls: Integer;
   end;
 
@@ -57,6 +77,7 @@ type
     fDisconnectCalls: Integer;
     fLastHwnd: HWND;
     fLastLParam: LPARAM;
+    fReturnedProvider: IRawElementProviderSimple;
     fReturnCalls: Integer;
   public
     function ClientsAreListening: Boolean;
@@ -65,6 +86,7 @@ type
     function HostProviderFromHwnd(aHwnd: HWND; out aProvider: IRawElementProviderSimple): HRESULT;
     function LastHwnd: HWND;
     function LastLParam: LPARAM;
+    function ReturnedProvider: IRawElementProviderSimple;
     function RaiseAutomationEvent(const aProvider: IRawElementProviderSimple; aEventId: EVENTID): HRESULT;
     function RaiseAutomationPropertyChanged(const aProvider: IRawElementProviderSimple; aPropertyId: PROPERTYID;
       const aOldValue: OleVariant; const aNewValue: OleVariant): HRESULT;
@@ -222,6 +244,11 @@ begin
   Result := fLastLParam;
 end;
 
+function TManagerTestUiaApi.ReturnedProvider: IRawElementProviderSimple;
+begin
+  Result := fReturnedProvider;
+end;
+
 function TManagerTestUiaApi.RaiseAutomationEvent(const aProvider: IRawElementProviderSimple;
   aEventId: EVENTID): HRESULT;
 begin
@@ -258,7 +285,108 @@ begin
   Inc(fReturnCalls);
   fLastHwnd := aHwnd;
   fLastLParam := aLParam;
+  fReturnedProvider := aProvider;
   Result := 2468;
+end;
+
+function ScaleValue(aValue: Integer): Integer;
+begin
+  Result := MulDiv(aValue, Screen.PixelsPerInch, 96);
+end;
+
+procedure CreateManagerTmsGridFixture(out aForm: TForm; out aGrid: TAdvStringGrid);
+begin
+  aForm := TForm.Create(nil);
+  aForm.SetBounds(ScaleValue(100), ScaleValue(100), ScaleValue(360), ScaleValue(220));
+
+  aGrid := TAdvStringGrid.Create(aForm);
+  aGrid.Name := 'ManagerAdvGrid';
+  aGrid.Parent := aForm;
+  aGrid.SetBounds(ScaleValue(8), ScaleValue(8), ScaleValue(220), ScaleValue(90));
+  aGrid.ColCount := 3;
+  aGrid.RowCount := 3;
+  aGrid.FixedCols := 1;
+  aGrid.FixedRows := 1;
+  aGrid.DefaultColWidth := ScaleValue(55);
+  aGrid.DefaultRowHeight := ScaleValue(22);
+  aGrid.Cells[1, 0] := 'Name';
+  aGrid.Cells[1, 1] := '<b>Alice</b>';
+  aForm.HandleNeeded;
+  aGrid.HandleNeeded;
+end;
+
+function SimpleProvider(const aFragment: IRawElementProviderFragment): IRawElementProviderSimple;
+begin
+  Result := nil;
+  Assert.IsTrue(Supports(aFragment, IRawElementProviderSimple, Result));
+end;
+
+function FragmentFromSimple(const aProvider: IRawElementProviderSimple): IRawElementProviderFragment;
+begin
+  Result := nil;
+  Assert.IsTrue(Supports(aProvider, IRawElementProviderFragment, Result));
+end;
+
+function NavigateFragment(const aFragment: IRawElementProviderFragment; aDirection: NavigateDirection):
+  IRawElementProviderFragment;
+begin
+  Assert.AreEqual(S_OK, aFragment.Navigate(aDirection, Result));
+end;
+
+function FirstChildFragment(const aFragment: IRawElementProviderFragment): IRawElementProviderFragment;
+begin
+  Result := NavigateFragment(aFragment, NavigateDirection_FirstChild);
+  Assert.IsNotNull(Result);
+end;
+
+function ProviderIntProperty(const aFragment: IRawElementProviderFragment; aPropertyId: PROPERTYID): Integer;
+var
+  lValue: OleVariant;
+begin
+  Assert.AreEqual(S_OK, SimpleProvider(aFragment).GetPropertyValue(aPropertyId, lValue));
+  Result := Integer(lValue);
+end;
+
+function ProviderStringProperty(const aFragment: IRawElementProviderFragment; aPropertyId: PROPERTYID): string;
+var
+  lValue: OleVariant;
+begin
+  Assert.AreEqual(S_OK, SimpleProvider(aFragment).GetPropertyValue(aPropertyId, lValue));
+  Result := string(lValue);
+end;
+
+function ProviderPattern(const aFragment: IRawElementProviderFragment; aPatternId: PATTERNID): IUnknown;
+begin
+  Assert.AreEqual(S_OK, SimpleProvider(aFragment).GetPatternProvider(aPatternId, Result));
+end;
+
+procedure AssertManagerGridCellName(const aApi: IManagerTestUiaApi; aForm: TCustomForm;
+  const aExpectedName: string);
+var
+  lCellProvider: IRawElementProviderSimple;
+  lGridFragment: IRawElementProviderFragment;
+  lGridPattern: IGridProvider;
+  lMessage: TMessage;
+  lPattern: IUnknown;
+  lRootFragment: IRawElementProviderFragment;
+begin
+  aForm.HandleNeeded;
+
+  lMessage := Default(TMessage);
+  lMessage.Msg := WM_GETOBJECT;
+  lMessage.LParam := UiaRootObjectId;
+  aForm.WindowProc(lMessage);
+
+  Assert.AreEqual(2468, lMessage.Result);
+  Assert.IsNotNull(aApi.ReturnedProvider);
+
+  lRootFragment := FragmentFromSimple(aApi.ReturnedProvider);
+  lGridFragment := FirstChildFragment(lRootFragment);
+  Assert.AreEqual(UIA_DataGridControlTypeId, ProviderIntProperty(lGridFragment, UIA_ControlTypePropertyId));
+  lPattern := ProviderPattern(lGridFragment, UIA_GridPatternId);
+  Assert.IsTrue(Supports(lPattern, IGridProvider, lGridPattern));
+  Assert.AreEqual(S_OK, lGridPattern.GetItem(1, 1, lCellProvider));
+  Assert.AreEqual(aExpectedName, ProviderStringProperty(FragmentFromSimple(lCellProvider), UIA_NamePropertyId));
 end;
 
 procedure TAccessibilityManagerTests.ApplicationInstallDiscoversFutureFormsAndChainsActiveFormChange;
@@ -292,6 +420,199 @@ begin
     ResetManager;
     Screen.OnActiveFormChange := lOriginalActiveFormChange;
     lProbe.Free;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.ApplicationInstallWithCustomRegistryDiscoversFutureTmsForms;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lGrid: TAdvStringGrid;
+  lOriginalActiveFormChange: TNotifyEvent;
+begin
+  ResetManager;
+  lOriginalActiveFormChange := Screen.OnActiveFormChange;
+  lApi := TManagerTestUiaApi.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  try
+    TAccessibilityManager.Install(Application, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+    CreateManagerTmsGridFixture(lForm, lGrid);
+    try
+      Assert.IsNotNull(lGrid);
+      Assert.AreEqual(0, TAccessibilityManagerInternals.InstalledFormCount);
+
+      Screen.OnActiveFormChange(Screen);
+
+      Assert.IsTrue(TAccessibilityManagerInternals.InstalledFormCount >= 1);
+      AssertManagerGridCellName(lApi, lForm, 'Alice');
+    finally
+      lForm.Free;
+    end;
+  finally
+    ResetManager;
+    Screen.OnActiveFormChange := lOriginalActiveFormChange;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.ApplicationInstallWithCustomRegistryScansCurrentTmsForms;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lGrid: TAdvStringGrid;
+  lOriginalActiveFormChange: TNotifyEvent;
+begin
+  ResetManager;
+  lOriginalActiveFormChange := Screen.OnActiveFormChange;
+  lApi := TManagerTestUiaApi.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  CreateManagerTmsGridFixture(lForm, lGrid);
+  try
+    Assert.IsNotNull(lGrid);
+
+    TAccessibilityManager.Install(Application, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+
+    Assert.IsTrue(TAccessibilityManagerInternals.InstalledFormCount >= 1);
+    AssertManagerGridCellName(lApi, lForm, 'Alice');
+  finally
+    lForm.Free;
+    ResetManager;
+    Screen.OnActiveFormChange := lOriginalActiveFormChange;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.ApplicationCustomRegistryRejectsDefaultFormInstall;
+var
+  lForm: TForm;
+  lGrid: TAdvStringGrid;
+  lOriginalActiveFormChange: TNotifyEvent;
+  lRaised: Boolean;
+begin
+  ResetManager;
+  lOriginalActiveFormChange := Screen.OnActiveFormChange;
+  try
+    TAccessibilityManager.Install(Application, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+    CreateManagerTmsGridFixture(lForm, lGrid);
+    try
+      Assert.IsNotNull(lGrid);
+
+      lRaised := False;
+      try
+        TAccessibilityManager.Install(lForm);
+      except
+        on EInvalidOperation do
+        begin
+          lRaised := True;
+        end;
+      end;
+
+      Assert.IsTrue(lRaised, 'One-arg form install must not mix with active app-wide custom registry.');
+      Assert.AreEqual(0, TAccessibilityManagerInternals.InstalledFormCount);
+    finally
+      lForm.Free;
+    end;
+  finally
+    ResetManager;
+    Screen.OnActiveFormChange := lOriginalActiveFormChange;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.ApplicationRegistrySwitchRequiresUninstall;
+var
+  lFirstRegistry: IAccessibilityAdapterRegistry;
+  lOriginalActiveFormChange: TNotifyEvent;
+  lRaised: Boolean;
+  lSecondRegistry: IAccessibilityAdapterRegistry;
+begin
+  ResetManager;
+  lOriginalActiveFormChange := Screen.OnActiveFormChange;
+  lFirstRegistry := TAccessibilityTmsAdvStringGridAdapters.CreateRegistry;
+  lSecondRegistry := TAccessibilityTmsAdvStringGridAdapters.CreateRegistry;
+  try
+    TAccessibilityManager.Install(Application, lFirstRegistry);
+    TAccessibilityManager.Install(Application, lFirstRegistry);
+
+    lRaised := False;
+    try
+      TAccessibilityManager.Install(Application, lSecondRegistry);
+    except
+      on EInvalidOperation do
+      begin
+        lRaised := True;
+      end;
+    end;
+
+    Assert.IsTrue(lRaised, 'Changing the app-wide registry while installed must require Uninstall first.');
+
+    TAccessibilityManager.Uninstall;
+    TAccessibilityManager.Install(Application, lSecondRegistry);
+  finally
+    ResetManager;
+    Screen.OnActiveFormChange := lOriginalActiveFormChange;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.ApplicationCustomRegistryRejectsInstalledDefaultFormWithoutPartialHook;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lGrid: TAdvStringGrid;
+  lOriginalActiveFormChange: TNotifyEvent;
+  lProbe: TActiveFormChangeProbe;
+  lRaised: Boolean;
+begin
+  ResetManager;
+  lOriginalActiveFormChange := Screen.OnActiveFormChange;
+  lProbe := TActiveFormChangeProbe.Create;
+  lApi := TManagerTestUiaApi.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  CreateManagerTmsGridFixture(lForm, lGrid);
+  try
+    Assert.IsNotNull(lGrid);
+    Screen.OnActiveFormChange := lProbe.HandleActiveFormChange;
+    TAccessibilityManager.Install(lForm);
+
+    lRaised := False;
+    try
+      TAccessibilityManager.Install(Application, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+    except
+      on EInvalidOperation do
+      begin
+        lRaised := True;
+      end;
+    end;
+
+    Assert.IsTrue(lRaised, 'Changing registry for an already installed form must fail.');
+
+    Screen.OnActiveFormChange(Screen);
+    Assert.AreEqual(1, lProbe.Calls);
+    AssertManagerGridCellName(lApi, lForm, '<b>Alice</b>');
+  finally
+    lForm.Free;
+    ResetManager;
+    Screen.OnActiveFormChange := lOriginalActiveFormChange;
+    lProbe.Free;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.DefaultFormInstallLeavesTmsGridOnDefaultRegistry;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lGrid: TAdvStringGrid;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  CreateManagerTmsGridFixture(lForm, lGrid);
+  try
+    Assert.IsNotNull(lGrid);
+
+    TAccessibilityManager.Install(lForm);
+
+    AssertManagerGridCellName(lApi, lForm, '<b>Alice</b>');
+  finally
+    lForm.Free;
+    ResetManager;
   end;
 end;
 
@@ -346,6 +667,103 @@ begin
   finally
     lFirst.Free;
     ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallWithCustomRegistryUsesTmsProviderThroughWmGetObject;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lGrid: TAdvStringGrid;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  CreateManagerTmsGridFixture(lForm, lGrid);
+  try
+    Assert.IsNotNull(lGrid);
+
+    TAccessibilityManager.Install(lForm, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+
+    AssertManagerGridCellName(lApi, lForm, 'Alice');
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormRegistrySwitchRequiresUninstall;
+var
+  lFirstRegistry: IAccessibilityAdapterRegistry;
+  lForm: TForm;
+  lGrid: TAdvStringGrid;
+  lRaised: Boolean;
+  lSecondRegistry: IAccessibilityAdapterRegistry;
+begin
+  ResetManager;
+  lFirstRegistry := TAccessibilityTmsAdvStringGridAdapters.CreateRegistry;
+  lSecondRegistry := TAccessibilityTmsAdvStringGridAdapters.CreateRegistry;
+  CreateManagerTmsGridFixture(lForm, lGrid);
+  try
+    Assert.IsNotNull(lGrid);
+    TAccessibilityManager.Install(lForm, lFirstRegistry);
+    TAccessibilityManager.Install(lForm, lFirstRegistry);
+
+    lRaised := False;
+    try
+      TAccessibilityManager.Install(lForm, lSecondRegistry);
+    except
+      on EInvalidOperation do
+      begin
+        lRaised := True;
+      end;
+    end;
+
+    Assert.IsTrue(lRaised, 'Changing a form registry while installed must require Uninstall first.');
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormCustomRegistryRejectsActiveDefaultApplicationInstall;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lGrid: TAdvStringGrid;
+  lOriginalActiveFormChange: TNotifyEvent;
+  lRaised: Boolean;
+begin
+  ResetManager;
+  lOriginalActiveFormChange := Screen.OnActiveFormChange;
+  lApi := TManagerTestUiaApi.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  try
+    TAccessibilityManager.Install(Application);
+    CreateManagerTmsGridFixture(lForm, lGrid);
+    try
+      Assert.IsNotNull(lGrid);
+
+      lRaised := False;
+      try
+        TAccessibilityManager.Install(lForm, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+      except
+        on EInvalidOperation do
+        begin
+          lRaised := True;
+        end;
+      end;
+
+      Assert.IsTrue(lRaised, 'Scoped custom registry must not mix with active app-wide default registry.');
+
+      Screen.OnActiveFormChange(Screen);
+      AssertManagerGridCellName(lApi, lForm, '<b>Alice</b>');
+    finally
+      lForm.Free;
+    end;
+  finally
+    ResetManager;
+    Screen.OnActiveFormChange := lOriginalActiveFormChange;
   end;
 end;
 

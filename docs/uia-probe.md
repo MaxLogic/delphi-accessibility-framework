@@ -15,7 +15,7 @@ Supported scenarios:
 - `BasicVclControls`: verifies `TLabel`, `TSpeedButton`, `TPanel`, generic `TGraphicControl`, nested fragments, Invoke/Toggle patterns, and decorative-control omission.
 - `Hints`: verifies UIA `HelpText`, visible hint notification text, duplicate throttling, direct balloon hint notifications, and manager-installed balloon hint observation.
 - `TStringGridCells`: verifies the VCL `TStringGrid` DataGrid provider, visible cell providers, `ElementProviderFromPoint` returning only the hovered cell, current-cell focus, hidden-cell omission, and cell-only names.
-- `TAdvStringGridCells`: verifies opt-in TMS `TAdvStringGrid` DataGrid support, stripped HTML cell text, wide text fallback, hidden row/column remapping, per-cell hit testing, current-cell focus, hidden-cell omission, and scrolled-cell pruning.
+- `TAdvStringGridCells`: verifies opt-in manager-installed TMS `TAdvStringGrid` DataGrid support, stripped HTML cell text, wide text fallback, hidden row/column remapping, per-cell hit testing, current-cell focus, hidden-cell omission, and scrolled-cell pruning.
 
 Individual examples:
 

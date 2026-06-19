@@ -5,7 +5,7 @@ Use this checklist on a real VCL application or on a manual sample built from th
 ## Setup
 
 - Build the application with `TAccessibilityManager.Install(Application)` for app-wide coverage, or `TAccessibilityManager.Install(Form)` for the form under test.
-- `TAdvStringGrid NVDA checks require a custom provider root` or the diagnostic sample path until the custom-registry manager install task is implemented. The default manager install is VCL-only today.
+- For `TAdvStringGrid`, include `MaxLogic.Accessibility.TmsAdvStringGridAdapters` and install with `TAccessibilityManager.Install(Application, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry)` or the equivalent form-scoped overload.
 - Start NVDA.
 - Keep mouse tracking enabled when validating hover and grid-cell behavior.
 - Keep speech viewer open if exact text needs to be captured.

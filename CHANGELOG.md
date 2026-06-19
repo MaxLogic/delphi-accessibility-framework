@@ -7,6 +7,7 @@
 - Disabled `TSpeedButton` UIA Invoke/Toggle automation no longer triggers button clicks or toggles `Down`.
 
 ### Added
+- Added custom adapter registry overloads for `TAccessibilityManager.Install(Application, Registry)` and `Install(Form, Registry)`, enabling opt-in TMS `TAdvStringGrid` support through the manager path.
 - Added adoption documentation, UIA probe documentation, and an NVDA manual checklist for the current VCL accessibility coverage.
 - Added opt-in UIA DataGrid/cell provider support for TMS `TAdvStringGrid`, including stripped HTML text, wide text fallback, per-cell hit testing, current-cell focus, hidden row/column remapping, and scrolled-cell pruning.
 - Added UIA DataGrid/cell provider support for VCL `TStringGrid`, including per-cell hit testing, current-cell focus, and hidden-cell omission.

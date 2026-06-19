@@ -51,7 +51,33 @@ The default VCL adapter registry covers:
 
 TMS `TAdvStringGrid` support is available in the opt-in unit `MaxLogic.Accessibility.TmsAdvStringGridAdapters`. It keeps ordinary applications from compiling TMS units unless they explicitly include the adapter.
 
-The current TMS adapter is a provider-builder diagnostic path and custom provider construction path. It is not yet wired into `TAccessibilityManager.Install(Application)` or `TAccessibilityManager.Install(Form)`, so the custom-registry manager install path is deferred. Use the default manager install for VCL-only forms; use the builder path below when validating or embedding a custom provider root yourself:
+For app-wide TMS support, install with the opt-in registry:
+
+```delphi
+uses
+  Vcl.Forms,
+  MaxLogic.Accessibility.Manager,
+  MaxLogic.Accessibility.TmsAdvStringGridAdapters;
+
+begin
+  TAccessibilityManager.Install(Application, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+end;
+```
+
+For one form, use the scoped overload:
+
+```delphi
+uses
+  MaxLogic.Accessibility.Manager,
+  MaxLogic.Accessibility.TmsAdvStringGridAdapters;
+
+procedure TMainForm.FormCreate(Sender: TObject);
+begin
+  TAccessibilityManager.Install(Self, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+end;
+```
+
+Use the direct provider builder only for diagnostics or for applications that intentionally embed a custom provider root themselves:
 
 ```delphi
 uses
@@ -95,7 +121,8 @@ See also:
 
 - Windows VCL and Microsoft UI Automation are the first supported target. FMX, non-Windows platforms, and an MSAA compatibility bridge are deferred.
 - `TAccessibilityManager.Install(Application)` discovers future forms when `Screen.OnActiveFormChange` fires. Forms that are created and never become active should call `TAccessibilityManager.Install(Form)` explicitly after their controls exist.
-- The public manager API currently uses the default VCL registry. TMS `TAdvStringGrid` support is opt-in through `MaxLogic.Accessibility.TmsAdvStringGridAdapters`, and the custom-registry manager install path is deferred.
+- Changing the app-wide or form-scoped adapter registry after accessibility is installed requires `TAccessibilityManager.Uninstall` first. This avoids silently mixing default and custom provider trees.
+- Registry compatibility is instance-based. Repeated custom installs should reuse the same registry instance, or call `TAccessibilityManager.Uninstall` before switching to another registry.
 - Automatic label-to-input relationships such as `LabeledBy` inference are not implemented yet.
 - TMS merged cells whose base cell is hidden are omitted rather than promoted from a visible merged fragment, because TMS stores text and span metadata on the hidden base coordinate.
 - Screen-reader speech varies by reader and settings. The UIA probe is automated proof of provider behavior; the NVDA checklist remains the manual acceptance pass for spoken output.

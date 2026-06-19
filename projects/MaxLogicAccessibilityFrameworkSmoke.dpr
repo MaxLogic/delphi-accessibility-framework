@@ -560,6 +560,7 @@ end;
 
 procedure RunTAdvStringGridCellsProbe;
 var
+  lApi: IProbeUiaApi;
   lCellFragment: IRawElementProviderFragment;
   lCellProvider: IRawElementProviderSimple;
   lFocus: IRawElementProviderFragment;
@@ -568,9 +569,10 @@ var
   lGridFragment: IRawElementProviderFragment;
   lGridPattern: IGridProvider;
   lHit: IRawElementProviderFragment;
+  lMessage: TMessage;
   lPattern: IUnknown;
   lPoint: TPoint;
-  lProvider: IAccessibilityProviderNode;
+  lRootFragment: IRawElementProviderFragment;
   lRoot: IRawElementProviderFragmentRoot;
 begin
   lForm := TForm.Create(nil);
@@ -604,10 +606,21 @@ begin
     lForm.HandleNeeded;
     lGrid.HandleNeeded;
 
-    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm,
-      TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
-    lRoot := FragmentRoot(lProvider);
-    lGridFragment := FirstChild(lProvider, 'TMS string grid fragment');
+    lApi := TProbeUiaApi.Create;
+    TAccessibilityManagerInternals.SetUiaApi(lApi);
+    TAccessibilityManager.Install(lForm, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.LParam := UiaRootObjectId;
+    lForm.WindowProc(lMessage);
+    Require(lMessage.Result = 97531, 'TMS manager install path did not return a UIA provider message result.');
+    Require(lApi.ReturnedProvider <> nil, 'TMS manager install path did not pass a provider to UIA.');
+
+    lRootFragment := FragmentFromSimple(lApi.ReturnedProvider);
+    Require(Supports(lApi.ReturnedProvider, IRawElementProviderFragmentRoot, lRoot),
+      'TMS manager root does not expose a fragment root.');
+    lGridFragment := FirstNestedChild(lRootFragment, 'TMS string grid fragment');
     Require(ProviderIntProperty(lGridFragment, UIA_ControlTypePropertyId) = UIA_DataGridControlTypeId,
       'TMS string grid did not expose the DataGrid control type.');
 
@@ -658,8 +671,10 @@ begin
     lGrid.ScrollInView(1, 1);
     Require(not ChildNameExists(lGridFragment, 'Scrolled TMS cell'), 'Scrolled-out TMS grid cell was exposed.');
 
-    Writeln('UIA_PROBE_OK TAdvStringGridCells: opt-in TMS DataGrid provider, stripped HTML text, wide-cell fallback, per-cell hit testing, current-cell focus, hidden-column and hidden-row remapping, hidden-cell omission, and scrolled-cell pruning confirmed.');
+    Writeln('UIA_PROBE_OK TAdvStringGridCells: install-path=manager-custom-registry-wm-getobject; opt-in TMS DataGrid provider, stripped HTML text, wide-cell fallback, per-cell hit testing, current-cell focus, hidden-column and hidden-row remapping, hidden-cell omission, and scrolled-cell pruning confirmed.');
   finally
+    TAccessibilityManager.Uninstall;
+    TAccessibilityManagerInternals.SetUiaApi(nil);
     lForm.Free;
   end;
 end;

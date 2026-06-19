@@ -56,7 +56,7 @@ begin
   RequireText(lText, 'balloon hint', 'NVDA checklist');
   RequireText(lText, 'TStringGrid', 'NVDA checklist');
   RequireText(lText, 'TAdvStringGrid', 'NVDA checklist');
-  RequireText(lText, 'TAdvStringGrid NVDA checks require a custom provider root', 'NVDA checklist');
+  RequireText(lText, 'TAccessibilityTmsAdvStringGridAdapters.CreateRegistry', 'NVDA checklist');
   RequireText(lText, 'cell text only', 'NVDA checklist');
 end;
 
@@ -79,8 +79,9 @@ begin
   RequireText(lText, 'does not depend on this framework', 'README');
   RequireText(lText, 'old overlay/static-text approach', 'README');
   RequireText(lText, 'TMS', 'README');
-  RequireText(lText, 'provider-builder diagnostic path', 'README');
-  RequireText(lText, 'custom-registry manager install path is deferred', 'README');
+  RequireText(lText, 'TAccessibilityTmsAdvStringGridAdapters.CreateRegistry', 'README');
+  RequireText(lText, 'Install(Application, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry)', 'README');
+  RequireText(lText, 'Use the direct provider builder only for diagnostics', 'README');
 end;
 
 procedure TAccessibilityDocumentationTests.UiaProbeDocumentationListsRunnableScenarios;

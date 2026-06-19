@@ -4,7 +4,7 @@ interface
 
 uses
   Vcl.Forms,
-  MaxLogic.Accessibility.ProviderCore;
+  MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.Scanner;
 
 type
   IAccessibilityFormInstaller = interface
@@ -15,7 +15,9 @@ type
   TAccessibilityManager = record
   public
     class procedure Install(aApplication: TApplication); overload; static;
+    class procedure Install(aApplication: TApplication; const aRegistry: IAccessibilityAdapterRegistry); overload; static;
     class procedure Install(aForm: TCustomForm); overload; static;
+    class procedure Install(aForm: TCustomForm; const aRegistry: IAccessibilityAdapterRegistry); overload; static;
     class procedure Uninstall; static;
   end;
 
@@ -38,10 +40,14 @@ type
   TAccessibilityInstalledFormMarker = class(TComponent)
   private
     fHook: TAccessibilityFormWindowHook;
+    fRegistry: IAccessibilityAdapterRegistry;
   public
     destructor Destroy; override;
     class function FindOn(aForm: TCustomForm): TAccessibilityInstalledFormMarker; static;
-    procedure InstallDefaultProvider(aForm: TCustomForm; const aApi: IAccessibilityUiaApi);
+    procedure InstallProvider(aForm: TCustomForm; const aRegistry: IAccessibilityAdapterRegistry;
+      const aApi: IAccessibilityUiaApi);
+    procedure RememberRegistry(const aRegistry: IAccessibilityAdapterRegistry);
+    function RegistryMatches(const aRegistry: IAccessibilityAdapterRegistry): Boolean;
   end;
 
   TAccessibilityFormWindowHook = class(TComponent)
@@ -67,6 +73,7 @@ type
   TAccessibilityManagerState = class
   private
     fAppInstalled: Boolean;
+    fApplicationRegistry: IAccessibilityAdapterRegistry;
     fHintController: TAccessibilityHintController;
     fHintControllerAppWide: Boolean;
     fFormInstaller: IAccessibilityFormInstaller;
@@ -74,8 +81,12 @@ type
     fScreenHookInstalled: Boolean;
     fUiaApi: IAccessibilityUiaApi;
     procedure ActiveFormChanged(aSender: TObject);
+    procedure EnsureApplicationRegistry(const aRegistry: IAccessibilityAdapterRegistry);
+    procedure EnsureFormRegistryAllowed(const aRegistry: IAccessibilityAdapterRegistry);
+    procedure EnsureInstalledFormsRegistry(const aRegistry: IAccessibilityAdapterRegistry);
     procedure HookScreen;
     procedure InstallHintController(aApplication: TApplication; aAppWide: Boolean);
+    procedure InstallFormWithRegistry(aForm: TCustomForm; const aRegistry: IAccessibilityAdapterRegistry);
     procedure RemoveInstalledMarkers;
     procedure ReleaseHintController;
     procedure RestoreScreenHook;
@@ -84,8 +95,10 @@ type
     constructor Create;
     destructor Destroy; override;
     function InstalledFormCount: Integer;
-    procedure InstallApplication(aApplication: TApplication);
-    procedure InstallForm(aForm: TCustomForm);
+    procedure InstallApplication(aApplication: TApplication); overload;
+    procedure InstallApplication(aApplication: TApplication; const aRegistry: IAccessibilityAdapterRegistry); overload;
+    procedure InstallForm(aForm: TCustomForm); overload;
+    procedure InstallForm(aForm: TCustomForm; const aRegistry: IAccessibilityAdapterRegistry); overload;
     procedure SetFormInstaller(const aInstaller: IAccessibilityFormInstaller);
     procedure SetUiaApi(const aApi: IAccessibilityUiaApi);
     procedure Uninstall;
@@ -103,6 +116,12 @@ end;
 function SameWndMethod(const aLeft: TWndMethod; const aRight: TWndMethod): Boolean;
 begin
   Result := (TMethod(aLeft).Code = TMethod(aRight).Code) and (TMethod(aLeft).Data = TMethod(aRight).Data);
+end;
+
+function SameRegistry(const aLeft: IAccessibilityAdapterRegistry;
+  const aRight: IAccessibilityAdapterRegistry): Boolean;
+begin
+  Result := aLeft = aRight;
 end;
 
 function ManagerState: TAccessibilityManagerState;
@@ -148,16 +167,28 @@ begin
   end;
 end;
 
-procedure TAccessibilityInstalledFormMarker.InstallDefaultProvider(aForm: TCustomForm;
-  const aApi: IAccessibilityUiaApi);
+procedure TAccessibilityInstalledFormMarker.InstallProvider(aForm: TCustomForm;
+  const aRegistry: IAccessibilityAdapterRegistry; const aApi: IAccessibilityUiaApi);
 begin
   if fHook <> nil then
   begin
     Exit;
   end;
 
-  fHook := TAccessibilityFormWindowHook.Create(aForm, TAccessibilityVclProviderBuilder.BuildForm(aForm, nil, aApi),
-    aApi);
+  fRegistry := aRegistry;
+  fHook := TAccessibilityFormWindowHook.Create(aForm,
+    TAccessibilityVclProviderBuilder.BuildForm(aForm, aRegistry, aApi), aApi);
+end;
+
+procedure TAccessibilityInstalledFormMarker.RememberRegistry(const aRegistry: IAccessibilityAdapterRegistry);
+begin
+  fRegistry := aRegistry;
+end;
+
+function TAccessibilityInstalledFormMarker.RegistryMatches(
+  const aRegistry: IAccessibilityAdapterRegistry): Boolean;
+begin
+  Result := SameRegistry(fRegistry, aRegistry);
 end;
 
 constructor TAccessibilityFormWindowHook.Create(aForm: TCustomForm; const aProvider: IAccessibilityProviderNode;
@@ -312,6 +343,37 @@ begin
   end;
 end;
 
+procedure TAccessibilityManagerState.EnsureApplicationRegistry(const aRegistry: IAccessibilityAdapterRegistry);
+begin
+  if fAppInstalled and not SameRegistry(fApplicationRegistry, aRegistry) then
+  begin
+    raise EInvalidOperation.Create('Call TAccessibilityManager.Uninstall before changing the app-wide adapter registry.');
+  end;
+end;
+
+procedure TAccessibilityManagerState.EnsureFormRegistryAllowed(const aRegistry: IAccessibilityAdapterRegistry);
+begin
+  if fAppInstalled and not SameRegistry(fApplicationRegistry, aRegistry) then
+  begin
+    raise EInvalidOperation.Create('Pass the active app-wide adapter registry or call TAccessibilityManager.Uninstall first.');
+  end;
+end;
+
+procedure TAccessibilityManagerState.EnsureInstalledFormsRegistry(const aRegistry: IAccessibilityAdapterRegistry);
+var
+  i: Integer;
+  lMarker: TAccessibilityInstalledFormMarker;
+begin
+  for i := 0 to Pred(Screen.CustomFormCount) do
+  begin
+    lMarker := TAccessibilityInstalledFormMarker.FindOn(Screen.CustomForms[i]);
+    if (lMarker <> nil) and not lMarker.RegistryMatches(aRegistry) then
+    begin
+      raise EInvalidOperation.Create('Call TAccessibilityManager.Uninstall before changing a form adapter registry.');
+    end;
+  end;
+end;
+
 procedure TAccessibilityManagerState.HookScreen;
 begin
   if fScreenHookInstalled then
@@ -378,13 +440,23 @@ end;
 
 procedure TAccessibilityManagerState.InstallApplication(aApplication: TApplication);
 begin
+  InstallApplication(aApplication, nil);
+end;
+
+procedure TAccessibilityManagerState.InstallApplication(aApplication: TApplication;
+  const aRegistry: IAccessibilityAdapterRegistry);
+begin
   if aApplication = nil then
   begin
     raise EArgumentException.Create('Application must not be nil.');
   end;
 
+  EnsureApplicationRegistry(aRegistry);
+  EnsureInstalledFormsRegistry(aRegistry);
+
   if not fAppInstalled then
   begin
+    fApplicationRegistry := aRegistry;
     fAppInstalled := True;
     HookScreen;
   end;
@@ -394,6 +466,18 @@ begin
 end;
 
 procedure TAccessibilityManagerState.InstallForm(aForm: TCustomForm);
+begin
+  InstallFormWithRegistry(aForm, nil);
+end;
+
+procedure TAccessibilityManagerState.InstallForm(aForm: TCustomForm;
+  const aRegistry: IAccessibilityAdapterRegistry);
+begin
+  InstallFormWithRegistry(aForm, aRegistry);
+end;
+
+procedure TAccessibilityManagerState.InstallFormWithRegistry(aForm: TCustomForm;
+  const aRegistry: IAccessibilityAdapterRegistry);
 var
   lMarker: TAccessibilityInstalledFormMarker;
 begin
@@ -402,13 +486,21 @@ begin
     raise EArgumentException.Create('Form must not be nil.');
   end;
 
+  EnsureFormRegistryAllowed(aRegistry);
+
   if fHintController = nil then
   begin
     InstallHintController(nil, False);
   end;
 
-  if TAccessibilityInstalledFormMarker.FindOn(aForm) <> nil then
+  lMarker := TAccessibilityInstalledFormMarker.FindOn(aForm);
+  if lMarker <> nil then
   begin
+    if not lMarker.RegistryMatches(aRegistry) then
+    begin
+      raise EInvalidOperation.Create('Call TAccessibilityManager.Uninstall before changing a form adapter registry.');
+    end;
+
     if fHintController <> nil then
     begin
       fHintController.ObserveForm(aForm);
@@ -421,8 +513,9 @@ begin
     if fFormInstaller <> nil then
     begin
       fFormInstaller.InstallForm(aForm);
+      lMarker.RememberRegistry(aRegistry);
     end else begin
-      lMarker.InstallDefaultProvider(aForm, fUiaApi);
+      lMarker.InstallProvider(aForm, aRegistry, fUiaApi);
     end;
   except
     lMarker.Free;
@@ -493,7 +586,7 @@ var
 begin
   for i := 0 to Pred(Screen.FormCount) do
   begin
-    InstallForm(Screen.Forms[i]);
+    InstallFormWithRegistry(Screen.Forms[i], fApplicationRegistry);
   end;
 end;
 
@@ -510,6 +603,7 @@ end;
 procedure TAccessibilityManagerState.Uninstall;
 begin
   fAppInstalled := False;
+  fApplicationRegistry := nil;
   ReleaseHintController;
   RemoveInstalledMarkers;
   RestoreScreenHook;
@@ -520,9 +614,20 @@ begin
   ManagerState.InstallApplication(aApplication);
 end;
 
+class procedure TAccessibilityManager.Install(aApplication: TApplication;
+  const aRegistry: IAccessibilityAdapterRegistry);
+begin
+  ManagerState.InstallApplication(aApplication, aRegistry);
+end;
+
 class procedure TAccessibilityManager.Install(aForm: TCustomForm);
 begin
   ManagerState.InstallForm(aForm);
+end;
+
+class procedure TAccessibilityManager.Install(aForm: TCustomForm; const aRegistry: IAccessibilityAdapterRegistry);
+begin
+  ManagerState.InstallForm(aForm, aRegistry);
 end;
 
 class procedure TAccessibilityManager.Uninstall;

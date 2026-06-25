@@ -1,16 +1,17 @@
 ﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup>
-    <ProjectGuid>{783C2225-EF32-458C-A958-EA31B326447D}</ProjectGuid>
+    <ProjectGuid>{5848D1D0-8249-462B-B2AB-EE83E5DD75EC}</ProjectGuid>
     <ProjectVersion>20.3</ProjectVersion>
-    <MainSource>MaxLogicAccessibilityFramework.Tests.dpr</MainSource>
+    <MainSource>AccessibilityComplexDemo.dpr</MainSource>
     <Base>True</Base>
     <Config Condition="'$(Config)'==''">Debug</Config>
     <Platform Condition="'$(Platform)'==''">Win32</Platform>
     <TargetedPlatforms>3</TargetedPlatforms>
-    <AppType>Console</AppType>
+    <AppType>Application</AppType>
     <FrameworkType>VCL</FrameworkType>
     <AppDPIAwarenessMode>PerMonitorV2</AppDPIAwarenessMode>
     <Manifest_File>$(BDS)\bin\default_app.manifest</Manifest_File>
+    <ProjectName Condition="'$(ProjectName)'==''">AccessibilityComplexDemo</ProjectName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Config)'=='Base' or '$(Base)'!=''">
     <Base>true</Base>
@@ -35,11 +36,23 @@
     <CfgParent>Base</CfgParent>
     <Base>true</Base>
   </PropertyGroup>
+  <PropertyGroup Condition="('$(Platform)'=='Win32' and '$(Cfg_2)'=='true') or '$(Cfg_2_Win32)'!=''">
+    <Cfg_2_Win32>true</Cfg_2_Win32>
+    <CfgParent>Cfg_2</CfgParent>
+    <Cfg_2>true</Cfg_2>
+    <Base>true</Base>
+  </PropertyGroup>
+  <PropertyGroup Condition="('$(Platform)'=='Win64' and '$(Cfg_2)'=='true') or '$(Cfg_2_Win64)'!=''">
+    <Cfg_2_Win64>true</Cfg_2_Win64>
+    <CfgParent>Cfg_2</CfgParent>
+    <Cfg_2>true</Cfg_2>
+    <Base>true</Base>
+  </PropertyGroup>
   <PropertyGroup Condition="'$(Base)'!=''">
     <DCC_ExeOutput>..\bin\$(Platform)\$(Config)</DCC_ExeOutput>
     <DCC_DcuOutput>..\dcu\$(MSBuildProjectName)\$(Platform)\$(Config)</DCC_DcuOutput>
     <DCC_Namespace>System;Xml;Data;Datasnap;Web;Soap;Vcl;Winapi;$(DCC_Namespace)</DCC_Namespace>
-    <DCC_UnitSearchPath>..\src;..\demos;src;$(BDS)\source\DUnitX;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
+    <DCC_UnitSearchPath>..\src;..\lib\MaxLogicFoundation;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
     <DCC_UsePackage>rtl;vcl;$(DCC_UsePackage)</DCC_UsePackage>
     <DCC_Warnings>True</DCC_Warnings>
     <DCC_Hints>True</DCC_Hints>
@@ -48,16 +61,17 @@
     <VerInfo_MinorVer>1</VerInfo_MinorVer>
     <VerInfo_Release>0</VerInfo_Release>
     <VerInfo_Build>0</VerInfo_Build>
-    <VerInfo_Keys>CompanyName=MaxLogic;FileDescription=MaxLogic Accessibility Framework Tests;FileVersion=0.1.0.0;InternalName=MaxLogicAccessibilityFramework.Tests;LegalCopyright=;OriginalFilename=MaxLogicAccessibilityFramework.Tests.exe;ProductName=MaxLogic Accessibility Framework;ProductVersion=0.1.0.0</VerInfo_Keys>
+    <VerInfo_Keys>CompanyName=MaxLogic;FileDescription=Accessibility Framework Complex Demo;FileVersion=0.1.0.0;InternalName=AccessibilityComplexDemo;LegalCopyright=;OriginalFilename=AccessibilityComplexDemo.exe;ProductName=MaxLogic Accessibility Framework Demo;ProductVersion=0.1.0.0</VerInfo_Keys>
+    <SanitizedProjectName>AccessibilityComplexDemo</SanitizedProjectName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Base_Win32)'!=''">
-    <DCC_Namespace>Winapi;System.Win;Data.Win;Datasnap.Win;Web.Win;Soap.Win;Xml.Win;Bde;$(DCC_Namespace)</DCC_Namespace>
+    <DCC_Namespace>System.Win;Data.Win;Datasnap.Win;Web.Win;Soap.Win;Xml.Win;Bde;$(DCC_Namespace)</DCC_Namespace>
     <AppDPIAwarenessMode>PerMonitorV2</AppDPIAwarenessMode>
     <Manifest_File>$(BDS)\bin\default_app.manifest</Manifest_File>
     <VerInfo_IncludeVerInfo>true</VerInfo_IncludeVerInfo>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Base_Win64)'!=''">
-    <DCC_Namespace>Winapi;System.Win;Data.Win;Datasnap.Win;Web.Win;Soap.Win;Xml.Win;$(DCC_Namespace)</DCC_Namespace>
+    <DCC_Namespace>System.Win;Data.Win;Datasnap.Win;Web.Win;Soap.Win;Xml.Win;$(DCC_Namespace)</DCC_Namespace>
     <AppDPIAwarenessMode>PerMonitorV2</AppDPIAwarenessMode>
     <Manifest_File>$(BDS)\bin\default_app.manifest</Manifest_File>
     <VerInfo_IncludeVerInfo>true</VerInfo_IncludeVerInfo>
@@ -70,45 +84,37 @@
     <DCC_Optimize>true</DCC_Optimize>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Cfg_2)'!=''">
-    <DCC_Define>DEBUG;$(DCC_Define)</DCC_Define>
+    <DCC_Define>madExcept;DEBUG;$(DCC_Define)</DCC_Define>
     <DCC_DebugInformation>1</DCC_DebugInformation>
     <DCC_DebugInfoInExe>true</DCC_DebugInfoInExe>
+    <DCC_MapFile>3</DCC_MapFile>
     <DCC_Optimize>false</DCC_Optimize>
     <DCC_GenerateStackFrames>true</DCC_GenerateStackFrames>
     <DCC_RangeChecking>true</DCC_RangeChecking>
     <DCC_IntegerOverflowCheck>true</DCC_IntegerOverflowCheck>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(Cfg_2_Win32)'!=''">
+    <BT_BuildType>Debug</BT_BuildType>
+    <VerInfo_IncludeVerInfo>true</VerInfo_IncludeVerInfo>
+    <VerInfo_AutoIncVersion>true</VerInfo_AutoIncVersion>
+    <VerInfo_Locale>1045</VerInfo_Locale>
+    <VerInfo_Build>53</VerInfo_Build>
+    <VerInfo_Keys>CompanyName=MaxLogic;FileDescription=Accessibility Framework Complex Demo;FileVersion=0.1.0.53;InternalName=AccessibilityComplexDemo;LegalCopyright=;OriginalFilename=AccessibilityComplexDemo.exe;ProductName=MaxLogic Accessibility Framework Demo;ProductVersion=0.1.0.0</VerInfo_Keys>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Cfg_2_Win64)'!=''">
+    <BT_BuildType>Debug</BT_BuildType>
+  </PropertyGroup>
   <ItemGroup>
     <DelphiCompile Include="$(MainSource)">
       <MainSource>MainSource</MainSource>
     </DelphiCompile>
-    <DCCReference Include="src\MaxLogic.Accessibility.Hints.Tests.pas"/>
-    <DCCReference Include="src\MaxLogic.Accessibility.AdvStringGrid.Tests.pas"/>
-    <DCCReference Include="src\MaxLogic.Accessibility.Diagnostics.Tests.pas"/>
-    <DCCReference Include="src\MaxLogic.Accessibility.Documentation.Tests.pas"/>
-    <DCCReference Include="src\MaxLogic.Accessibility.Manager.Tests.pas"/>
-    <DCCReference Include="src\MaxLogic.Accessibility.Msaa.Tests.pas"/>
-    <DCCReference Include="src\MaxLogic.Accessibility.ProviderCore.Tests.pas"/>
-    <DCCReference Include="src\MaxLogic.Accessibility.Scanner.Tests.pas"/>
-    <DCCReference Include="src\MaxLogic.Accessibility.ScreenReaders.Tests.pas"/>
-    <DCCReference Include="src\MaxLogic.Accessibility.Smoke.Tests.pas"/>
-    <DCCReference Include="src\MaxLogic.Accessibility.StringGrid.Tests.pas"/>
-    <DCCReference Include="src\MaxLogic.Accessibility.Text.Tests.pas"/>
-    <DCCReference Include="src\MaxLogic.Accessibility.UIAutomationCore.Tests.pas"/>
-    <DCCReference Include="src\MaxLogic.Accessibility.VclAdapters.Tests.pas"/>
-    <DCCReference Include="..\demos\AccessibilityDemoMainForm.pas"/>
-    <DCCReference Include="..\src\MaxLogic.Accessibility.Framework.pas"/>
-    <DCCReference Include="..\src\MaxLogic.Accessibility.Diagnostics.pas"/>
-    <DCCReference Include="..\src\MaxLogic.Accessibility.Hints.pas"/>
-    <DCCReference Include="..\src\MaxLogic.Accessibility.Manager.pas"/>
-    <DCCReference Include="..\src\MaxLogic.Accessibility.Msaa.pas"/>
-    <DCCReference Include="..\src\MaxLogic.Accessibility.ProviderCore.pas"/>
-    <DCCReference Include="..\src\MaxLogic.Accessibility.Scanner.pas"/>
-    <DCCReference Include="..\src\MaxLogic.Accessibility.ScreenReaders.pas"/>
-    <DCCReference Include="..\src\MaxLogic.Accessibility.TmsAdvStringGridAdapters.pas"/>
-    <DCCReference Include="..\src\MaxLogic.Accessibility.Text.pas"/>
-    <DCCReference Include="..\src\MaxLogic.Accessibility.UIAutomationCore.pas"/>
-    <DCCReference Include="..\src\MaxLogic.Accessibility.VclAdapters.pas"/>
+    <DCCReference Include="AccessibilityDemoMainForm.pas">
+      <Form>AccessibilityDemoMainForm</Form>
+    </DCCReference>
+    <DCCReference Include="..\src\MaxLogic.Accessibility.Diagnostics.pas" />
+    <DCCReference Include="..\src\MaxLogic.Accessibility.Manager.pas" />
+    <DCCReference Include="..\src\MaxLogic.Accessibility.TmsAdvStringGridAdapters.pas" />
+    <DCCReference Include="..\lib\MaxLogicFoundation\MaxLogic.MadExcept.AiRunner.pas" />
     <BuildConfiguration Include="Base">
       <Key>Base</Key>
     </BuildConfiguration>
@@ -123,12 +129,18 @@
   </ItemGroup>
   <ProjectExtensions>
     <Borland.Personality>Delphi.Personality.12</Borland.Personality>
-    <Borland.ProjectType/>
+    <Borland.ProjectType />
     <BorlandProject>
       <Delphi.Personality>
         <Source>
-          <Source Name="MainSource">MaxLogicAccessibilityFramework.Tests.dpr</Source>
+          <Source Name="MainSource">AccessibilityComplexDemo.dpr</Source>
         </Source>
+        <Excluded_Packages>
+          <Excluded_Packages Name="$(BDSBIN)\dclMetropolisUILiveTile290.bpl">File c:\program files (x86)\embarcadero\studio\23.0\bin\dclMetropolisUILiveTile290.bpl not found</Excluded_Packages>
+          <Excluded_Packages Name="$(BDSBIN)\dcloffice2k290.bpl">Microsoft Office 2000 Sample Automation Server Wrapper Components</Excluded_Packages>
+          <Excluded_Packages Name="$(BDSBIN)\dclofficexp290.bpl">Microsoft Office XP Sample Automation Server Wrapper Components</Excluded_Packages>
+          <Excluded_Packages Name="C:\Users\Public\Documents\Embarcadero\Studio\23.0\Bpl\dclSVGIconImageListFMX290.bpl">Ethea SVGIconImageList  FMX components</Excluded_Packages>
+        </Excluded_Packages>
       </Delphi.Personality>
       <Platforms>
         <Platform value="Win32">True</Platform>
@@ -137,5 +149,6 @@
     </BorlandProject>
     <ProjectFileVersion>12</ProjectFileVersion>
   </ProjectExtensions>
-  <Import Project="$(BDS)\Bin\CodeGear.Delphi.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Delphi.Targets')"/>
+  <Import Project="$(BDS)\Bin\CodeGear.Delphi.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Delphi.Targets')" />
+  <Import Project="$(APPDATA)\Embarcadero\$(BDSAPPDATABASEDIR)\$(PRODUCTVERSION)\UserTools.proj" Condition="Exists('$(APPDATA)\Embarcadero\$(BDSAPPDATABASEDIR)\$(PRODUCTVERSION)\UserTools.proj')" />
 </Project>

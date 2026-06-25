@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('BasicVclControls', 'Hints', 'TStringGridCells', 'TAdvStringGridCells', 'All')]
+    [ValidateSet('BasicVclControls', 'Hints', 'MemoListStatus', 'TStringGridCells', 'TAdvStringGridCells', 'All')]
     [string] $Scenario = 'BasicVclControls',
 
     [ValidateSet('Debug', 'Release')]
@@ -119,6 +119,40 @@ function Invoke-TStringGridCellsProbe {
     }
 }
 
+function Invoke-MemoListStatusProbe {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('Debug', 'Release')]
+        [string] $Config,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('Win32', 'Win64')]
+        [string] $Platform
+    )
+
+    $lBuildScript = Join-Path $PSScriptRoot 'build.ps1'
+    & $lBuildScript -Config $Config -Platform $Platform
+
+    $lRepoRoot = Split-Path -Parent $PSScriptRoot
+    $lSmokeExe = Join-Path $lRepoRoot "bin\$Platform\$Config\MaxLogicAccessibilityFrameworkSmoke.exe"
+    if (-not (Test-Path -LiteralPath $lSmokeExe -PathType Leaf)) {
+        throw "Smoke executable not found: $lSmokeExe"
+    }
+
+    $lOutput = & $lSmokeExe --uia-probe MemoListStatus 2>&1
+    $lOutput | ForEach-Object { Write-Output $_ }
+
+    $lText = $lOutput | Out-String
+    if ($LASTEXITCODE -ne 0) {
+        throw "MemoListStatus probe failed with exit code $LASTEXITCODE."
+    }
+
+    if ($lText -notmatch 'UIA_PROBE_OK MemoListStatus:') {
+        throw 'MemoListStatus provider probe did not confirm memo, listbox, and statusbar accessibility.'
+    }
+}
+
 function Invoke-TAdvStringGridCellsProbe {
     [CmdletBinding()]
     param(
@@ -160,6 +194,9 @@ switch ($Scenario) {
     'Hints' {
         Invoke-HintsProbe -Config $Config -Platform $Platform
     }
+    'MemoListStatus' {
+        Invoke-MemoListStatusProbe -Config $Config -Platform $Platform
+    }
     'TStringGridCells' {
         Invoke-TStringGridCellsProbe -Config $Config -Platform $Platform
     }
@@ -169,6 +206,7 @@ switch ($Scenario) {
     'All' {
         Invoke-BasicVclControlsProbe -Config $Config -Platform $Platform
         Invoke-HintsProbe -Config $Config -Platform $Platform
+        Invoke-MemoListStatusProbe -Config $Config -Platform $Platform
         Invoke-TStringGridCellsProbe -Config $Config -Platform $Platform
         Invoke-TAdvStringGridCellsProbe -Config $Config -Platform $Platform
     }

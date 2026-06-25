@@ -83,7 +83,8 @@ type
 implementation
 
 uses
-  System.Actions, System.Classes, System.SysUtils, System.TypInfo, Winapi.Messages, MaxLogic.Accessibility.Text;
+  System.Actions, System.Classes, System.SysUtils, System.Types, System.TypInfo, Winapi.Messages, Vcl.StdCtrls,
+  MaxLogic.Accessibility.Text;
 
 type
   TAccessibilityScanNode = class(TInterfacedObject, IAccessibilityScanNode)
@@ -184,6 +185,130 @@ begin
   if (lPropInfo <> nil) and (lPropInfo.PropType^.Kind in [tkString, tkLString, tkWString, tkUString]) then
   begin
     Result := TAccessibilityText.Clean(GetStrProp(aObject, lPropInfo));
+  end;
+end;
+
+function ReadNestedStringProperty(aObject: TObject; const aObjectPropertyName: string;
+  const aStringPropertyName: string): string;
+var
+  lObject: TObject;
+begin
+  Result := '';
+  lObject := ReadObjectProperty(aObject, aObjectPropertyName);
+  if lObject <> nil then
+  begin
+    Result := ReadStringProperty(lObject, aStringPropertyName);
+  end;
+end;
+
+function IsTextInputControl(aControl: TControl): Boolean;
+begin
+  Result := (aControl is TCustomEdit) or (aControl is TCustomComboBox);
+end;
+
+function IsLabelControl(aControl: TControl): Boolean;
+begin
+  Result := (aControl is TCustomLabel) or (aControl is TStaticText);
+end;
+
+function LabelTargetsControl(aLabel: TControl; aControl: TControl): Boolean;
+begin
+  Result := ReadObjectProperty(aLabel, 'FocusControl') = aControl;
+end;
+
+function ControlIsInActiveVisibleTree(aControl: TControl): Boolean;
+var
+  lControl: TControl;
+begin
+  Result := False;
+  lControl := aControl;
+  while lControl <> nil do
+  begin
+    if not (lControl is TCustomForm) and not lControl.Visible then
+    begin
+      Exit;
+    end;
+
+    lControl := lControl.Parent;
+  end;
+
+  Result := True;
+end;
+
+function LabelScore(aLabel: TControl; aControl: TControl): Integer;
+var
+  lControlCenterX: Integer;
+  lControlCenterY: Integer;
+  lControlRect: TRect;
+  lLabelCenterX: Integer;
+  lLabelCenterY: Integer;
+  lLabelRect: TRect;
+  lVerticalOverlap: Boolean;
+begin
+  if LabelTargetsControl(aLabel, aControl) then
+  begin
+    Exit(0);
+  end;
+
+  lControlRect := aControl.BoundsRect;
+  lLabelRect := aLabel.BoundsRect;
+  lControlCenterX := (lControlRect.Left + lControlRect.Right) div 2;
+  lControlCenterY := (lControlRect.Top + lControlRect.Bottom) div 2;
+  lLabelCenterX := (lLabelRect.Left + lLabelRect.Right) div 2;
+  lLabelCenterY := (lLabelRect.Top + lLabelRect.Bottom) div 2;
+  lVerticalOverlap := (lLabelRect.Top <= lControlCenterY) and (lLabelRect.Bottom >= lControlCenterY);
+
+  if lVerticalOverlap and (lLabelRect.Right <= lControlRect.Left + 8) then
+  begin
+    Exit(1000 + Abs(lControlRect.Left - lLabelRect.Right) + Abs(lControlCenterY - lLabelCenterY));
+  end;
+
+  if (lLabelRect.Bottom <= lControlRect.Top + 8) and (lLabelRect.Right >= lControlRect.Left) and
+    (lLabelRect.Left <= lControlRect.Right) then
+  begin
+    Exit(2000 + Abs(lControlRect.Top - lLabelRect.Bottom) + Abs(lControlCenterX - lLabelCenterX));
+  end;
+
+  Result := MaxInt;
+end;
+
+function TryFindAssociatedLabelText(aControl: TControl; out aText: string): Boolean;
+var
+  i: Integer;
+  lBestScore: Integer;
+  lCandidate: TControl;
+  lCandidateScore: Integer;
+  lText: string;
+begin
+  Result := False;
+  aText := '';
+  if (aControl = nil) or (aControl.Parent = nil) then
+  begin
+    Exit;
+  end;
+
+  lBestScore := MaxInt;
+  for i := 0 to Pred(aControl.Parent.ControlCount) do
+  begin
+    lCandidate := aControl.Parent.Controls[i];
+    if (lCandidate = aControl) or not IsLabelControl(lCandidate) or not ControlIsInActiveVisibleTree(lCandidate) then
+    begin
+      Continue;
+    end;
+
+    lText := ReadStringProperty(lCandidate, 'Caption');
+    if lText = '' then
+    begin
+      Continue;
+    end;
+
+    lCandidateScore := LabelScore(lCandidate, aControl);
+    if lCandidateScore < lBestScore then
+    begin
+      lBestScore := lCandidateScore;
+      aText := lText;
+      Result := True;
+    end;
   end;
 end;
 
@@ -301,7 +426,9 @@ var
   lHelpText: string;
   lHint: string;
   lIconOnly: Boolean;
+  lLabelText: string;
   lText: string;
+  lTextHint: string;
 begin
   Result := Default(TAccessibilityTextInfo);
   if aControl = nil then
@@ -312,6 +439,18 @@ begin
   Result.Name := ReadStringProperty(aControl, 'AccessibleName');
   lHint := ReadStringProperty(aControl, 'Hint');
   TAccessibilityText.SplitHint(lHint, lActionHintName, Result.HelpText);
+  lTextHint := ReadStringProperty(aControl, 'TextHint');
+  if lTextHint <> '' then
+  begin
+    if Result.HelpText = '' then
+    begin
+      Result.HelpText := lTextHint;
+    end else if not SameText(Result.HelpText, lTextHint) then
+    begin
+      Result.HelpText := lTextHint + '. ' + Result.HelpText;
+    end;
+  end;
+
   if Result.Name <> '' then
   begin
     Exit;
@@ -346,6 +485,17 @@ begin
     if not lIconOnly then
     begin
       Result.Name := lCaption;
+      Exit;
+    end;
+  end;
+
+  lLabelText := ReadNestedStringProperty(aControl, 'EditLabel', 'Caption');
+  if lLabelText <> '' then
+  begin
+    lIconOnly := lIconOnly or TAccessibilityText.IsIconFontOnly(lLabelText);
+    if not TAccessibilityText.IsIconFontOnly(lLabelText) then
+    begin
+      Result.Name := lLabelText;
       Exit;
     end;
   end;
@@ -688,9 +838,15 @@ function CreateControlInfo(aControl: TControl; const aRegistry: IAccessibilityAd
   TAccessibilityControlInfo;
 var
   lAdapter: IAccessibilityControlAdapter;
+  lAssociatedLabelText: string;
   lText: TAccessibilityTextInfo;
 begin
   lText := TAccessibilityTextExtractor.Extract(aControl);
+  if IsTextInputControl(aControl) and TryFindAssociatedLabelText(aControl, lAssociatedLabelText) then
+  begin
+    lText.Name := lAssociatedLabelText;
+  end;
+
   lAdapter := nil;
   if aRegistry <> nil then
   begin
@@ -700,6 +856,11 @@ begin
   if lAdapter <> nil then
   begin
     Exit(lAdapter.CreateInfo(aControl, lText));
+  end;
+
+  if (aControl is TWinControl) and TWinControl(aControl).TabStop and not IsTextInputControl(aControl) then
+  begin
+    Exit(TAccessibilityControlInfo.Omit);
   end;
 
   if lText.IsEmpty then

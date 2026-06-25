@@ -22,6 +22,8 @@ type
     procedure ScannerWalksVclTreeInStableOrder;
     [Test]
     procedure TextExtractionUsesFallbackPriorityAndSuppressesIconGlyphs;
+    [Test]
+    procedure TextExtractionUsesLabeledEditCaptionBeforeEditText;
   end;
 
 implementation
@@ -321,6 +323,29 @@ begin
     lIconLabel.Caption := WideChar($E001);
     lText := TAccessibilityTextExtractor.Extract(lIconLabel);
     Assert.IsTrue(lText.IsEmpty);
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityScannerTests.TextExtractionUsesLabeledEditCaptionBeforeEditText;
+var
+  lEdit: TLabeledEdit;
+  lForm: TForm;
+  lText: TAccessibilityTextInfo;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lEdit := TLabeledEdit.Create(lForm);
+    lEdit.Parent := lForm;
+    lEdit.EditLabel.Caption := 'Reference number';
+    lEdit.Text := 'REF-1042';
+    lEdit.Hint := 'Reference short|Reference long help';
+
+    lText := TAccessibilityTextExtractor.Extract(lEdit);
+
+    Assert.AreEqual('Reference number', lText.Name);
+    Assert.AreEqual('Reference long help', lText.HelpText);
   finally
     lForm.Free;
   end;

@@ -29,6 +29,8 @@ type
     [Test]
     procedure WmGetObjectReturnsRootProviderOnlyForUiaRequests;
     [Test]
+    procedure WmGetObjectLeavesClientObjectRequestsForNativeMsaa;
+    [Test]
     procedure AutomationEventsAreRaisedOnlyWhenClientsListen;
     [Test]
     procedure EventHelpersAreGatedForPropertyStructureAndNotification;
@@ -513,6 +515,26 @@ begin
   Assert.AreEqual(1, lApi.ReturnCalls);
   Assert.AreEqual(HWND(100), lApi.LastHwnd);
   Assert.AreEqual(LPARAM(UiaRootObjectId), lApi.LastLParam);
+end;
+
+procedure TProviderCoreTests.WmGetObjectLeavesClientObjectRequestsForNativeMsaa;
+const
+  cObjIdClient = LPARAM(-4);
+var
+  lApi: ITestUiaApi;
+  lHandled: Boolean;
+  lMessageResult: LRESULT;
+  lProvider: IAccessibilityProviderNode;
+begin
+  lApi := TTestUiaApi.Create;
+  lProvider := TAccessibilityProviderFactory.CreateRoot([10], HWND(100), lApi);
+
+  lHandled := TAccessibilityProviderWindowMessages.TryHandleGetObject(HWND(100), 7, cObjIdClient,
+    lProvider.RawElementProvider, lApi, lMessageResult);
+
+  Assert.IsFalse(lHandled);
+  Assert.AreEqual(0, Integer(lMessageResult));
+  Assert.AreEqual(0, lApi.ReturnCalls);
 end;
 
 initialization

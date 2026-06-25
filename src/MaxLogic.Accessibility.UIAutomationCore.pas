@@ -157,6 +157,7 @@ const
   UIA_AutomationPropertyChangedEventId = 20004;
   UIA_AutomationFocusChangedEventId = 20005;
   UIA_Invoke_InvokedEventId = 20009;
+  UIA_SelectionItem_ElementSelectedEventId = 20012;
   UIA_Text_TextSelectionChangedEventId = 20014;
   UIA_Text_TextChangedEventId = 20015;
   UIA_NotificationEventId = 20035;
@@ -184,12 +185,20 @@ const
   UIA_ProviderDescriptionPropertyId = 30107;
 
   UIA_ButtonControlTypeId = 50000;
+  UIA_CheckBoxControlTypeId = 50002;
+  UIA_ComboBoxControlTypeId = 50003;
   UIA_EditControlTypeId = 50004;
   UIA_ListItemControlTypeId = 50007;
   UIA_ListControlTypeId = 50008;
+  UIA_RadioButtonControlTypeId = 50013;
+  UIA_StatusBarControlTypeId = 50017;
+  UIA_TabControlTypeId = 50018;
+  UIA_TabItemControlTypeId = 50019;
   UIA_TextControlTypeId = 50020;
+  UIA_ToolBarControlTypeId = 50021;
   UIA_ToolTipControlTypeId = 50022;
   UIA_CustomControlTypeId = 50025;
+  UIA_GroupControlTypeId = 50026;
   UIA_DataGridControlTypeId = 50028;
   UIA_DataItemControlTypeId = 50029;
   UIA_DocumentControlTypeId = 50030;

@@ -9,11 +9,19 @@ Use this checklist on a real VCL application or on a manual sample built from th
 - Start NVDA.
 - Keep mouse tracking enabled when validating hover and grid-cell behavior.
 - Keep speech viewer open if exact text needs to be captured.
+- Optional: applications can call `TAccessibilityScreenReaderDetector` from `MaxLogic.Accessibility.ScreenReaders` before installing the framework. Treat `SPI_GETSCREENREADER` as one Windows accessibility-aid signal and `UiaClientsAreListening` as a UIA client-listener signal; UIA listener activity is not a guaranteed screen-reader identity.
 
 ## Controls
 
 - `TLabel`: using mouse review or object navigation exposes the caption without accelerator markers. Example: `&Customer` is spoken as `Customer`. The long hint should be available as help text when NVDA queries details. `TLabel` is not a tab-focusable control.
+- `TButton`: mouse-over should report the button caption and useful hint text, for example `Apply Filters. Apply the selected filters`. Invoke should activate the button.
 - `TSpeedButton`: NVDA reports a button name such as `Run` or `Pinned`. Invoke should activate the button. Toggleable speed buttons should expose on/off state changes.
+- `TComboBox`: tab focus and mouse-over should report the associated label/name and current value.
+- `TCheckBox`: mouse-over should report the caption and NVDA's localized checkbox state. The framework must not add framework-injected English state words such as `checked` or `not checked`; hover raises platform object/state events, and state comes from UIA TogglePattern plus MSAA checked/mixed flags. Toggle should update the platform state.
+- `TRadioButton`: mouse-over should report the caption and NVDA's localized selected state. Radio buttons use UIA SelectionItem and MSAA radio-button state; they must not expose TogglePattern.
+- `TGroupBox` and `TRadioGroup`: object navigation should report named option groups and allow reaching their child radio controls where VCL exposes separate child controls.
+- `TPageControl`/`TTabSheet`: mouse-over on tab buttons should report the tab caption, not only the page-control container.
+- `TToolBar`/`TToolButton`: toolbar commands should expose toolbar/button roles and the command caption or hint text.
 - `TPanel`: decorative empty panels should not be spoken. A panel with accessible child controls may appear as a pane/group and should let NVDA reach the child text.
 - Generic graphic controls: text-like custom `TGraphicControl` descendants with caption or hint text should expose readable text; empty decorative graphics should be omitted.
 

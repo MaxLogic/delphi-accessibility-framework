@@ -17,6 +17,8 @@ type
     [Test]
     procedure ApplicationInstallWithCustomRegistryScansCurrentTmsForms;
     [Test]
+    procedure DemoEnableToggleInstallsUninstallsAndSyncsCurrentAndFutureForms;
+    [Test]
     procedure ApplicationCustomRegistryRejectsDefaultFormInstall;
     [Test]
     procedure ApplicationRegistrySwitchRequiresUninstall;
@@ -27,6 +29,8 @@ type
     [Test]
     procedure ApplicationInstallScansCurrentFormsAndIsIdempotent;
     [Test]
+    procedure ApplicationInstallSkipsInternalNoActiveForm;
+    [Test]
     procedure FormInstallIsScopedAndIdempotent;
     [Test]
     procedure FormInstallWithCustomRegistryUsesTmsProviderThroughWmGetObject;
@@ -36,6 +40,70 @@ type
     procedure FormCustomRegistryRejectsActiveDefaultApplicationInstall;
     [Test]
     procedure FormInstallHandlesUiaGetObjectThroughDefaultProvider;
+    [Test]
+    procedure FormInstallHandlesChildUiaGetObjectThroughFrameworkProvider;
+    [Test]
+    procedure FormInstallHandlesChildContainerHitTestingForNonWindowedLabel;
+    [Test]
+    procedure FormInstallLeavesUnsupportedFocusableControlNativeGetObject;
+    [Test]
+    procedure FormInstallHandlesPageControlUiaGetObjectForTabHeaders;
+    [Test]
+    procedure FormInstallHandlesPageControlMsaaGetObjectForTabHeaders;
+    [Test]
+    procedure FormInstallObjectFromPointReturnsPageControlTabHeader;
+    [Test]
+    procedure FormInstallObjectFromPointReturnsActiveTabSheetNestedLabel;
+    [Test]
+    procedure FormInstallHandlesInputMsaaGetObjectWithLabelAndTextHint;
+    [Test]
+    procedure FormInstallHandlesStringGridMsaaGetObjectForFocusedCell;
+    [Test]
+    procedure FormInstallRaisesFocusedControlHintNotificationOnFocus;
+    [Test]
+    procedure FormInstallRaisesInputFocusEventOnFocus;
+    [Test]
+    procedure FormInstallRaisesComboBoxFocusEventOnFocus;
+    [Test]
+    procedure FormInstallRaisesLabeledEditFocusEventOnFocus;
+    [Test]
+    procedure FormInstallRaisesFocusedEditTextHintNotificationOnFocus;
+    [Test]
+    procedure FormInstallRaisesInputFocusAnnouncementMatchingMouseOverSurface;
+    [Test]
+    procedure FormInstallRaisesInputMsaaFocusWinEventWithDefaultApi;
+    [Test]
+    procedure FormInstallRaisesPageControlTabHoverNotification;
+    [Test]
+    procedure FormInstallRaisesPageControlTabHoverNotificationFromFormMouseMove;
+    [Test]
+    procedure FormInstallRaisesActiveTabSheetLabelHoverNotification;
+    [Test]
+    procedure FormInstallRaisesActiveTabSheetPanelLabelHoverNotification;
+    [Test]
+    procedure FormInstallRaisesMemoListBoxAndStatusBarHoverNotifications;
+    [Test]
+    procedure FormInstallRaisesWindowedButtonHoverNotificationAndCheckBoxProvider;
+    [Test]
+    procedure FormInstallRaisesCheckBoxHoverPlatformEventsWithoutNotification;
+    [Test]
+    procedure FormInstallRaisesCheckBoxFocusPlatformEventsWithoutNotification;
+    [Test]
+    procedure FormInstallRaisesToggleSpeedButtonHoverWithoutCheckBoxStateText;
+    [Test]
+    procedure FormInstallRaisesGridCellFocusEventAfterStringGridCellChangeMessage;
+    [Test]
+    procedure FormInstallRaisesGridCellFocusEventAfterStringGridArrowKey;
+    [Test]
+    procedure FormInstallRaisesStringGridRowFocusNotificationForRowSelect;
+    [Test]
+    procedure FormInstallRaisesListBoxItemFocusEventAfterArrowKey;
+    [Test]
+    procedure FormInstallDoesNotRaiseGridMsaaFocusWinEventAfterCellNotification;
+    [Test]
+    procedure FormInstallRaisesGridCellFocusEventAfterAdvStringGridCellChangeMessage;
+    [Test]
+    procedure FormInstallRaisesGridCellFocusEventAfterAdvStringGridArrowKey;
     [Test]
     procedure LaterWindowProcHookCanCallManagerAfterUninstallWithoutUiaReturn;
     [Test]
@@ -51,10 +119,11 @@ type
 implementation
 
 uses
-  System.Classes, System.Generics.Collections, System.SysUtils, System.Types, System.Variants, Winapi.Messages,
-  Winapi.Windows, Vcl.Controls, Vcl.Forms, Vcl.StdCtrls, AdvGrid, MaxLogic.Accessibility.Manager,
-  MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.Scanner,
-  MaxLogic.Accessibility.TmsAdvStringGridAdapters, MaxLogic.Accessibility.UIAutomationCore;
+  System.Classes, System.Generics.Collections, System.SysUtils, System.Types, System.Variants, Winapi.ActiveX,
+  Winapi.Messages, Winapi.oleacc, Winapi.Windows, Vcl.Buttons, Vcl.ComCtrls, Vcl.Controls, Vcl.ExtCtrls, Vcl.Forms,
+  Vcl.Grids, Vcl.StdCtrls, AdvGrid, MaxLogic.Accessibility.Manager, MaxLogic.Accessibility.ProviderCore,
+  MaxLogic.Accessibility.Scanner, MaxLogic.Accessibility.TmsAdvStringGridAdapters, MaxLogic.Accessibility.UIAutomationCore,
+  AccessibilityDemoMainForm;
 
 type
   IFormInstallRecorder = interface(IAccessibilityFormInstaller)
@@ -66,26 +135,46 @@ type
   IManagerTestUiaApi = interface(IAccessibilityUiaApi)
     ['{40F38FD9-3290-4894-A855-082E2884C0C1}']
     function DisconnectCalls: Integer;
+    function EventCalls: Integer;
     function LastHwnd: HWND;
+    function LastEventId: EVENTID;
+    function LastEventProvider: IRawElementProviderSimple;
     function LastLParam: LPARAM;
+    function LastNotificationProvider: IRawElementProviderSimple;
+    function LastNotificationText: string;
     function ReturnedProvider: IRawElementProviderSimple;
+    function NotificationCalls: Integer;
     function ReturnCalls: Integer;
+    procedure SetClientsAreListening(aValue: Boolean);
   end;
 
   TManagerTestUiaApi = class(TInterfacedObject, IManagerTestUiaApi)
   private
+    fClientsAreListening: Boolean;
     fDisconnectCalls: Integer;
+    fEventCalls: Integer;
+    fLastEventId: EVENTID;
+    fLastEventProvider: IRawElementProviderSimple;
     fLastHwnd: HWND;
     fLastLParam: LPARAM;
+    fLastNotificationProvider: IRawElementProviderSimple;
+    fLastNotificationText: string;
+    fNotificationCalls: Integer;
     fReturnedProvider: IRawElementProviderSimple;
     fReturnCalls: Integer;
   public
     function ClientsAreListening: Boolean;
     function DisconnectProvider(const aProvider: IRawElementProviderSimple): HRESULT;
     function DisconnectCalls: Integer;
+    function EventCalls: Integer;
     function HostProviderFromHwnd(aHwnd: HWND; out aProvider: IRawElementProviderSimple): HRESULT;
+    function LastEventId: EVENTID;
+    function LastEventProvider: IRawElementProviderSimple;
     function LastHwnd: HWND;
     function LastLParam: LPARAM;
+    function LastNotificationProvider: IRawElementProviderSimple;
+    function LastNotificationText: string;
+    function NotificationCalls: Integer;
     function ReturnedProvider: IRawElementProviderSimple;
     function RaiseAutomationEvent(const aProvider: IRawElementProviderSimple; aEventId: EVENTID): HRESULT;
     function RaiseAutomationPropertyChanged(const aProvider: IRawElementProviderSimple; aPropertyId: PROPERTYID;
@@ -98,6 +187,7 @@ type
     function ReturnCalls: Integer;
     function ReturnRawElementProvider(aHwnd: HWND; aWParam: WPARAM; aLParam: LPARAM;
       const aProvider: IRawElementProviderSimple): LRESULT;
+    procedure SetClientsAreListening(aValue: Boolean);
   end;
 
   TFormInstallRecorder = class(TInterfacedObject, IFormInstallRecorder)
@@ -110,6 +200,22 @@ type
     function CountFor(aForm: TCustomForm): Integer;
     procedure FailNextInstall;
     procedure InstallForm(aForm: TCustomForm);
+  end;
+
+  TWinEventRecorder = class(TInterfacedObject, IAccessibilityWinEventSink)
+  private
+    fCalls: Integer;
+    fLastChildId: Cardinal;
+    fLastEvent: DWORD;
+    fLastHwnd: HWND;
+    fLastObjectId: Cardinal;
+  public
+    procedure NotifyEvent(aEvent: DWORD; aHwnd: HWND; aObjectId: Cardinal; aChildId: Cardinal);
+    property Calls: Integer read fCalls;
+    property LastChildId: Cardinal read fLastChildId;
+    property LastEvent: DWORD read fLastEvent;
+    property LastHwnd: HWND read fLastHwnd;
+    property LastObjectId: Cardinal read fLastObjectId;
   end;
 
   TActiveFormChangeProbe = class
@@ -139,6 +245,17 @@ type
     property Calls: Integer read fCalls;
     property Prior: TWndMethod read fPrior write fPrior;
   end;
+
+  TNativeAccessibleProbeControl = class(TCustomControl)
+  private
+    fGetObjectCalls: Integer;
+  protected
+    procedure WndProc(var aMessage: TMessage); override;
+  public
+    property GetObjectCalls: Integer read fGetObjectCalls;
+  end;
+
+  TNoActiveForm = class(TForm);
 
 constructor TFormInstallRecorder.Create;
 begin
@@ -182,6 +299,15 @@ begin
   fForms.Add(aForm);
 end;
 
+procedure TWinEventRecorder.NotifyEvent(aEvent: DWORD; aHwnd: HWND; aObjectId: Cardinal; aChildId: Cardinal);
+begin
+  Inc(fCalls);
+  fLastEvent := aEvent;
+  fLastHwnd := aHwnd;
+  fLastObjectId := aObjectId;
+  fLastChildId := aChildId;
+end;
+
 procedure TActiveFormChangeProbe.HandleActiveFormChange(aSender: TObject);
 begin
   Inc(fCalls);
@@ -205,16 +331,29 @@ begin
   end;
 end;
 
+procedure TNativeAccessibleProbeControl.WndProc(var aMessage: TMessage);
+begin
+  if aMessage.Msg = WM_GETOBJECT then
+  begin
+    Inc(fGetObjectCalls);
+    aMessage.Result := 13579;
+    Exit;
+  end;
+
+  inherited WndProc(aMessage);
+end;
+
 procedure ResetManager;
 begin
   TAccessibilityManager.Uninstall;
   TAccessibilityManagerInternals.SetFormInstaller(nil);
   TAccessibilityManagerInternals.SetUiaApi(nil);
+  TAccessibilityManagerInternals.SetWinEventSink(nil);
 end;
 
 function TManagerTestUiaApi.ClientsAreListening: Boolean;
 begin
-  Result := False;
+  Result := fClientsAreListening;
 end;
 
 function TManagerTestUiaApi.DisconnectProvider(const aProvider: IRawElementProviderSimple): HRESULT;
@@ -228,10 +367,25 @@ begin
   Result := fDisconnectCalls;
 end;
 
+function TManagerTestUiaApi.EventCalls: Integer;
+begin
+  Result := fEventCalls;
+end;
+
 function TManagerTestUiaApi.HostProviderFromHwnd(aHwnd: HWND; out aProvider: IRawElementProviderSimple): HRESULT;
 begin
   aProvider := nil;
   Result := S_FALSE;
+end;
+
+function TManagerTestUiaApi.LastEventId: EVENTID;
+begin
+  Result := fLastEventId;
+end;
+
+function TManagerTestUiaApi.LastEventProvider: IRawElementProviderSimple;
+begin
+  Result := fLastEventProvider;
 end;
 
 function TManagerTestUiaApi.LastHwnd: HWND;
@@ -244,6 +398,21 @@ begin
   Result := fLastLParam;
 end;
 
+function TManagerTestUiaApi.LastNotificationProvider: IRawElementProviderSimple;
+begin
+  Result := fLastNotificationProvider;
+end;
+
+function TManagerTestUiaApi.LastNotificationText: string;
+begin
+  Result := fLastNotificationText;
+end;
+
+function TManagerTestUiaApi.NotificationCalls: Integer;
+begin
+  Result := fNotificationCalls;
+end;
+
 function TManagerTestUiaApi.ReturnedProvider: IRawElementProviderSimple;
 begin
   Result := fReturnedProvider;
@@ -252,6 +421,9 @@ end;
 function TManagerTestUiaApi.RaiseAutomationEvent(const aProvider: IRawElementProviderSimple;
   aEventId: EVENTID): HRESULT;
 begin
+  Inc(fEventCalls);
+  fLastEventProvider := aProvider;
+  fLastEventId := aEventId;
   Result := S_OK;
 end;
 
@@ -265,6 +437,9 @@ function TManagerTestUiaApi.RaiseNotification(const aProvider: IRawElementProvid
   aNotificationKind: NotificationKind; aNotificationProcessing: NotificationProcessing; const aDisplayString: WideString;
   const aActivityId: WideString): HRESULT;
 begin
+  Inc(fNotificationCalls);
+  fLastNotificationProvider := aProvider;
+  fLastNotificationText := aDisplayString;
   Result := S_OK;
 end;
 
@@ -287,6 +462,11 @@ begin
   fLastLParam := aLParam;
   fReturnedProvider := aProvider;
   Result := 2468;
+end;
+
+procedure TManagerTestUiaApi.SetClientsAreListening(aValue: Boolean);
+begin
+  fClientsAreListening := aValue;
 end;
 
 function ScaleValue(aValue: Integer): Integer;
@@ -358,6 +538,73 @@ end;
 function ProviderPattern(const aFragment: IRawElementProviderFragment; aPatternId: PATTERNID): IUnknown;
 begin
   Assert.AreEqual(S_OK, SimpleProvider(aFragment).GetPatternProvider(aPatternId, Result));
+end;
+
+function AccessibleFromLResult(aResult: LRESULT; aWParam: WPARAM): IAccessible;
+begin
+  Result := nil;
+  Assert.IsTrue(aResult <> 0, 'MSAA WM_GETOBJECT did not return an object result.');
+  Assert.AreEqual(S_OK, ObjectFromLresult(aResult, IID_IAccessible, aWParam, Result));
+  Assert.IsNotNull(Result);
+end;
+
+function AccessibleObjectFromPointAt(const aPoint: TPoint; out aChild: VARIANT): IAccessible;
+begin
+  Result := nil;
+  aChild := Unassigned;
+  Assert.AreEqual(S_OK, AccessibleObjectFromPoint(aPoint, Result, aChild));
+  Assert.IsNotNull(Result);
+end;
+
+function AccessibleHitTestAt(const aAccessible: IAccessible; const aPoint: TPoint): IAccessible;
+var
+  lHit: OleVariant;
+  lHitDispatch: IDispatch;
+begin
+  lHit := Unassigned;
+  Assert.AreEqual(S_OK, aAccessible.accHitTest(aPoint.X, aPoint.Y, lHit));
+  Assert.AreEqual(varDispatch, VarType(lHit));
+
+  lHitDispatch := IDispatch(TVarData(lHit).VDispatch);
+  Result := nil;
+  Assert.IsTrue(Supports(lHitDispatch, IAccessible, Result));
+end;
+
+function AccessibleName(const aAccessible: IAccessible): string;
+var
+  lName: WideString;
+begin
+  lName := '';
+  Assert.AreEqual(S_OK, aAccessible.Get_accName(CHILDID_SELF, lName));
+  Result := string(lName);
+end;
+
+function AccessibleRole(const aAccessible: IAccessible): Integer;
+var
+  lRole: OleVariant;
+begin
+  lRole := Unassigned;
+  Assert.AreEqual(S_OK, aAccessible.Get_accRole(CHILDID_SELF, lRole));
+  Result := Integer(lRole);
+end;
+
+function AccessibleState(const aAccessible: IAccessible): Integer;
+var
+  lState: OleVariant;
+begin
+  lState := Unassigned;
+  Assert.AreEqual(S_OK, aAccessible.Get_accState(CHILDID_SELF, lState));
+  Result := Integer(lState);
+end;
+
+function ControlScreenCenter(aControl: TControl): TPoint;
+begin
+  Result := aControl.ClientToScreen(Point(aControl.Width div 2, aControl.Height div 2));
+end;
+
+function PointFromMessageResult(aValue: LRESULT): TPoint;
+begin
+  Result := Point(Smallint(Word(aValue and $FFFF)), Smallint(Word((aValue shr 16) and $FFFF)));
 end;
 
 procedure AssertManagerGridCellName(const aApi: IManagerTestUiaApi; aForm: TCustomForm;
@@ -475,6 +722,86 @@ begin
     AssertManagerGridCellName(lApi, lForm, 'Alice');
   finally
     lForm.Free;
+    ResetManager;
+    Screen.OnActiveFormChange := lOriginalActiveFormChange;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.DemoEnableToggleInstallsUninstallsAndSyncsCurrentAndFutureForms;
+var
+  lFirstForm: TAccessibilityDemoMainForm;
+  lFutureForm: TAccessibilityDemoMainForm;
+  lOriginalActiveFormChange: TNotifyEvent;
+  lRaised: Boolean;
+  lSecondForm: TAccessibilityDemoMainForm;
+begin
+  ResetManager;
+  lOriginalActiveFormChange := Screen.OnActiveFormChange;
+  lFirstForm := nil;
+  lFutureForm := nil;
+  lSecondForm := nil;
+  try
+    if DemoAccessibilityFrameworkEnabled then
+    begin
+      SetDemoAccessibilityFrameworkEnabled(False);
+    end;
+
+    lFirstForm := TAccessibilityDemoMainForm.Create(Application);
+    lSecondForm := TAccessibilityDemoMainForm.Create(Application);
+
+    Assert.IsFalse(DemoAccessibilityFrameworkEnabled);
+    Assert.IsFalse(lFirstForm.chkAccessibilityEnabled.Checked);
+    Assert.IsFalse(lSecondForm.chkAccessibilityEnabled.Checked);
+
+    SetDemoAccessibilityFrameworkEnabled(True);
+
+    Assert.IsTrue(DemoAccessibilityFrameworkEnabled);
+    Assert.IsTrue(lFirstForm.chkAccessibilityEnabled.Checked);
+    Assert.IsTrue(lSecondForm.chkAccessibilityEnabled.Checked);
+    Assert.IsTrue(TAccessibilityManagerInternals.InstalledFormCount >= 2,
+      'App-wide demo enable must install current demo forms.');
+
+    lRaised := False;
+    try
+      TAccessibilityManager.Install(Application);
+    except
+      on EInvalidOperation do
+      begin
+        lRaised := True;
+      end;
+    end;
+    Assert.IsTrue(lRaised, 'Demo enable must install the TMS app-wide registry, not the default registry.');
+
+    lFirstForm.chkAccessibilityEnabled.Checked := False;
+    lFirstForm.chkAccessibilityEnabledClick(lFirstForm.chkAccessibilityEnabled);
+
+    Assert.IsFalse(DemoAccessibilityFrameworkEnabled);
+    Assert.IsFalse(lFirstForm.chkAccessibilityEnabled.Checked);
+    Assert.IsFalse(lSecondForm.chkAccessibilityEnabled.Checked);
+    Assert.AreEqual(0, TAccessibilityManagerInternals.InstalledFormCount);
+
+    lSecondForm.chkAccessibilityEnabled.Checked := True;
+    lSecondForm.chkAccessibilityEnabledClick(lSecondForm.chkAccessibilityEnabled);
+
+    Assert.IsTrue(DemoAccessibilityFrameworkEnabled);
+    Assert.IsTrue(lFirstForm.chkAccessibilityEnabled.Checked);
+    Assert.IsTrue(lSecondForm.chkAccessibilityEnabled.Checked);
+
+    lFutureForm := TAccessibilityDemoMainForm.Create(Application);
+    Assert.IsTrue(lFutureForm.chkAccessibilityEnabled.Checked);
+
+    Screen.OnActiveFormChange(Screen);
+
+    Assert.IsTrue(TAccessibilityManagerInternals.InstalledFormCount >= 3,
+      'App-wide demo enable must discover future demo forms.');
+  finally
+    if DemoAccessibilityFrameworkEnabled then
+    begin
+      SetDemoAccessibilityFrameworkEnabled(False);
+    end;
+    lFutureForm.Free;
+    lSecondForm.Free;
+    lFirstForm.Free;
     ResetManager;
     Screen.OnActiveFormChange := lOriginalActiveFormChange;
   end;
@@ -643,6 +970,32 @@ begin
   end;
 end;
 
+procedure TAccessibilityManagerTests.ApplicationInstallSkipsInternalNoActiveForm;
+var
+  lInternalForm: TForm;
+  lRealForm: TForm;
+  lRecorder: IFormInstallRecorder;
+begin
+  ResetManager;
+  lRecorder := TFormInstallRecorder.Create;
+  TAccessibilityManagerInternals.SetFormInstaller(lRecorder);
+  lInternalForm := TNoActiveForm.CreateNew(nil);
+  try
+    lRealForm := TForm.Create(nil);
+    try
+      TAccessibilityManager.Install(Application);
+
+      Assert.AreEqual(0, lRecorder.CountFor(lInternalForm));
+      Assert.AreEqual(1, lRecorder.CountFor(lRealForm));
+    finally
+      lRealForm.Free;
+    end;
+  finally
+    lInternalForm.Free;
+    ResetManager;
+  end;
+end;
+
 procedure TAccessibilityManagerTests.FormInstallIsScopedAndIdempotent;
 var
   lFirst: TForm;
@@ -799,6 +1152,1494 @@ begin
     TAccessibilityManager.Uninstall;
 
     Assert.IsTrue(lApi.DisconnectCalls > 0);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallHandlesChildUiaGetObjectThroughFrameworkProvider;
+var
+  lApi: IManagerTestUiaApi;
+  lEdit: TLabeledEdit;
+  lForm: TForm;
+  lMessage: TMessage;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lEdit := TLabeledEdit.Create(lForm);
+    lEdit.Parent := lForm;
+    lEdit.EditLabel.Caption := 'Reference number';
+    lEdit.Text := 'REF-1042';
+    lEdit.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.WParam := 11;
+    lMessage.LParam := UiaRootObjectId;
+    lEdit.WindowProc(lMessage);
+
+    Assert.AreEqual(2468, lMessage.Result);
+    Assert.AreEqual(lEdit.Handle, lApi.LastHwnd);
+    Assert.IsNotNull(lApi.ReturnedProvider);
+    Assert.AreEqual('Reference number',
+      ProviderStringProperty(FragmentFromSimple(lApi.ReturnedProvider), UIA_NamePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallHandlesChildContainerHitTestingForNonWindowedLabel;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lHit: IRawElementProviderFragment;
+  lLabel: TLabel;
+  lMessage: TMessage;
+  lPanel: TPanel;
+  lPoint: TPoint;
+  lRoot: IRawElementProviderFragmentRoot;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 320, 200);
+
+    lPanel := TPanel.Create(lForm);
+    lPanel.Caption := '';
+    lPanel.Parent := lForm;
+    lPanel.SetBounds(16, 16, 220, 80);
+
+    lLabel := TLabel.Create(lForm);
+    lLabel.Caption := 'Command title';
+    lLabel.Parent := lPanel;
+    lLabel.SetBounds(12, 12, 120, 24);
+
+    lPanel.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.WParam := 13;
+    lMessage.LParam := UiaRootObjectId;
+    lPanel.WindowProc(lMessage);
+
+    Assert.AreEqual(2468, lMessage.Result);
+    Assert.AreEqual(lPanel.Handle, lApi.LastHwnd);
+    Assert.IsTrue(Supports(lApi.ReturnedProvider, IRawElementProviderFragmentRoot, lRoot));
+    lPoint := ControlScreenCenter(lLabel);
+    Assert.AreEqual(S_OK, lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit));
+    Assert.IsNotNull(lHit);
+    Assert.AreEqual('Command title', ProviderStringProperty(lHit, UIA_NamePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallLeavesUnsupportedFocusableControlNativeGetObject;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lMessage: TMessage;
+  lNativeControl: TNativeAccessibleProbeControl;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 320, 200);
+
+    lNativeControl := TNativeAccessibleProbeControl.Create(lForm);
+    lNativeControl.Name := 'NativeTree';
+    lNativeControl.Parent := lForm;
+    lNativeControl.TabStop := True;
+    lNativeControl.SetBounds(16, 16, 220, 80);
+    lNativeControl.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.WParam := 19;
+    lMessage.LParam := UiaRootObjectId;
+    lNativeControl.WindowProc(lMessage);
+
+    Assert.AreEqual(13579, lMessage.Result);
+    Assert.AreEqual(1, lNativeControl.GetObjectCalls);
+    Assert.AreEqual(0, lApi.ReturnCalls);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallHandlesPageControlUiaGetObjectForTabHeaders;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lHit: IRawElementProviderFragment;
+  lMessage: TMessage;
+  lPageControl: TPageControl;
+  lPoint: TPoint;
+  lRoot: IRawElementProviderFragmentRoot;
+  lTabOrders: TTabSheet;
+  lTabTms: TTabSheet;
+  lTabRect: TRect;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 420, 260);
+
+    lPageControl := TPageControl.Create(lForm);
+    lPageControl.Name := 'PageControl';
+    lPageControl.Parent := lForm;
+    lPageControl.SetBounds(12, 12, 360, 200);
+
+    lTabOrders := TTabSheet.Create(lForm);
+    lTabOrders.Caption := 'Orders';
+    lTabOrders.PageControl := lPageControl;
+
+    lTabTms := TTabSheet.Create(lForm);
+    lTabTms.Caption := 'TMS grid';
+    lTabTms.PageControl := lPageControl;
+
+    lPageControl.ActivePage := lTabOrders;
+    lPageControl.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.WParam := 17;
+    lMessage.LParam := UiaRootObjectId;
+    lPageControl.WindowProc(lMessage);
+
+    Assert.AreEqual(2468, lMessage.Result);
+    Assert.AreEqual(lPageControl.Handle, lApi.LastHwnd);
+    Assert.IsTrue(Supports(lApi.ReturnedProvider, IRawElementProviderFragmentRoot, lRoot));
+
+    lTabRect := lPageControl.TabRect(lTabTms.TabIndex);
+    lPoint := lPageControl.ClientToScreen(lTabRect.CenterPoint);
+    Assert.AreEqual(S_OK, lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit));
+    Assert.IsNotNull(lHit);
+    Assert.AreEqual('TMS grid', ProviderStringProperty(lHit, UIA_NamePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallHandlesPageControlMsaaGetObjectForTabHeaders;
+const
+  cObjIdClient = LPARAM(OBJID_CLIENT);
+var
+  lAccessible: IAccessible;
+  lCoInit: HRESULT;
+  lDefaultAction: WideString;
+  lForm: TForm;
+  lObjectResult: LRESULT;
+  lObjectWParam: WPARAM;
+  lPageControl: TPageControl;
+  lPoint: TPoint;
+  lState: Integer;
+  lTabOrders: TTabSheet;
+  lTabRect: TRect;
+  lTabTms: TTabSheet;
+  lTmsAccessible: IAccessible;
+begin
+  ResetManager;
+  lCoInit := CoInitialize(nil);
+  lForm := TForm.Create(nil);
+  try
+    Assert.IsTrue((lCoInit = S_OK) or (lCoInit = S_FALSE) or (lCoInit = RPC_E_CHANGED_MODE));
+    lForm.SetBounds(100, 100, 420, 260);
+
+    lPageControl := TPageControl.Create(lForm);
+    lPageControl.Parent := lForm;
+    lPageControl.SetBounds(12, 12, 360, 200);
+
+    lTabOrders := TTabSheet.Create(lForm);
+    lTabOrders.Caption := 'Orders';
+    lTabOrders.PageControl := lPageControl;
+
+    lTabTms := TTabSheet.Create(lForm);
+    lTabTms.Caption := 'TMS grid';
+    lTabTms.PageControl := lPageControl;
+
+    lPageControl.ActivePage := lTabOrders;
+    lPageControl.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+
+    lObjectWParam := 0;
+    lObjectResult := SendMessage(lPageControl.Handle, WM_GETOBJECT, lObjectWParam, cObjIdClient);
+
+    lAccessible := AccessibleFromLResult(lObjectResult, lObjectWParam);
+    lTabRect := lPageControl.TabRect(lTabTms.TabIndex);
+    lPoint := lPageControl.ClientToScreen(lTabRect.CenterPoint);
+    lTmsAccessible := AccessibleHitTestAt(lAccessible, lPoint);
+
+    Assert.AreEqual('TMS grid', AccessibleName(lTmsAccessible));
+    Assert.AreEqual(ROLE_SYSTEM_PAGETAB, AccessibleRole(lTmsAccessible));
+    lState := AccessibleState(lTmsAccessible);
+    Assert.IsTrue((lState and STATE_SYSTEM_SELECTABLE) <> 0);
+    Assert.IsTrue((lState and STATE_SYSTEM_SELECTED) = 0);
+
+    lDefaultAction := '';
+    Assert.AreEqual(S_OK, lTmsAccessible.Get_accDefaultAction(CHILDID_SELF, lDefaultAction));
+    Assert.AreEqual('Switch', string(lDefaultAction));
+    Assert.AreEqual(S_OK, lTmsAccessible.accDoDefaultAction(CHILDID_SELF));
+    Assert.AreSame(lTabTms, lPageControl.ActivePage);
+    Assert.IsTrue((AccessibleState(lTmsAccessible) and STATE_SYSTEM_SELECTED) <> 0);
+  finally
+    lForm.Free;
+    if (lCoInit = S_OK) or (lCoInit = S_FALSE) then
+    begin
+      CoUninitialize;
+    end;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallObjectFromPointReturnsPageControlTabHeader;
+var
+  lAccessible: IAccessible;
+  lChild: VARIANT;
+  lCoInit: HRESULT;
+  lForm: TForm;
+  lPageControl: TPageControl;
+  lPoint: TPoint;
+  lTabOrders: TTabSheet;
+  lTabRect: TRect;
+  lTabTms: TTabSheet;
+begin
+  ResetManager;
+  lCoInit := CoInitialize(nil);
+  lForm := TForm.Create(nil);
+  try
+    Assert.IsTrue((lCoInit = S_OK) or (lCoInit = S_FALSE) or (lCoInit = RPC_E_CHANGED_MODE));
+    lForm.FormStyle := fsStayOnTop;
+    lForm.SetBounds(100, 100, 420, 260);
+
+    lPageControl := TPageControl.Create(lForm);
+    lPageControl.Parent := lForm;
+    lPageControl.SetBounds(12, 12, 360, 200);
+
+    lTabOrders := TTabSheet.Create(lForm);
+    lTabOrders.Caption := 'Orders';
+    lTabOrders.PageControl := lPageControl;
+
+    lTabTms := TTabSheet.Create(lForm);
+    lTabTms.Caption := 'TMS grid';
+    lTabTms.PageControl := lPageControl;
+
+    lPageControl.ActivePage := lTabOrders;
+    lForm.HandleNeeded;
+    lPageControl.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    SetWindowPos(lForm.Handle, HWND_TOPMOST, 100, 100, 420, 260, SWP_SHOWWINDOW);
+    lForm.Show;
+    lForm.Update;
+    Application.ProcessMessages;
+
+    lTabRect := lPageControl.TabRect(lTabTms.TabIndex);
+    lPoint := lPageControl.ClientToScreen(lTabRect.CenterPoint);
+    lAccessible := AccessibleObjectFromPointAt(lPoint, lChild);
+
+    Assert.AreEqual(CHILDID_SELF, Integer(lChild));
+    Assert.AreEqual('TMS grid', AccessibleName(lAccessible));
+    Assert.AreEqual(ROLE_SYSTEM_PAGETAB, AccessibleRole(lAccessible));
+  finally
+    lForm.Free;
+    if (lCoInit = S_OK) or (lCoInit = S_FALSE) then
+    begin
+      CoUninitialize;
+    end;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallObjectFromPointReturnsActiveTabSheetNestedLabel;
+var
+  lAccessible: IAccessible;
+  lChild: VARIANT;
+  lCoInit: HRESULT;
+  lForm: TForm;
+  lGrid: TStringGrid;
+  lHeaderPanel: TPanel;
+  lLabel: TLabel;
+  lPageControl: TPageControl;
+  lPoint: TPoint;
+  lTabOrders: TTabSheet;
+  lTabTms: TTabSheet;
+begin
+  ResetManager;
+  lCoInit := CoInitialize(nil);
+  lForm := TForm.Create(nil);
+  try
+    Assert.IsTrue((lCoInit = S_OK) or (lCoInit = S_FALSE) or (lCoInit = RPC_E_CHANGED_MODE));
+    lForm.FormStyle := fsStayOnTop;
+    lForm.SetBounds(100, 100, 460, 320);
+
+    lPageControl := TPageControl.Create(lForm);
+    lPageControl.Name := 'PageControl';
+    lPageControl.Parent := lForm;
+    lPageControl.SetBounds(12, 12, 400, 250);
+
+    lTabOrders := TTabSheet.Create(lForm);
+    lTabOrders.Caption := 'TStringGrid rows';
+    lTabOrders.PageControl := lPageControl;
+
+    lTabTms := TTabSheet.Create(lForm);
+    lTabTms.Caption := 'TMS grid';
+    lTabTms.PageControl := lPageControl;
+
+    lHeaderPanel := TPanel.Create(lForm);
+    lHeaderPanel.Parent := lTabOrders;
+    lHeaderPanel.SetBounds(16, 16, 340, 42);
+    lHeaderPanel.Caption := '';
+    lHeaderPanel.BevelOuter := bvNone;
+
+    lLabel := TLabel.Create(lForm);
+    lLabel.Caption := 'TStringGrid row-select keyboard demo';
+    lLabel.Parent := lHeaderPanel;
+    lLabel.SetBounds(8, 8, 260, 24);
+
+    lGrid := TStringGrid.Create(lForm);
+    lGrid.Parent := lTabOrders;
+    lGrid.SetBounds(24, 70, 300, 130);
+    lGrid.ColCount := 2;
+    lGrid.RowCount := 2;
+    lGrid.Cells[1, 1] := 'Contoso';
+    lGrid.HandleNeeded;
+
+    lPageControl.ActivePage := lTabOrders;
+    lForm.HandleNeeded;
+    lPageControl.HandleNeeded;
+    lHeaderPanel.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    SetWindowPos(lForm.Handle, HWND_TOPMOST, 100, 100, 460, 320, SWP_SHOWWINDOW);
+    lForm.Show;
+    lForm.Update;
+    Application.ProcessMessages;
+
+    lPoint := ControlScreenCenter(lLabel);
+    lAccessible := AccessibleObjectFromPointAt(lPoint, lChild);
+
+    Assert.AreEqual(CHILDID_SELF, Integer(lChild));
+    Assert.AreEqual('TStringGrid row-select keyboard demo', AccessibleName(lAccessible));
+    Assert.AreEqual(ROLE_SYSTEM_STATICTEXT, AccessibleRole(lAccessible));
+  finally
+    lForm.Free;
+    if (lCoInit = S_OK) or (lCoInit = S_FALSE) then
+    begin
+      CoUninitialize;
+    end;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallHandlesInputMsaaGetObjectWithLabelAndTextHint;
+const
+  cObjIdClient = LPARAM(OBJID_CLIENT);
+var
+  lEdit: TEdit;
+  lForm: TForm;
+  lLabel: TLabel;
+  lMessage: TMessage;
+begin
+  ResetManager;
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 320, 180);
+
+    lLabel := TLabel.Create(lForm);
+    lLabel.Caption := 'Search text';
+    lLabel.Parent := lForm;
+    lLabel.SetBounds(12, 12, 120, 24);
+
+    lEdit := TEdit.Create(lForm);
+    lEdit.Parent := lForm;
+    lEdit.TextHint := 'customer, order, or finding';
+    lEdit.SetBounds(12, 40, 180, 24);
+    lEdit.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.WParam := 23;
+    lMessage.LParam := cObjIdClient;
+    lEdit.WindowProc(lMessage);
+
+    Assert.AreNotEqual(0, Integer(lMessage.Result), 'Input hook did not return an MSAA result.');
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallHandlesStringGridMsaaGetObjectForFocusedCell;
+const
+  cObjIdClient = LPARAM(OBJID_CLIENT);
+var
+  lForm: TForm;
+  lGrid: TStringGrid;
+  lMessage: TMessage;
+begin
+  ResetManager;
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 220);
+
+    lGrid := TStringGrid.Create(lForm);
+    lGrid.Parent := lForm;
+    lGrid.SetBounds(12, 12, 240, 110);
+    lGrid.ColCount := 2;
+    lGrid.RowCount := 3;
+    lGrid.FixedRows := 1;
+    lGrid.Cells[1, 1] := 'Alice';
+    lGrid.Cells[1, 2] := 'Contoso';
+    lGrid.Col := 1;
+    lGrid.Row := 2;
+    lForm.ActiveControl := lGrid;
+    lGrid.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.WParam := 29;
+    lMessage.LParam := cObjIdClient;
+    lGrid.WindowProc(lMessage);
+
+    Assert.AreNotEqual(0, Integer(lMessage.Result), 'StringGrid hook did not return an MSAA result.');
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallRaisesFocusedControlHintNotificationOnFocus;
+var
+  lApi: IManagerTestUiaApi;
+  lEdit: TEdit;
+  lForm: TForm;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lEdit := TEdit.Create(lForm);
+    lEdit.Parent := lForm;
+    lEdit.Hint := 'Search demo orders and audit findings';
+    lEdit.ShowHint := True;
+    lEdit.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+    lEdit.Perform(CM_ENTER, 0, 0);
+
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('Search demo orders and audit findings', lApi.LastNotificationText);
+    Assert.AreEqual(Integer(lEdit.Handle), ProviderIntProperty(FragmentFromSimple(lApi.LastNotificationProvider),
+      UIA_NativeWindowHandlePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallRaisesInputFocusEventOnFocus;
+var
+  lApi: IManagerTestUiaApi;
+  lEdit: TEdit;
+  lForm: TForm;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lEdit := TEdit.Create(lForm);
+    lEdit.Parent := lForm;
+    lEdit.Text := 'Alice';
+    lEdit.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+    lEdit.Perform(CM_ENTER, 0, 0);
+
+    Assert.AreEqual(1, lApi.EventCalls);
+    Assert.AreEqual(UIA_AutomationFocusChangedEventId, lApi.LastEventId);
+    Assert.AreEqual(Integer(lEdit.Handle), ProviderIntProperty(FragmentFromSimple(lApi.LastEventProvider),
+      UIA_NativeWindowHandlePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallRaisesComboBoxFocusEventOnFocus;
+var
+  lApi: IManagerTestUiaApi;
+  lCombo: TComboBox;
+  lForm: TForm;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lCombo := TComboBox.Create(lForm);
+    lCombo.Parent := lForm;
+    lCombo.Items.Add('Urgent');
+    lCombo.ItemIndex := 0;
+    lCombo.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+    lCombo.Perform(CM_ENTER, 0, 0);
+
+    Assert.AreEqual(1, lApi.EventCalls);
+    Assert.AreEqual(UIA_AutomationFocusChangedEventId, lApi.LastEventId);
+    Assert.AreEqual(Integer(lCombo.Handle), ProviderIntProperty(FragmentFromSimple(lApi.LastEventProvider),
+      UIA_NativeWindowHandlePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallRaisesLabeledEditFocusEventOnFocus;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lLabeledEdit: TLabeledEdit;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lLabeledEdit := TLabeledEdit.Create(lForm);
+    lLabeledEdit.Parent := lForm;
+    lLabeledEdit.EditLabel.Caption := 'Reference number';
+    lLabeledEdit.Text := 'REF-1042';
+    lLabeledEdit.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+    lLabeledEdit.Perform(CM_ENTER, 0, 0);
+
+    Assert.AreEqual(1, lApi.EventCalls);
+    Assert.AreEqual(UIA_AutomationFocusChangedEventId, lApi.LastEventId);
+    Assert.AreEqual(Integer(lLabeledEdit.Handle), ProviderIntProperty(FragmentFromSimple(lApi.LastEventProvider),
+      UIA_NativeWindowHandlePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallRaisesFocusedEditTextHintNotificationOnFocus;
+var
+  lApi: IManagerTestUiaApi;
+  lEdit: TEdit;
+  lForm: TForm;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lEdit := TEdit.Create(lForm);
+    lEdit.Parent := lForm;
+    lEdit.TextHint := 'customer, order, or finding';
+    lEdit.ShowHint := True;
+    lEdit.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+    lEdit.Perform(CM_ENTER, 0, 0);
+
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('customer, order, or finding', lApi.LastNotificationText);
+    Assert.AreEqual(Integer(lEdit.Handle), ProviderIntProperty(FragmentFromSimple(lApi.LastNotificationProvider),
+      UIA_NativeWindowHandlePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallRaisesInputFocusAnnouncementMatchingMouseOverSurface;
+var
+  lApi: IManagerTestUiaApi;
+  lCombo: TComboBox;
+  lComboLabel: TLabel;
+  lEdit: TEdit;
+  lEditLabel: TLabel;
+  lForm: TForm;
+  lLabeledEdit: TLabeledEdit;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 420, 240);
+
+    lEditLabel := TLabel.Create(lForm);
+    lEditLabel.Caption := 'Customer';
+    lEditLabel.Parent := lForm;
+    lEditLabel.SetBounds(12, 18, 90, 20);
+
+    lEdit := TEdit.Create(lForm);
+    lEdit.Parent := lForm;
+    lEdit.Text := 'Alice';
+    lEdit.Hint := 'Search demo orders and audit findings';
+    lEdit.SetBounds(112, 14, 160, 23);
+    lEdit.HandleNeeded;
+
+    lComboLabel := TLabel.Create(lForm);
+    lComboLabel.Caption := 'Queue';
+    lComboLabel.Parent := lForm;
+    lComboLabel.SetBounds(12, 58, 90, 20);
+
+    lCombo := TComboBox.Create(lForm);
+    lCombo.Parent := lForm;
+    lCombo.SetBounds(112, 54, 160, 23);
+    lCombo.Items.Add('Urgent');
+    lCombo.ItemIndex := 0;
+    lCombo.HandleNeeded;
+
+    lLabeledEdit := TLabeledEdit.Create(lForm);
+    lLabeledEdit.Parent := lForm;
+    lLabeledEdit.EditLabel.Caption := 'Reference number';
+    lLabeledEdit.Text := 'REF-1042';
+    lLabeledEdit.SetBounds(112, 98, 160, 23);
+    lLabeledEdit.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+
+    lEdit.Perform(CM_ENTER, 0, 0);
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('Customer Alice. Search demo orders and audit findings', lApi.LastNotificationText);
+
+    lCombo.Perform(CM_ENTER, 0, 0);
+    Assert.AreEqual(2, lApi.NotificationCalls);
+    Assert.AreEqual('Queue Urgent', lApi.LastNotificationText);
+
+    lLabeledEdit.Perform(CM_ENTER, 0, 0);
+    Assert.AreEqual(3, lApi.NotificationCalls);
+    Assert.AreEqual('Reference number REF-1042', lApi.LastNotificationText);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallRaisesInputMsaaFocusWinEventWithDefaultApi;
+var
+  lEdit: TEdit;
+  lForm: TForm;
+  lWinEvents: TWinEventRecorder;
+begin
+  ResetManager;
+  lWinEvents := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents);
+  lForm := TForm.Create(nil);
+  try
+    lEdit := TEdit.Create(lForm);
+    lEdit.Parent := lForm;
+    lEdit.Text := 'Alice';
+    lEdit.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+    lEdit.Perform(CM_ENTER, 0, 0);
+
+    Assert.AreEqual(1, lWinEvents.Calls);
+    Assert.AreEqual(EVENT_OBJECT_FOCUS, lWinEvents.LastEvent);
+    Assert.AreEqual(lEdit.Handle, lWinEvents.LastHwnd);
+    Assert.AreEqual(Cardinal($FFFFFFFC), lWinEvents.LastObjectId);
+    Assert.AreEqual(Cardinal(CHILDID_SELF), lWinEvents.LastChildId);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallRaisesPageControlTabHoverNotification;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lPageControl: TPageControl;
+  lPoint: TPoint;
+  lTabOrders: TTabSheet;
+  lTabRect: TRect;
+  lTabTms: TTabSheet;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 420, 260);
+
+    lPageControl := TPageControl.Create(lForm);
+    lPageControl.Parent := lForm;
+    lPageControl.SetBounds(12, 12, 360, 200);
+
+    lTabOrders := TTabSheet.Create(lForm);
+    lTabOrders.Caption := 'Orders';
+    lTabOrders.PageControl := lPageControl;
+
+    lTabTms := TTabSheet.Create(lForm);
+    lTabTms.Caption := 'TMS grid';
+    lTabTms.PageControl := lPageControl;
+
+    lPageControl.ActivePage := lTabOrders;
+    lPageControl.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+
+    lTabRect := lPageControl.TabRect(lTabTms.TabIndex);
+    lPoint := lTabRect.CenterPoint;
+    lPageControl.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
+
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('TMS grid', lApi.LastNotificationText);
+    Assert.AreEqual('TMS grid', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
+      UIA_NamePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallRaisesPageControlTabHoverNotificationFromFormMouseMove;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lFormPoint: TPoint;
+  lPageControl: TPageControl;
+  lPoint: TPoint;
+  lTabOrders: TTabSheet;
+  lTabRect: TRect;
+  lTabTms: TTabSheet;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 420, 260);
+
+    lPageControl := TPageControl.Create(lForm);
+    lPageControl.Parent := lForm;
+    lPageControl.SetBounds(12, 12, 360, 200);
+
+    lTabOrders := TTabSheet.Create(lForm);
+    lTabOrders.Caption := 'Orders';
+    lTabOrders.PageControl := lPageControl;
+
+    lTabTms := TTabSheet.Create(lForm);
+    lTabTms.Caption := 'TMS grid';
+    lTabTms.PageControl := lPageControl;
+
+    lPageControl.ActivePage := lTabOrders;
+    lForm.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+
+    lTabRect := lPageControl.TabRect(lTabTms.TabIndex);
+    lPoint := lPageControl.ClientToScreen(lTabRect.CenterPoint);
+    lFormPoint := lForm.ScreenToClient(lPoint);
+    lForm.Perform(WM_MOUSEMOVE, 0, PointToLParam(lFormPoint));
+
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('TMS grid', lApi.LastNotificationText);
+    Assert.AreEqual('TMS grid', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
+      UIA_NamePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallRaisesActiveTabSheetLabelHoverNotification;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lGrid: TStringGrid;
+  lLabel: TLabel;
+  lPageControl: TPageControl;
+  lPoint: TPoint;
+  lTabOrders: TTabSheet;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 460, 320);
+
+    lPageControl := TPageControl.Create(lForm);
+    lPageControl.Parent := lForm;
+    lPageControl.SetBounds(12, 12, 400, 250);
+
+    lTabOrders := TTabSheet.Create(lForm);
+    lTabOrders.Caption := 'TStringGrid rows';
+    lTabOrders.PageControl := lPageControl;
+
+    lLabel := TLabel.Create(lForm);
+    lLabel.Caption := 'TStringGrid row-select keyboard demo';
+    lLabel.Parent := lTabOrders;
+    lLabel.SetBounds(24, 24, 260, 24);
+
+    lGrid := TStringGrid.Create(lForm);
+    lGrid.Parent := lTabOrders;
+    lGrid.SetBounds(24, 58, 300, 130);
+    lGrid.ColCount := 2;
+    lGrid.RowCount := 2;
+    lGrid.Cells[1, 1] := 'Contoso';
+    lGrid.HandleNeeded;
+
+    lPageControl.ActivePage := lTabOrders;
+    lForm.HandleNeeded;
+    lTabOrders.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+
+    lPoint := lTabOrders.ScreenToClient(ControlScreenCenter(lLabel));
+    lTabOrders.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
+
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('TStringGrid row-select keyboard demo', lApi.LastNotificationText);
+    Assert.AreEqual('TStringGrid row-select keyboard demo',
+      ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider), UIA_NamePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallRaisesActiveTabSheetPanelLabelHoverNotification;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lGrid: TStringGrid;
+  lHeaderPanel: TPanel;
+  lLabel: TLabel;
+  lPageControl: TPageControl;
+  lPoint: TPoint;
+  lTabOrders: TTabSheet;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 460, 320);
+
+    lPageControl := TPageControl.Create(lForm);
+    lPageControl.Parent := lForm;
+    lPageControl.SetBounds(12, 12, 400, 250);
+
+    lTabOrders := TTabSheet.Create(lForm);
+    lTabOrders.Caption := 'TStringGrid rows';
+    lTabOrders.PageControl := lPageControl;
+
+    lHeaderPanel := TPanel.Create(lForm);
+    lHeaderPanel.Parent := lTabOrders;
+    lHeaderPanel.SetBounds(16, 16, 340, 42);
+    lHeaderPanel.Caption := '';
+    lHeaderPanel.BevelOuter := bvNone;
+
+    lLabel := TLabel.Create(lForm);
+    lLabel.Caption := 'TStringGrid row-select keyboard demo';
+    lLabel.Parent := lHeaderPanel;
+    lLabel.SetBounds(8, 8, 260, 24);
+
+    lGrid := TStringGrid.Create(lForm);
+    lGrid.Parent := lTabOrders;
+    lGrid.SetBounds(24, 70, 300, 130);
+    lGrid.ColCount := 2;
+    lGrid.RowCount := 2;
+    lGrid.Cells[1, 1] := 'Contoso';
+    lGrid.HandleNeeded;
+
+    lPageControl.ActivePage := lTabOrders;
+    lForm.HandleNeeded;
+    lHeaderPanel.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+
+    lPoint := lHeaderPanel.ScreenToClient(ControlScreenCenter(lLabel));
+    lHeaderPanel.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
+
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('TStringGrid row-select keyboard demo', lApi.LastNotificationText);
+    Assert.AreEqual('TStringGrid row-select keyboard demo',
+      ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider), UIA_NamePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallRaisesMemoListBoxAndStatusBarHoverNotifications;
+var
+  lApi: IManagerTestUiaApi;
+  lCharIndex: LRESULT;
+  lForm: TForm;
+  lItemRect: TRect;
+  lLinePoint: TPoint;
+  lListBox: TListBox;
+  lMemo: TMemo;
+  lPoint: TPoint;
+  lStatusBar: TStatusBar;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 460, 260);
+
+    lMemo := TMemo.Create(lForm);
+    lMemo.Parent := lForm;
+    lMemo.ScrollBars := ssNone;
+    lMemo.WordWrap := False;
+    lMemo.SetBounds(12, 12, 220, 80);
+    lMemo.Lines.Text := 'First memo line' + sLineBreak + 'Second memo line';
+    lMemo.HandleNeeded;
+
+    lListBox := TListBox.Create(lForm);
+    lListBox.Parent := lForm;
+    lListBox.SetBounds(250, 12, 160, 80);
+    lListBox.Items.Add('Queued order');
+    lListBox.Items.Add('Audit warning');
+    lListBox.Items.Add('Completed action');
+    lListBox.HandleNeeded;
+
+    lStatusBar := TStatusBar.Create(lForm);
+    lStatusBar.Parent := lForm;
+    lStatusBar.SimplePanel := True;
+    lStatusBar.SimpleText := 'Ready. High severity checks: 4';
+    lStatusBar.SetBounds(0, 210, 460, 24);
+    lStatusBar.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+
+    lCharIndex := lMemo.Perform(EM_LINEINDEX, 1, 0);
+    lLinePoint := PointFromMessageResult(lMemo.Perform(EM_POSFROMCHAR, lCharIndex, 0));
+    lMemo.Perform(WM_MOUSEMOVE, 0, PointToLParam(Point(lLinePoint.X + 4, lLinePoint.Y + 2)));
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('Second memo line', lApi.LastNotificationText);
+    Assert.AreEqual('Second memo line', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
+      UIA_NamePropertyId));
+
+    lItemRect := lListBox.ItemRect(2);
+    lPoint := lItemRect.CenterPoint;
+    lListBox.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
+    Assert.AreEqual(2, lApi.NotificationCalls);
+    Assert.AreEqual('Completed action', lApi.LastNotificationText);
+    Assert.AreEqual('Completed action', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
+      UIA_NamePropertyId));
+
+    lStatusBar.Perform(WM_MOUSEMOVE, 0, PointToLParam(Point(8, 8)));
+    Assert.AreEqual(3, lApi.NotificationCalls);
+    Assert.AreEqual('Ready. High severity checks: 4', lApi.LastNotificationText);
+    Assert.AreEqual('Ready. High severity checks: 4',
+      ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider), UIA_NamePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallRaisesWindowedButtonHoverNotificationAndCheckBoxProvider;
+var
+  lApi: IManagerTestUiaApi;
+  lButton: TButton;
+  lCheckBox: TCheckBox;
+  lForm: TForm;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 180);
+
+    lButton := TButton.Create(lForm);
+    lButton.Parent := lForm;
+    lButton.Caption := '&Apply Filters';
+    lButton.Hint := 'Apply the selected filters';
+    lButton.SetBounds(24, 24, 140, 34);
+    lButton.HandleNeeded;
+
+    lCheckBox := TCheckBox.Create(lForm);
+    lCheckBox.Parent := lForm;
+    lCheckBox.Caption := 'Include archived rows';
+    lCheckBox.Hint := 'Includes archived rows in the demo grids';
+    lCheckBox.Checked := True;
+    lCheckBox.SetBounds(24, 76, 220, 24);
+    lCheckBox.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+
+    lButton.Perform(WM_MOUSEMOVE, 0, PointToLParam(Point(lButton.Width div 2, lButton.Height div 2)));
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('Apply Filters. Apply the selected filters', lApi.LastNotificationText);
+    Assert.AreEqual('Apply Filters', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
+      UIA_NamePropertyId));
+
+    lCheckBox.Perform(WM_MOUSEMOVE, 0, PointToLParam(Point(lCheckBox.Width div 2, lCheckBox.Height div 2)));
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual(1, lApi.EventCalls);
+    Assert.AreEqual(UIA_AutomationFocusChangedEventId, lApi.LastEventId);
+    Assert.AreEqual('Include archived rows', ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider),
+      UIA_NamePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallRaisesCheckBoxHoverPlatformEventsWithoutNotification;
+var
+  lApi: IManagerTestUiaApi;
+  lCheckBox: TCheckBox;
+  lForm: TForm;
+  lWinEvents: TWinEventRecorder;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  lWinEvents := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 140);
+
+    lCheckBox := TCheckBox.Create(lForm);
+    lCheckBox.Parent := lForm;
+    lCheckBox.Caption := 'Include archived rows';
+    lCheckBox.Hint := 'Includes archived rows in the demo grids';
+    lCheckBox.Checked := True;
+    lCheckBox.SetBounds(24, 24, 220, 24);
+    lCheckBox.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+
+    lCheckBox.Perform(WM_MOUSEMOVE, 0, PointToLParam(Point(lCheckBox.Width div 2, lCheckBox.Height div 2)));
+
+    Assert.AreEqual(0, lApi.NotificationCalls);
+    Assert.AreEqual(1, lApi.EventCalls);
+    Assert.AreEqual(UIA_AutomationFocusChangedEventId, lApi.LastEventId);
+    Assert.AreEqual(UIA_CheckBoxControlTypeId, ProviderIntProperty(FragmentFromSimple(lApi.LastEventProvider),
+      UIA_ControlTypePropertyId));
+    Assert.AreEqual(2, lWinEvents.Calls);
+    Assert.AreEqual(EVENT_OBJECT_STATECHANGE, lWinEvents.LastEvent);
+    Assert.AreEqual(lCheckBox.Handle, lWinEvents.LastHwnd);
+    Assert.AreEqual(Cardinal($FFFFFFFC), lWinEvents.LastObjectId);
+    Assert.AreEqual(Cardinal(CHILDID_SELF), lWinEvents.LastChildId);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallRaisesCheckBoxFocusPlatformEventsWithoutNotification;
+var
+  lApi: IManagerTestUiaApi;
+  lCheckBox: TCheckBox;
+  lForm: TForm;
+  lWinEvents: TWinEventRecorder;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  lWinEvents := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 140);
+
+    lCheckBox := TCheckBox.Create(lForm);
+    lCheckBox.Parent := lForm;
+    lCheckBox.Caption := 'Include archived rows';
+    lCheckBox.Hint := 'Includes archived rows in the demo grids';
+    lCheckBox.Checked := True;
+    lCheckBox.SetBounds(24, 24, 220, 24);
+    lCheckBox.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+
+    lCheckBox.Perform(CM_ENTER, 0, 0);
+
+    Assert.AreEqual(0, lApi.NotificationCalls);
+    Assert.AreEqual(1, lApi.EventCalls);
+    Assert.AreEqual(UIA_AutomationFocusChangedEventId, lApi.LastEventId);
+    Assert.AreEqual(UIA_CheckBoxControlTypeId, ProviderIntProperty(FragmentFromSimple(lApi.LastEventProvider),
+      UIA_ControlTypePropertyId));
+    Assert.AreEqual(2, lWinEvents.Calls);
+    Assert.AreEqual(EVENT_OBJECT_STATECHANGE, lWinEvents.LastEvent);
+    Assert.AreEqual(lCheckBox.Handle, lWinEvents.LastHwnd);
+    Assert.AreEqual(Cardinal($FFFFFFFC), lWinEvents.LastObjectId);
+    Assert.AreEqual(Cardinal(CHILDID_SELF), lWinEvents.LastChildId);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallRaisesToggleSpeedButtonHoverWithoutCheckBoxStateText;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lPoint: TPoint;
+  lSpeedButton: TSpeedButton;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 320, 160);
+
+    lSpeedButton := TSpeedButton.Create(lForm);
+    lSpeedButton.Parent := lForm;
+    lSpeedButton.Caption := '&Pinned';
+    lSpeedButton.Hint := 'Pinned state';
+    lSpeedButton.GroupIndex := 1;
+    lSpeedButton.AllowAllUp := True;
+    lSpeedButton.Down := False;
+    lSpeedButton.SetBounds(24, 24, 96, 34);
+
+    TAccessibilityManager.Install(lForm);
+
+    lPoint := lForm.ScreenToClient(ControlScreenCenter(lSpeedButton));
+    lForm.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
+
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('Pinned. Pinned state', lApi.LastNotificationText);
+    Assert.AreEqual('Pinned', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
+      UIA_NamePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallRaisesGridCellFocusEventAfterStringGridCellChangeMessage;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lGrid: TStringGrid;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lGrid := TStringGrid.Create(lForm);
+    lGrid.Parent := lForm;
+    lGrid.ColCount := 2;
+    lGrid.RowCount := 3;
+    lGrid.FixedRows := 1;
+    lGrid.Cells[1, 1] := 'Alice';
+    lGrid.Cells[1, 2] := 'Contoso';
+    lGrid.Col := 1;
+    lGrid.Row := 1;
+    lGrid.HandleNeeded;
+    lForm.ActiveControl := lGrid;
+
+    TAccessibilityManager.Install(lForm);
+    lGrid.Row := 2;
+    lGrid.Perform(CM_CHANGED, 0, 0);
+
+    Assert.AreEqual(2, lGrid.Row);
+    Assert.AreEqual(2, lApi.EventCalls);
+    Assert.AreEqual(UIA_SelectionItem_ElementSelectedEventId, lApi.LastEventId);
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('Contoso', lApi.LastNotificationText);
+    Assert.AreEqual('Contoso', ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider), UIA_NamePropertyId));
+    Assert.AreEqual('Contoso', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
+      UIA_NamePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallRaisesGridCellFocusEventAfterStringGridArrowKey;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lGrid: TStringGrid;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lGrid := TStringGrid.Create(lForm);
+    lGrid.Parent := lForm;
+    lGrid.ColCount := 2;
+    lGrid.RowCount := 3;
+    lGrid.FixedRows := 1;
+    lGrid.Cells[1, 1] := 'Alice';
+    lGrid.Cells[1, 2] := 'Contoso';
+    lGrid.Col := 1;
+    lGrid.Row := 1;
+    lGrid.HandleNeeded;
+    lForm.ActiveControl := lGrid;
+
+    TAccessibilityManager.Install(lForm);
+    lGrid.Perform(WM_KEYDOWN, VK_DOWN, 0);
+
+    Assert.AreEqual(2, lGrid.Row);
+    Assert.AreEqual(2, lApi.EventCalls);
+    Assert.AreEqual(UIA_SelectionItem_ElementSelectedEventId, lApi.LastEventId);
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('Contoso', lApi.LastNotificationText);
+    Assert.AreEqual('Contoso', ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider), UIA_NamePropertyId));
+    Assert.AreEqual('Contoso', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
+      UIA_NamePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallRaisesStringGridRowFocusNotificationForRowSelect;
+var
+  lApi: IManagerTestUiaApi;
+  lExpectedName: string;
+  lForm: TForm;
+  lGrid: TStringGrid;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lGrid := TStringGrid.Create(lForm);
+    lGrid.Parent := lForm;
+    lGrid.ColCount := 3;
+    lGrid.RowCount := 3;
+    lGrid.FixedRows := 1;
+    lGrid.Options := lGrid.Options + [goRowSelect];
+    lGrid.Cells[0, 0] := 'Order';
+    lGrid.Cells[1, 0] := 'Customer';
+    lGrid.Cells[2, 0] := 'Status';
+    lGrid.Cells[0, 1] := '#24018';
+    lGrid.Cells[1, 1] := 'Northwind';
+    lGrid.Cells[2, 1] := 'Packed';
+    lGrid.Cells[0, 2] := '#24019';
+    lGrid.Cells[1, 2] := 'Contoso';
+    lGrid.Cells[2, 2] := 'Waiting';
+    lGrid.Col := 0;
+    lGrid.Row := 1;
+    lGrid.HandleNeeded;
+    lForm.ActiveControl := lGrid;
+    lExpectedName := 'Order: #24019' + sLineBreak + sLineBreak + 'Customer: Contoso' + sLineBreak +
+      sLineBreak + 'Status: Waiting';
+
+    TAccessibilityManager.Install(lForm);
+    lGrid.Perform(WM_KEYDOWN, VK_DOWN, 0);
+
+    Assert.AreEqual(2, lGrid.Row);
+    Assert.AreEqual(2, lApi.EventCalls);
+    Assert.AreEqual(UIA_SelectionItem_ElementSelectedEventId, lApi.LastEventId);
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual(lExpectedName, lApi.LastNotificationText);
+    Assert.AreEqual(lExpectedName, ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider),
+      UIA_NamePropertyId));
+    Assert.AreEqual(lExpectedName, ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
+      UIA_NamePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallRaisesListBoxItemFocusEventAfterArrowKey;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lListBox: TListBox;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lListBox := TListBox.Create(lForm);
+    lListBox.Parent := lForm;
+    lListBox.Items.Add('Queued order');
+    lListBox.Items.Add('Audit warning');
+    lListBox.Items.Add('Completed action');
+    lListBox.ItemIndex := 1;
+    lListBox.HandleNeeded;
+    lForm.ActiveControl := lListBox;
+
+    TAccessibilityManager.Install(lForm);
+    lListBox.Perform(WM_KEYDOWN, VK_DOWN, 0);
+
+    Assert.AreEqual(2, lListBox.ItemIndex);
+    Assert.AreEqual(2, lApi.EventCalls);
+    Assert.AreEqual(UIA_SelectionItem_ElementSelectedEventId, lApi.LastEventId);
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('Completed action', lApi.LastNotificationText);
+    Assert.AreEqual('Completed action', ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider),
+      UIA_NamePropertyId));
+    Assert.AreEqual('Completed action', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
+      UIA_NamePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallDoesNotRaiseGridMsaaFocusWinEventAfterCellNotification;
+var
+  lForm: TForm;
+  lGrid: TStringGrid;
+  lWinEvents: TWinEventRecorder;
+begin
+  ResetManager;
+  lWinEvents := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents);
+  lForm := TForm.Create(nil);
+  try
+    lGrid := TStringGrid.Create(lForm);
+    lGrid.Parent := lForm;
+    lGrid.ColCount := 2;
+    lGrid.RowCount := 3;
+    lGrid.FixedRows := 1;
+    lGrid.Cells[1, 1] := 'Alice';
+    lGrid.Cells[1, 2] := 'Contoso';
+    lGrid.Col := 1;
+    lGrid.Row := 1;
+    lGrid.HandleNeeded;
+    lForm.ActiveControl := lGrid;
+
+    TAccessibilityManager.Install(lForm);
+    lGrid.Perform(WM_KEYDOWN, VK_DOWN, 0);
+
+    Assert.AreEqual(0, lWinEvents.Calls);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallRaisesGridCellFocusEventAfterAdvStringGridCellChangeMessage;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lGrid: TAdvStringGrid;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lGrid := TAdvStringGrid.Create(lForm);
+    lGrid.Parent := lForm;
+    lGrid.ColCount := 2;
+    lGrid.RowCount := 3;
+    lGrid.FixedRows := 1;
+    lGrid.Cells[1, 1] := 'Alice TMS';
+    lGrid.Cells[1, 2] := 'Contoso TMS';
+    lGrid.Col := 1;
+    lGrid.Row := 1;
+    lGrid.HandleNeeded;
+    lForm.ActiveControl := lGrid;
+
+    TAccessibilityManager.Install(lForm, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+    lGrid.Row := 2;
+    lGrid.Perform(CM_CHANGED, 0, 0);
+
+    Assert.AreEqual(2, lGrid.Row);
+    Assert.AreEqual(2, lApi.EventCalls);
+    Assert.AreEqual(UIA_SelectionItem_ElementSelectedEventId, lApi.LastEventId);
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('Contoso TMS', lApi.LastNotificationText);
+    Assert.AreEqual('Contoso TMS', ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider),
+      UIA_NamePropertyId));
+    Assert.AreEqual('Contoso TMS', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
+      UIA_NamePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallRaisesGridCellFocusEventAfterAdvStringGridArrowKey;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lGrid: TAdvStringGrid;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lGrid := TAdvStringGrid.Create(lForm);
+    lGrid.Parent := lForm;
+    lGrid.ColCount := 2;
+    lGrid.RowCount := 3;
+    lGrid.FixedRows := 1;
+    lGrid.Cells[1, 1] := 'Alice TMS';
+    lGrid.Cells[1, 2] := 'Contoso TMS';
+    lGrid.Col := 1;
+    lGrid.Row := 1;
+    lGrid.HandleNeeded;
+    lForm.ActiveControl := lGrid;
+
+    TAccessibilityManager.Install(lForm, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+    lGrid.Perform(WM_KEYDOWN, VK_DOWN, 0);
+
+    Assert.AreEqual(2, lGrid.Row);
+    Assert.AreEqual(2, lApi.EventCalls);
+    Assert.AreEqual(UIA_SelectionItem_ElementSelectedEventId, lApi.LastEventId);
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('Contoso TMS', lApi.LastNotificationText);
+    Assert.AreEqual('Contoso TMS', ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider),
+      UIA_NamePropertyId));
+    Assert.AreEqual('Contoso TMS', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
+      UIA_NamePropertyId));
   finally
     lForm.Free;
     ResetManager;

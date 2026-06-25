@@ -60,7 +60,15 @@ begin
   Assert.AreEqual(7, TreeScope_Subtree);
 
   Assert.AreEqual(50000, UIA_ButtonControlTypeId);
+  Assert.AreEqual(50002, UIA_CheckBoxControlTypeId);
+  Assert.AreEqual(50003, UIA_ComboBoxControlTypeId);
+  Assert.AreEqual(50004, UIA_EditControlTypeId);
+  Assert.AreEqual(50013, UIA_RadioButtonControlTypeId);
+  Assert.AreEqual(50017, UIA_StatusBarControlTypeId);
+  Assert.AreEqual(50018, UIA_TabControlTypeId);
   Assert.AreEqual(50020, UIA_TextControlTypeId);
+  Assert.AreEqual(50021, UIA_ToolBarControlTypeId);
+  Assert.AreEqual(50026, UIA_GroupControlTypeId);
   Assert.AreEqual(50028, UIA_DataGridControlTypeId);
   Assert.AreEqual(50029, UIA_DataItemControlTypeId);
   Assert.AreEqual(50033, UIA_PaneControlTypeId);
@@ -88,6 +96,7 @@ begin
   Assert.AreEqual(20004, UIA_AutomationPropertyChangedEventId);
   Assert.AreEqual(20005, UIA_AutomationFocusChangedEventId);
   Assert.AreEqual(20009, UIA_Invoke_InvokedEventId);
+  Assert.AreEqual(20012, UIA_SelectionItem_ElementSelectedEventId);
   Assert.AreEqual(20035, UIA_NotificationEventId);
 
   Assert.AreEqual(SizeOf(Integer), SizeOf(TEXTATTRIBUTEID));

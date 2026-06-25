@@ -4,7 +4,7 @@ program MaxLogicAccessibilityFrameworkSmoke;
 
 uses
   System.SysUtils, System.Types, System.Variants, Winapi.ActiveX, Winapi.Messages, Winapi.Windows, Vcl.Buttons,
-  Vcl.Controls, Vcl.ExtCtrls, Vcl.Forms, Vcl.Grids, Vcl.StdCtrls, AdvGrid,
+  Vcl.ComCtrls, Vcl.Controls, Vcl.ExtCtrls, Vcl.Forms, Vcl.Grids, Vcl.StdCtrls, AdvGrid,
   MaxLogic.Accessibility.Framework in '..\src\MaxLogic.Accessibility.Framework.pas',
   MaxLogic.Accessibility.Hints in '..\src\MaxLogic.Accessibility.Hints.pas',
   MaxLogic.Accessibility.Manager in '..\src\MaxLogic.Accessibility.Manager.pas',
@@ -254,6 +254,11 @@ begin
     (lCellRect.Top + lCellRect.Bottom) div 2));
 end;
 
+function PointFromMessageResult(aValue: LRESULT): TPoint;
+begin
+  Result := Point(Smallint(Word(aValue and $FFFF)), Smallint(Word((aValue shr 16) and $FFFF)));
+end;
+
 function AdvCellVisibleRect(aGrid: TAdvStringGrid; aCol: Integer; aRow: Integer; out aRect: TRect): Boolean;
 var
   lBaseCell: TPoint;
@@ -346,6 +351,10 @@ var
   lGraphicFragment: IRawElementProviderFragment;
   lInvoke: IInvokeProvider;
   lApi: IProbeUiaApi;
+  lApplyButton: TButton;
+  lApplyFragment: IRawElementProviderFragment;
+  lCheckBox: TCheckBox;
+  lCheckBoxFragment: IRawElementProviderFragment;
   lLabel: TLabel;
   lLabelFragment: IRawElementProviderFragment;
   lMessage: TMessage;
@@ -389,6 +398,18 @@ begin
     lToggleButton.AllowAllUp := True;
     lToggleButton.OnClick := lRecorder.Click;
     lToggleButton.Parent := lForm;
+
+    lApplyButton := TButton.Create(lForm);
+    lApplyButton.Caption := '&Apply Filters';
+    lApplyButton.Hint := 'Apply the selected filters';
+    lApplyButton.OnClick := lRecorder.Click;
+    lApplyButton.Parent := lForm;
+
+    lCheckBox := TCheckBox.Create(lForm);
+    lCheckBox.Caption := 'Include archived rows';
+    lCheckBox.Hint := 'Toggle archived rows in the demo grids';
+    lCheckBox.Checked := True;
+    lCheckBox.Parent := lForm;
 
     lPanel := TPanel.Create(lForm);
     lPanel.Name := 'LayoutPanel';
@@ -434,7 +455,9 @@ begin
     lLabelFragment := FirstNestedChild(lRootFragment, 'label fragment');
     lRunFragment := NextSibling(lLabelFragment, 'run speed-button fragment');
     lToggleFragment := NextSibling(lRunFragment, 'toggle speed-button fragment');
-    lPanelFragment := NextSibling(lToggleFragment, 'panel fragment');
+    lApplyFragment := NextSibling(lToggleFragment, 'apply button fragment');
+    lCheckBoxFragment := NextSibling(lApplyFragment, 'checkbox fragment');
+    lPanelFragment := NextSibling(lCheckBoxFragment, 'panel fragment');
     lGraphicFragment := NextSibling(lPanelFragment, 'graphic-control fragment');
     Require(OptionalNextSibling(lGraphicFragment, 'decorative-control omission check') = nil,
       'Decorative controls were exposed after the graphic-control fragment.');
@@ -442,6 +465,10 @@ begin
     RequireProvider(lLabelFragment, UIA_TextControlTypeId, 'Customer', 'Shown next to customer edit', 'label');
     RequireProvider(lRunFragment, UIA_ButtonControlTypeId, 'Run', 'Runs the command', 'run speed-button');
     RequireProvider(lToggleFragment, UIA_ButtonControlTypeId, 'Pinned', 'Pinned state', 'toggle speed-button');
+    RequireProvider(lApplyFragment, UIA_ButtonControlTypeId, 'Apply Filters', 'Apply the selected filters',
+      'apply button');
+    RequireProvider(lCheckBoxFragment, UIA_CheckBoxControlTypeId, 'Include archived rows',
+      'Toggle archived rows in the demo grids', 'checkbox');
     RequireProvider(lPanelFragment, UIA_PaneControlTypeId, '', '', 'panel-with-child');
     RequireProvider(lGraphicFragment, UIA_TextControlTypeId, 'Custom graphic', 'Graphic help', 'graphic-control');
 
@@ -461,6 +488,11 @@ begin
     Require(lInvoke.Invoke = S_OK, 'Toggle speed-button Invoke failed.');
     Require(lRecorder.Clicks = 2, 'Toggle speed-button Invoke did not click.');
 
+    lPattern := PatternProvider(lApplyFragment, UIA_InvokePatternId);
+    Require(Supports(lPattern, IInvokeProvider, lInvoke), 'Apply button does not expose Invoke.');
+    Require(lInvoke.Invoke = S_OK, 'Apply button Invoke failed.');
+    Require(lRecorder.Clicks = 3, 'Apply button Invoke did not click.');
+
     lPattern := PatternProvider(lToggleFragment, UIA_TogglePatternId);
     Require(Supports(lPattern, IToggleProvider, lToggle), 'Toggle speed-button does not expose Toggle.');
     Require(lToggle.Get_ToggleState(lToggleState) = S_OK, 'Toggle state query failed.');
@@ -470,7 +502,20 @@ begin
     Require(lToggle.Get_ToggleState(lToggleState) = S_OK, 'Post-toggle state query failed.');
     Require(lToggleState = ToggleState_On, 'Post-toggle state mismatch.');
 
-    Writeln('UIA_PROBE_OK BasicVclControls: install-path=manager-wm-getobject; label provider=text name/help; speed button provider=button invoke/toggle; panel provider=pane with child; generic graphic-control provider=text; decorative controls omitted.');
+    lPattern := PatternProvider(lCheckBoxFragment, UIA_TogglePatternId);
+    Require(Supports(lPattern, IToggleProvider, lToggle), 'Checkbox does not expose Toggle.');
+    Require(lToggle.Get_ToggleState(lToggleState) = S_OK, 'Checkbox state query failed.');
+    Require(lToggleState = ToggleState_On, 'Initial checkbox state mismatch.');
+    Require(lToggle.Toggle = S_OK, 'Checkbox toggle action failed.');
+    Require(not lCheckBox.Checked, 'Checkbox toggle action did not clear Checked state.');
+    Require(lToggle.Get_ToggleState(lToggleState) = S_OK, 'Post-checkbox state query failed.');
+    Require(lToggleState = ToggleState_Off, 'Post-checkbox state mismatch.');
+    Require(PatternProvider(lCheckBoxFragment, UIA_InvokePatternId) = nil, 'Checkbox exposed Invoke.');
+
+    Writeln('UIA_PROBE_OK BasicVclControls: install-path=manager-wm-getobject; ' +
+      'label provider=text name/help; button provider=button invoke; ' +
+      'speed button provider=button invoke/toggle; checkbox provider=checkbox toggle; ' +
+      'panel provider=pane with child; generic graphic-control provider=text; decorative controls omitted.');
   finally
     TAccessibilityManager.Uninstall;
     lRecorder.Free;
@@ -553,6 +598,116 @@ begin
       'Grid focus query did not return the current cell.');
 
     Writeln('UIA_PROBE_OK TStringGridCells: DataGrid provider, visible cell fragments, per-cell provider hit testing, current-cell focus, hidden-cell omission, and cell-only names confirmed.');
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure RunMemoListStatusProbe;
+var
+  lApi: IProbeUiaApi;
+  lCharIndex: LRESULT;
+  lForm: TForm;
+  lHit: IRawElementProviderFragment;
+  lItemRect: TRect;
+  lLinePoint: TPoint;
+  lListBox: TListBox;
+  lMemo: TMemo;
+  lMessage: TMessage;
+  lPoint: TPoint;
+  lRoot: IRawElementProviderFragmentRoot;
+  lStatusBar: TStatusBar;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(ScaleValue(100), ScaleValue(100), ScaleValue(460), ScaleValue(260));
+
+    lMemo := TMemo.Create(lForm);
+    lMemo.Parent := lForm;
+    lMemo.ScrollBars := ssNone;
+    lMemo.WordWrap := False;
+    lMemo.SetBounds(ScaleValue(12), ScaleValue(12), ScaleValue(220), ScaleValue(80));
+    lMemo.Lines.Text := 'First memo line' + sLineBreak + 'Second memo line';
+    lMemo.HandleNeeded;
+
+    lListBox := TListBox.Create(lForm);
+    lListBox.Parent := lForm;
+    lListBox.SetBounds(ScaleValue(250), ScaleValue(12), ScaleValue(160), ScaleValue(80));
+    lListBox.Items.Add('Queued order');
+    lListBox.Items.Add('Audit warning');
+    lListBox.Items.Add('Completed action');
+    lListBox.ItemIndex := 1;
+    lListBox.HandleNeeded;
+    lForm.ActiveControl := lListBox;
+
+    lStatusBar := TStatusBar.Create(lForm);
+    lStatusBar.Parent := lForm;
+    lStatusBar.SimplePanel := True;
+    lStatusBar.SimpleText := 'Ready. High severity checks: 4';
+    lStatusBar.SetBounds(0, ScaleValue(210), ScaleValue(460), ScaleValue(24));
+    lStatusBar.HandleNeeded;
+
+    lApi := TProbeUiaApi.Create;
+    lApi.SetClientsAreListening(True);
+    TAccessibilityManagerInternals.SetUiaApi(lApi);
+    try
+      TAccessibilityManager.Install(lForm);
+      lForm.HandleNeeded;
+
+      lMessage := Default(TMessage);
+      lMessage.Msg := WM_GETOBJECT;
+      lMessage.LParam := UiaRootObjectId;
+      lForm.WindowProc(lMessage);
+      Require(lMessage.Result = 97531, 'MemoListStatus manager install path did not return a UIA provider.');
+      Require(lApi.ReturnedProvider <> nil, 'MemoListStatus manager install path did not pass a provider.');
+      Require(Supports(lApi.ReturnedProvider, IRawElementProviderFragmentRoot, lRoot),
+        'MemoListStatus root provider does not expose hit testing.');
+
+      lCharIndex := lMemo.Perform(EM_LINEINDEX, 1, 0);
+      lLinePoint := PointFromMessageResult(lMemo.Perform(EM_POSFROMCHAR, lCharIndex, 0));
+      lPoint := lMemo.ClientToScreen(Point(lLinePoint.X + ScaleValue(4), lLinePoint.Y + ScaleValue(2)));
+      Require(lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit) = S_OK,
+        'MemoListStatus memo hit-test failed.');
+      Require(lHit <> nil, 'MemoListStatus memo hit-test returned nil.');
+      RequireProvider(lHit, UIA_TextControlTypeId, 'Second memo line', '', 'memo line');
+
+      lItemRect := lListBox.ItemRect(2);
+      lPoint := lListBox.ClientToScreen(lItemRect.CenterPoint);
+      Require(lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit) = S_OK,
+        'MemoListStatus listbox hit-test failed.');
+      Require(lHit <> nil, 'MemoListStatus listbox hit-test returned nil.');
+      RequireProvider(lHit, UIA_ListItemControlTypeId, 'Completed action', '', 'listbox item');
+
+      lPoint := lStatusBar.ClientToScreen(Point(ScaleValue(8), ScaleValue(8)));
+      Require(lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit) = S_OK,
+        'MemoListStatus statusbar hit-test failed.');
+      Require(lHit <> nil, 'MemoListStatus statusbar hit-test returned nil.');
+      RequireProvider(lHit, 50017, 'Ready. High severity checks: 4', '', 'statusbar');
+
+      lMemo.Perform(WM_MOUSEMOVE, 0, PointToLParam(Point(lLinePoint.X + ScaleValue(4),
+        lLinePoint.Y + ScaleValue(2))));
+      Require(lApi.NotificationCalls = 1, 'MemoListStatus memo hover did not raise a notification.');
+      Require(lApi.LastDisplayString = 'Second memo line', 'MemoListStatus memo hover text mismatch.');
+
+      lListBox.Perform(WM_MOUSEMOVE, 0, PointToLParam(lItemRect.CenterPoint));
+      Require(lApi.NotificationCalls = 2, 'MemoListStatus listbox hover did not raise a notification.');
+      Require(lApi.LastDisplayString = 'Completed action', 'MemoListStatus listbox hover text mismatch.');
+
+      lStatusBar.Perform(WM_MOUSEMOVE, 0, PointToLParam(Point(ScaleValue(8), ScaleValue(8))));
+      Require(lApi.NotificationCalls = 3, 'MemoListStatus statusbar hover did not raise a notification.');
+      Require(lApi.LastDisplayString = 'Ready. High severity checks: 4',
+        'MemoListStatus statusbar hover text mismatch.');
+
+      lListBox.Perform(WM_KEYDOWN, VK_DOWN, 0);
+      Require(lListBox.ItemIndex = 2, 'MemoListStatus listbox arrow key did not move selection.');
+      Require(lApi.NotificationCalls = 4, 'MemoListStatus listbox arrow key did not raise a notification.');
+      Require(lApi.LastDisplayString = 'Completed action', 'MemoListStatus listbox arrow key text mismatch.');
+    finally
+      TAccessibilityManager.Uninstall;
+      TAccessibilityManagerInternals.SetUiaApi(nil);
+    end;
+
+    Writeln('UIA_PROBE_OK MemoListStatus: manager-installed memo line hit testing, listbox item hit/focus notifications, and statusbar text hover confirmed.');
   finally
     lForm.Free;
   end;
@@ -763,6 +918,9 @@ begin
   end else if (ParamCount = 2) and SameText(ParamStr(1), '--uia-probe') and SameText(ParamStr(2), 'Hints') then
   begin
     RunHintsProbe;
+  end else if (ParamCount = 2) and SameText(ParamStr(1), '--uia-probe') and SameText(ParamStr(2), 'MemoListStatus') then
+  begin
+    RunMemoListStatusProbe;
   end else if (ParamCount = 2) and SameText(ParamStr(1), '--uia-probe') and SameText(ParamStr(2), 'TStringGridCells') then
   begin
     RunTStringGridCellsProbe;

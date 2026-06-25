@@ -15,7 +15,15 @@ type
     [Test]
     procedure GridProviderHitTestingReturnsTheCellUnderThePointer;
     [Test]
+    procedure GridProviderHitTestingIgnoresPointsOutsideTheGrid;
+    [Test]
+    procedure GridProviderHitTestingIgnoresGridOnInactiveTab;
+    [Test]
     procedure GridProviderFocusReturnsTheCurrentCell;
+    [Test]
+    procedure GridProviderFocusReturnsWholeRowForRowSelect;
+    [Test]
+    procedure GridProviderRowSelectFocusAndSelectionProvidersStayInTree;
     [Test]
     procedure GridProviderDoesNotClaimFocusWhenAnotherControlIsActive;
     [Test]
@@ -29,13 +37,18 @@ type
 implementation
 
 uses
-  System.SysUtils, System.Types, System.Variants, Winapi.ActiveX, Winapi.Windows, Vcl.Forms, Vcl.Grids,
-  Vcl.StdCtrls, DUnitX.Assert, MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.UIAutomationCore,
-  MaxLogic.Accessibility.VclAdapters;
+  System.SysUtils, System.Types, System.Variants, Winapi.ActiveX, Winapi.Windows, Vcl.ComCtrls, Vcl.Controls,
+  Vcl.Forms, Vcl.Grids, Vcl.StdCtrls, DUnitX.Assert, MaxLogic.Accessibility.ProviderCore,
+  MaxLogic.Accessibility.UIAutomationCore, MaxLogic.Accessibility.VclAdapters;
 
 function ScaleValue(aValue: Integer): Integer;
 begin
   Result := MulDiv(aValue, Screen.PixelsPerInch, 96);
+end;
+
+function ControlScreenCenter(aControl: TControl): TPoint;
+begin
+  Result := aControl.ClientToScreen(Point(aControl.Width div 2, aControl.Height div 2));
 end;
 
 procedure CreateGridFixture(out aForm: TForm; out aGrid: TStringGrid);
@@ -300,6 +313,97 @@ begin
   end;
 end;
 
+procedure TStringGridAccessibilityTests.GridProviderFocusReturnsWholeRowForRowSelect;
+var
+  lExpectedName: string;
+  lFocus: IRawElementProviderFragment;
+  lForm: TForm;
+  lGrid: TStringGrid;
+  lProvider: IAccessibilityProviderNode;
+  lRoot: IRawElementProviderFragmentRoot;
+begin
+  CreateGridFixture(lForm, lGrid);
+  try
+    lExpectedName := 'ID: 101' + sLineBreak + sLineBreak + 'Name: Bob' + sLineBreak + sLineBreak +
+      'Status: Paused';
+    lGrid.Options := lGrid.Options + [goRowSelect];
+    lGrid.Col := 1;
+    lGrid.Row := 2;
+    lForm.ActiveControl := lGrid;
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lRoot := FragmentRoot(lProvider);
+
+    Assert.AreEqual(S_OK, lRoot.GetFocus(lFocus));
+    Assert.IsNotNull(lFocus);
+    Assert.AreEqual(lExpectedName, ProviderStringProperty(lFocus, UIA_NamePropertyId));
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TStringGridAccessibilityTests.GridProviderRowSelectFocusAndSelectionProvidersStayInTree;
+var
+  lExpectedName: string;
+  lFocus: IRawElementProviderFragment;
+  lForm: TForm;
+  lGrid: TStringGrid;
+  lGridFragment: IRawElementProviderFragment;
+  lParent: IRawElementProviderFragment;
+  lPattern: IUnknown;
+  lProvider: IAccessibilityProviderNode;
+  lRoot: IRawElementProviderFragmentRoot;
+  lSelected: IRawElementProviderFragment;
+  lSelection: PSafeArray;
+  lSelectionIndex: LongInt;
+  lSelectionProvider: ISelectionProvider;
+  lSelectedUnknown: IUnknown;
+  lSelectedSimple: IRawElementProviderSimple;
+begin
+  CreateGridFixture(lForm, lGrid);
+  try
+    lExpectedName := 'ID: 101' + sLineBreak + sLineBreak + 'Name: Bob' + sLineBreak + sLineBreak +
+      'Status: Paused';
+    lGrid.Options := lGrid.Options + [goRowSelect];
+    lGrid.Col := 1;
+    lGrid.Row := 2;
+    lForm.ActiveControl := lGrid;
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lRoot := FragmentRoot(lProvider);
+    lGridFragment := FirstChildFragment(lProvider.FragmentProvider);
+
+    Assert.AreEqual(S_OK, lRoot.GetFocus(lFocus));
+    Assert.IsNotNull(lFocus);
+    lParent := NavigateFragment(lFocus, NavigateDirection_Parent);
+    Assert.IsNotNull(lParent);
+    Assert.AreEqual('OrdersGrid', ProviderStringProperty(lParent, UIA_NamePropertyId));
+
+    lPattern := ProviderPattern(lGridFragment, UIA_SelectionPatternId);
+    Assert.IsTrue(Supports(lPattern, ISelectionProvider, lSelectionProvider));
+    lSelection := nil;
+    Assert.AreEqual(S_OK, lSelectionProvider.GetSelection(lSelection));
+    try
+      Assert.IsNotNull(lSelection);
+      lSelectionIndex := 0;
+      lSelectedUnknown := nil;
+      Assert.AreEqual(S_OK, SafeArrayGetElement(lSelection, lSelectionIndex, lSelectedUnknown));
+      Assert.IsNotNull(lSelectedUnknown);
+      Assert.IsTrue(Supports(lSelectedUnknown, IRawElementProviderSimple, lSelectedSimple));
+      lSelected := FragmentFromSimple(lSelectedSimple);
+      Assert.AreEqual(lExpectedName, ProviderStringProperty(lSelected, UIA_NamePropertyId));
+      lParent := NavigateFragment(lSelected, NavigateDirection_Parent);
+      Assert.IsNotNull(lParent);
+      Assert.AreEqual('OrdersGrid', ProviderStringProperty(lParent, UIA_NamePropertyId));
+    finally
+      if lSelection <> nil then
+      begin
+        SafeArrayDestroy(lSelection);
+      end;
+    end;
+  finally
+    lForm.Free;
+  end;
+end;
+
 procedure TStringGridAccessibilityTests.GridProviderDoesNotClaimFocusWhenAnotherControlIsActive;
 var
   lEdit: TEdit;
@@ -409,6 +513,87 @@ begin
     Assert.AreEqual('Alice', ProviderStringProperty(lHit, UIA_NamePropertyId));
     Assert.IsFalse(Pos('row', LowerCase(ProviderStringProperty(lHit, UIA_NamePropertyId))) > 0);
     Assert.IsFalse(Pos('column', LowerCase(ProviderStringProperty(lHit, UIA_NamePropertyId))) > 0);
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TStringGridAccessibilityTests.GridProviderHitTestingIgnoresPointsOutsideTheGrid;
+var
+  lForm: TForm;
+  lGrid: TStringGrid;
+  lHit: IRawElementProviderFragment;
+  lPoint: TPoint;
+  lProvider: IAccessibilityProviderNode;
+  lRoot: IRawElementProviderFragmentRoot;
+begin
+  CreateGridFixture(lForm, lGrid);
+  try
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lRoot := FragmentRoot(lProvider);
+    lPoint := lForm.ClientToScreen(Point(lGrid.Left + lGrid.Width + ScaleValue(20),
+      lGrid.Top + lGrid.Height + ScaleValue(20)));
+
+    Assert.AreEqual(S_OK, lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit));
+    Assert.IsNull(lHit);
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TStringGridAccessibilityTests.GridProviderHitTestingIgnoresGridOnInactiveTab;
+var
+  lActiveTab: TTabSheet;
+  lForm: TForm;
+  lGrid: TStringGrid;
+  lGridTab: TTabSheet;
+  lHit: IRawElementProviderFragment;
+  lLabel: TLabel;
+  lPageControl: TPageControl;
+  lPoint: TPoint;
+  lProvider: IAccessibilityProviderNode;
+  lRoot: IRawElementProviderFragmentRoot;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(ScaleValue(100), ScaleValue(100), ScaleValue(460), ScaleValue(320));
+
+    lPageControl := TPageControl.Create(lForm);
+    lPageControl.Parent := lForm;
+    lPageControl.SetBounds(ScaleValue(8), ScaleValue(8), ScaleValue(400), ScaleValue(250));
+
+    lActiveTab := TTabSheet.Create(lForm);
+    lActiveTab.Caption := 'Standard grid';
+    lActiveTab.PageControl := lPageControl;
+
+    lGridTab := TTabSheet.Create(lForm);
+    lGridTab.Caption := 'Hidden grid';
+    lGridTab.PageControl := lPageControl;
+
+    lLabel := TLabel.Create(lForm);
+    lLabel.Caption := 'Visible active tab label';
+    lLabel.Parent := lActiveTab;
+    lLabel.SetBounds(ScaleValue(30), ScaleValue(34), ScaleValue(180), ScaleValue(24));
+
+    lGrid := TStringGrid.Create(lForm);
+    lGrid.Name := 'InactiveGrid';
+    lGrid.Parent := lGridTab;
+    lGrid.SetBounds(ScaleValue(20), ScaleValue(20), ScaleValue(260), ScaleValue(130));
+    lGrid.ColCount := 2;
+    lGrid.RowCount := 2;
+    lGrid.Cells[1, 1] := 'Hidden inactive grid cell';
+
+    lPageControl.ActivePage := lActiveTab;
+    lForm.HandleNeeded;
+    lGrid.HandleNeeded;
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lRoot := FragmentRoot(lProvider);
+    lPoint := ControlScreenCenter(lLabel);
+
+    Assert.IsFalse(lGrid.Showing, 'Inactive tab grid must not be considered showing.');
+    Assert.AreEqual(S_OK, lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit));
+    Assert.IsNotNull(lHit);
+    Assert.AreEqual('Visible active tab label', ProviderStringProperty(lHit, UIA_NamePropertyId));
   finally
     lForm.Free;
   end;

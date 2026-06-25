@@ -16,8 +16,8 @@ implementation
 
 uses
   System.Generics.Collections, System.SysUtils, System.Types, System.Variants, Winapi.ActiveX, Winapi.Windows,
-  Vcl.Controls, Vcl.Forms, AdvGrid, MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.UIAutomationCore,
-  MaxLogic.Accessibility.VclAdapters;
+  Vcl.ComCtrls, Vcl.Controls, Vcl.Forms, AdvGrid, MaxLogic.Accessibility.ProviderCore,
+  MaxLogic.Accessibility.UIAutomationCore, MaxLogic.Accessibility.VclAdapters;
 
 type
   TAdvStringGridAdapter = class(TInterfacedObject, IAccessibilityControlAdapter, IAccessibilityVclProviderAdapter)
@@ -57,8 +57,8 @@ type
     function Select: HResult; stdcall;
   end;
 
-  TAccessibilityAdvStringGridProvider = class(TAccessibilityProviderNode, IRawElementProviderFragmentRoot,
-    IGridProvider, ISelectionProvider)
+  TAccessibilityAdvStringGridProvider = class(TAccessibilityProviderNode, IAccessibilityVclControlProviderInfo,
+    IRawElementProviderFragmentRoot, IGridProvider, ISelectionProvider)
   private
     fCells: TDictionary<Int64, IAccessibilityProviderNode>;
     fGrid: TAdvStringGrid;
@@ -86,6 +86,7 @@ type
     constructor Create(aGrid: TAdvStringGrid; aRuntimeId: Integer; const aName: string; const aHelpText: string;
       const aApi: IAccessibilityUiaApi);
     destructor Destroy; override;
+    function Control: TControl;
     function ElementProviderFromPoint(aX: Double; aY: Double; out aRetVal: IRawElementProviderFragment):
       HResult; stdcall;
     function GetFocus(out aRetVal: IRawElementProviderFragment): HResult; stdcall;
@@ -115,6 +116,56 @@ end;
 function IsNonEmptyRect(const aRect: TRect): Boolean;
 begin
   Result := (aRect.Width > 0) and (aRect.Height > 0);
+end;
+
+function ControlIsInActiveVisibleTree(aControl: TControl): Boolean;
+var
+  lControl: TControl;
+  lTabSheet: TTabSheet;
+begin
+  Result := False;
+  lControl := aControl;
+  while lControl <> nil do
+  begin
+    if not (lControl is TCustomForm) and not lControl.Visible then
+    begin
+      Exit;
+    end;
+
+    if lControl is TTabSheet then
+    begin
+      lTabSheet := TTabSheet(lControl);
+      if (lTabSheet.PageControl <> nil) and (lTabSheet.PageControl.ActivePage <> lTabSheet) then
+      begin
+        Exit;
+      end;
+    end;
+
+    lControl := lControl.Parent;
+  end;
+
+  Result := True;
+end;
+
+function WindowUnderPointMatchesControl(aControl: TControl; const aPoint: TPoint): Boolean;
+var
+  lControl: TWinControl;
+  lWindow: TWinControl;
+begin
+  Result := True;
+  if not (aControl is TWinControl) then
+  begin
+    Exit;
+  end;
+
+  lControl := TWinControl(aControl);
+  if not lControl.HandleAllocated or not IsWindowVisible(lControl.Handle) then
+  begin
+    Exit;
+  end;
+
+  lWindow := FindVCLWindow(aPoint);
+  Result := (lWindow = lControl) or ((lWindow <> nil) and lControl.ContainsControl(lWindow));
 end;
 
 function TAdvStringGridAdapter.CreateInfo(aControl: TControl; const aFallback: TAccessibilityTextInfo):
@@ -408,13 +459,18 @@ begin
   inherited Destroy;
 end;
 
+function TAccessibilityAdvStringGridProvider.Control: TControl;
+begin
+  Result := fGrid;
+end;
+
 function TAccessibilityAdvStringGridProvider.DoGetBoundingRectangle(out aValue: UiaRect): Boolean;
 var
   lTopLeft: TPoint;
 begin
   aValue := Default(UiaRect);
   Result := False;
-  if (fGrid = nil) or IsDisconnected then
+  if (fGrid = nil) or IsDisconnected or not ControlIsInActiveVisibleTree(fGrid) then
   begin
     Exit;
   end;
@@ -458,7 +514,7 @@ begin
     UIA_IsKeyboardFocusablePropertyId:
       aValue := fGrid.TabStop;
     UIA_IsOffscreenPropertyId:
-      aValue := not fGrid.Visible;
+      aValue := not ControlIsInActiveVisibleTree(fGrid);
   else
     Result := inherited DoGetPropertyValue(aPropertyId, aValue);
   end;
@@ -469,6 +525,7 @@ function TAccessibilityAdvStringGridProvider.ElementProviderFromPoint(aX: Double
 var
   lCell: IAccessibilityProviderNode;
   lCol: Integer;
+  lClientPoint: TPoint;
   lPoint: TPoint;
   lRow: Integer;
 begin
@@ -479,6 +536,17 @@ begin
   end;
 
   lPoint := Point(Integer(Round(aX)), Integer(Round(aY)));
+  lClientPoint := fGrid.ScreenToClient(lPoint);
+  if not ControlIsInActiveVisibleTree(fGrid) or not WindowUnderPointMatchesControl(fGrid, lPoint) then
+  begin
+    Exit(S_OK);
+  end;
+
+  if not PtInRect(Rect(0, 0, fGrid.ClientWidth, fGrid.ClientHeight), lClientPoint) then
+  begin
+    Exit(S_OK);
+  end;
+
   fGrid.ScreenToCell(lPoint, lCol, lRow);
   lCell := EnsureCellProvider(lCol, lRow);
   if lCell <> nil then
@@ -504,7 +572,7 @@ var
   lCell: IAccessibilityProviderNode;
 begin
   aRetVal := nil;
-  if IsDisconnected or (fGrid = nil) then
+  if IsDisconnected or (fGrid = nil) or not ControlIsInActiveVisibleTree(fGrid) then
   begin
     Exit(UIA_E_ELEMENTNOTAVAILABLE);
   end;
@@ -645,6 +713,11 @@ function TAccessibilityAdvStringGridProvider.IsVisibleCell(aCol: Integer; aRow: 
 var
   lCellRect: TRect;
 begin
+  if not ControlIsInActiveVisibleTree(fGrid) then
+  begin
+    Exit(False);
+  end;
+
   Result := VisibleCellRect(aCol, aRow, lCellRect);
 end;
 
@@ -870,7 +943,7 @@ begin
     begin
       if fCells.TryGetValue(lKey, lCell) then
       begin
-        RemoveChildNode(lCell, True);
+        RemoveChildNode(lCell, False);
         fCells.Remove(lKey);
       end;
     end;

@@ -23,22 +23,113 @@ type
     [Test]
     procedure OptInProviderHitTestingReturnsOnlyTheCellUnderThePointer;
     [Test]
+    procedure OptInProviderHitTestingIgnoresPointsOutsideTheGrid;
+    [Test]
+    procedure OptInProviderHitTestingIgnoresGridOnInactiveTab;
+    [Test]
     procedure OptInProviderFocusReturnsTheCurrentCell;
     [Test]
     procedure OptInProviderFindsScrolledCellsAndPrunesStaleChildren;
+    [Test]
+    procedure OptInProviderPrunesScrolledCellsWithoutUiaDisconnect;
   end;
 
 implementation
 
 uses
-  System.SysUtils, System.Types, System.Variants, Winapi.ActiveX, Winapi.Windows, Vcl.Forms, AdvGrid,
-  DUnitX.Assert, MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.Scanner,
-  MaxLogic.Accessibility.TmsAdvStringGridAdapters, MaxLogic.Accessibility.UIAutomationCore,
+  System.SysUtils, System.Types, System.Variants, Winapi.ActiveX, Winapi.Windows, Vcl.ComCtrls, Vcl.Controls,
+  Vcl.Forms, Vcl.StdCtrls, AdvGrid, DUnitX.Assert, MaxLogic.Accessibility.ProviderCore,
+  MaxLogic.Accessibility.Scanner, MaxLogic.Accessibility.TmsAdvStringGridAdapters, MaxLogic.Accessibility.UIAutomationCore,
   MaxLogic.Accessibility.VclAdapters;
+
+type
+  IAdvStringGridTestUiaApi = interface(IAccessibilityUiaApi)
+    ['{4B10309B-F6EA-4896-B1D0-8C728D163DDE}']
+    function DisconnectCalls: Integer;
+  end;
+
+  TAdvStringGridTestUiaApi = class(TInterfacedObject, IAdvStringGridTestUiaApi)
+  private
+    fDisconnectCalls: Integer;
+  public
+    function ClientsAreListening: Boolean;
+    function DisconnectCalls: Integer;
+    function DisconnectProvider(const aProvider: IRawElementProviderSimple): HRESULT;
+    function HostProviderFromHwnd(aHwnd: HWND; out aProvider: IRawElementProviderSimple): HRESULT;
+    function RaiseAutomationEvent(const aProvider: IRawElementProviderSimple; aEventId: EVENTID): HRESULT;
+    function RaiseAutomationPropertyChanged(const aProvider: IRawElementProviderSimple; aPropertyId: PROPERTYID;
+      const aOldValue: OleVariant; const aNewValue: OleVariant): HRESULT;
+    function RaiseNotification(const aProvider: IRawElementProviderSimple; aNotificationKind: NotificationKind;
+      aNotificationProcessing: NotificationProcessing; const aDisplayString: WideString;
+      const aActivityId: WideString): HRESULT;
+    function RaiseStructureChanged(const aProvider: IRawElementProviderSimple; aStructureChangeType: StructureChangeType;
+      const aRuntimeId: TArray<Integer>): HRESULT;
+    function ReturnRawElementProvider(aHwnd: HWND; aWParam: WPARAM; aLParam: LPARAM;
+      const aProvider: IRawElementProviderSimple): LRESULT;
+  end;
+
+function TAdvStringGridTestUiaApi.ClientsAreListening: Boolean;
+begin
+  Result := False;
+end;
+
+function TAdvStringGridTestUiaApi.DisconnectCalls: Integer;
+begin
+  Result := fDisconnectCalls;
+end;
+
+function TAdvStringGridTestUiaApi.DisconnectProvider(const aProvider: IRawElementProviderSimple): HRESULT;
+begin
+  Inc(fDisconnectCalls);
+  Result := S_OK;
+end;
+
+function TAdvStringGridTestUiaApi.HostProviderFromHwnd(aHwnd: HWND; out aProvider: IRawElementProviderSimple):
+  HRESULT;
+begin
+  aProvider := nil;
+  Result := S_FALSE;
+end;
+
+function TAdvStringGridTestUiaApi.RaiseAutomationEvent(const aProvider: IRawElementProviderSimple;
+  aEventId: EVENTID): HRESULT;
+begin
+  Result := S_OK;
+end;
+
+function TAdvStringGridTestUiaApi.RaiseAutomationPropertyChanged(const aProvider: IRawElementProviderSimple;
+  aPropertyId: PROPERTYID; const aOldValue: OleVariant; const aNewValue: OleVariant): HRESULT;
+begin
+  Result := S_OK;
+end;
+
+function TAdvStringGridTestUiaApi.RaiseNotification(const aProvider: IRawElementProviderSimple;
+  aNotificationKind: NotificationKind; aNotificationProcessing: NotificationProcessing; const aDisplayString: WideString;
+  const aActivityId: WideString): HRESULT;
+begin
+  Result := S_OK;
+end;
+
+function TAdvStringGridTestUiaApi.RaiseStructureChanged(const aProvider: IRawElementProviderSimple;
+  aStructureChangeType: StructureChangeType; const aRuntimeId: TArray<Integer>): HRESULT;
+begin
+  Result := S_OK;
+end;
+
+function TAdvStringGridTestUiaApi.ReturnRawElementProvider(aHwnd: HWND; aWParam: WPARAM; aLParam: LPARAM;
+  const aProvider: IRawElementProviderSimple): LRESULT;
+begin
+  Result := 0;
+end;
 
 function ScaleValue(aValue: Integer): Integer;
 begin
   Result := MulDiv(aValue, Screen.PixelsPerInch, 96);
+end;
+
+function ControlScreenCenter(aControl: TControl): TPoint;
+begin
+  Result := aControl.ClientToScreen(Point(aControl.Width div 2, aControl.Height div 2));
 end;
 
 procedure CreateAdvGridFixture(out aForm: TForm; out aGrid: TAdvStringGrid);
@@ -652,6 +743,42 @@ begin
   end;
 end;
 
+procedure TAdvStringGridAccessibilityTests.OptInProviderPrunesScrolledCellsWithoutUiaDisconnect;
+var
+  lBounds: UiaRect;
+  lForm: TForm;
+  lGrid: TAdvStringGrid;
+  lGridFragment: IRawElementProviderFragment;
+  lHit: IRawElementProviderFragment;
+  lPoint: TPoint;
+  lProvider: IAccessibilityProviderNode;
+  lRoot: IRawElementProviderFragmentRoot;
+  lUiaApi: IAdvStringGridTestUiaApi;
+begin
+  CreateScrollableAdvGridFixture(lForm, lGrid);
+  try
+    lUiaApi := TAdvStringGridTestUiaApi.Create;
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm, TmsRegistry, lUiaApi);
+    lRoot := FragmentRoot(lProvider);
+    lGridFragment := FirstChildFragment(lProvider.FragmentProvider);
+
+    lGrid.ScrollInView(6, 6);
+    lPoint := ScreenAdvCellCenter(lGrid, 6, 6);
+    Assert.AreEqual(S_OK, lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit));
+    Assert.IsNotNull(lHit);
+    Assert.AreEqual('Scrolled TMS cell', ProviderStringProperty(lHit, UIA_NamePropertyId));
+
+    lGrid.ScrollInView(1, 1);
+    Assert.AreEqual(VisibleAdvCellCount(lGrid), ChildFragmentCount(lGridFragment));
+    Assert.AreEqual(UIA_E_ELEMENTNOTAVAILABLE, lHit.Get_BoundingRectangle(lBounds),
+      'Retained stale cell provider should report unavailable after it is pruned.');
+    Assert.AreEqual(0, lUiaApi.DisconnectCalls,
+      'Transient grid cell pruning should not call UIA disconnect for providers not handed to UIA.');
+  finally
+    lForm.Free;
+  end;
+end;
+
 procedure TAdvStringGridAccessibilityTests.OptInProviderFocusReturnsTheCurrentCell;
 var
   lFocus: IRawElementProviderFragment;
@@ -694,6 +821,87 @@ begin
     Assert.AreEqual('Alice', ProviderStringProperty(lHit, UIA_NamePropertyId));
     Assert.IsFalse(Pos('row', LowerCase(ProviderStringProperty(lHit, UIA_NamePropertyId))) > 0);
     Assert.IsFalse(Pos('column', LowerCase(ProviderStringProperty(lHit, UIA_NamePropertyId))) > 0);
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAdvStringGridAccessibilityTests.OptInProviderHitTestingIgnoresPointsOutsideTheGrid;
+var
+  lForm: TForm;
+  lGrid: TAdvStringGrid;
+  lHit: IRawElementProviderFragment;
+  lPoint: TPoint;
+  lProvider: IAccessibilityProviderNode;
+  lRoot: IRawElementProviderFragmentRoot;
+begin
+  CreateAdvGridFixture(lForm, lGrid);
+  try
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm, TmsRegistry);
+    lRoot := FragmentRoot(lProvider);
+    lPoint := lForm.ClientToScreen(Point(lGrid.Left + lGrid.Width + ScaleValue(20),
+      lGrid.Top + lGrid.Height + ScaleValue(20)));
+
+    Assert.AreEqual(S_OK, lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit));
+    Assert.IsNull(lHit);
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAdvStringGridAccessibilityTests.OptInProviderHitTestingIgnoresGridOnInactiveTab;
+var
+  lActiveTab: TTabSheet;
+  lForm: TForm;
+  lGrid: TAdvStringGrid;
+  lGridTab: TTabSheet;
+  lHit: IRawElementProviderFragment;
+  lLabel: TLabel;
+  lPageControl: TPageControl;
+  lPoint: TPoint;
+  lProvider: IAccessibilityProviderNode;
+  lRoot: IRawElementProviderFragmentRoot;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(ScaleValue(100), ScaleValue(100), ScaleValue(460), ScaleValue(320));
+
+    lPageControl := TPageControl.Create(lForm);
+    lPageControl.Parent := lForm;
+    lPageControl.SetBounds(ScaleValue(8), ScaleValue(8), ScaleValue(400), ScaleValue(250));
+
+    lActiveTab := TTabSheet.Create(lForm);
+    lActiveTab.Caption := 'Standard grid';
+    lActiveTab.PageControl := lPageControl;
+
+    lGridTab := TTabSheet.Create(lForm);
+    lGridTab.Caption := 'Hidden TMS grid';
+    lGridTab.PageControl := lPageControl;
+
+    lLabel := TLabel.Create(lForm);
+    lLabel.Caption := 'Visible active tab label';
+    lLabel.Parent := lActiveTab;
+    lLabel.SetBounds(ScaleValue(30), ScaleValue(34), ScaleValue(180), ScaleValue(24));
+
+    lGrid := TAdvStringGrid.Create(lForm);
+    lGrid.Name := 'InactiveAdvGrid';
+    lGrid.Parent := lGridTab;
+    lGrid.SetBounds(ScaleValue(20), ScaleValue(20), ScaleValue(260), ScaleValue(130));
+    lGrid.ColCount := 2;
+    lGrid.RowCount := 2;
+    lGrid.Cells[1, 1] := 'Hidden inactive TMS cell';
+
+    lPageControl.ActivePage := lActiveTab;
+    lForm.HandleNeeded;
+    lGrid.HandleNeeded;
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm, TmsRegistry);
+    lRoot := FragmentRoot(lProvider);
+    lPoint := ControlScreenCenter(lLabel);
+
+    Assert.IsFalse(lGrid.Showing, 'Inactive tab TMS grid must not be considered showing.');
+    Assert.AreEqual(S_OK, lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit));
+    Assert.IsNotNull(lHit);
+    Assert.AreEqual('Visible active tab label', ProviderStringProperty(lHit, UIA_NamePropertyId));
   finally
     lForm.Free;
   end;

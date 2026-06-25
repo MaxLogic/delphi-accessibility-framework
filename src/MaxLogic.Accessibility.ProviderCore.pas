@@ -68,6 +68,7 @@ type
     function DoGetPatternProvider(aPatternId: PATTERNID): IUnknown; virtual;
     function DoGetPropertyValue(aPropertyId: PROPERTYID; out aValue: OleVariant): Boolean; virtual;
     function DoSetFocus: HResult; virtual;
+    function FindDescendantFromPoint(aX: Double; aY: Double; out aProvider: IRawElementProviderFragment): Boolean;
     procedure PrepareChildrenForNavigation; virtual;
     procedure RemoveChildNode(const aChild: IAccessibilityProviderNode; aDisconnect: Boolean);
   public
@@ -134,7 +135,8 @@ type
 implementation
 
 uses
-  System.SysUtils;
+  System.SysUtils,
+  MaxLogic.Accessibility.Diagnostics;
 
 type
   TAccessibilityUiaApi = class(TInterfacedObject, IAccessibilityUiaApi)
@@ -196,6 +198,53 @@ begin
   begin
     Result := DefaultUiaApi;
   end;
+end;
+
+function UiaRectContainsPoint(const aRect: UiaRect; aX: Double; aY: Double): Boolean;
+begin
+  Result := (aRect.Width > 0) and (aRect.Height > 0) and (aX >= aRect.Left) and (aY >= aRect.Top) and
+    (aX < aRect.Left + aRect.Width) and (aY < aRect.Top + aRect.Height);
+end;
+
+function ProviderPropertyToString(const aProvider: IRawElementProviderFragment; aPropertyId: PROPERTYID): string;
+var
+  lProvider: IRawElementProviderSimple;
+  lValue: OleVariant;
+begin
+  Result := '';
+  if not Supports(aProvider, IRawElementProviderSimple, lProvider) then
+  begin
+    Exit;
+  end;
+
+  if lProvider.GetPropertyValue(aPropertyId, lValue) <> S_OK then
+  begin
+    Exit;
+  end;
+
+  if VarIsEmpty(lValue) or VarIsNull(lValue) then
+  begin
+    Exit;
+  end;
+
+  Result := VarToStr(lValue);
+end;
+
+function ProviderHitTestDescription(const aProvider: IRawElementProviderFragment): string;
+var
+  lClassName: string;
+  lControlType: string;
+  lName: string;
+begin
+  if aProvider = nil then
+  begin
+    Exit('provider=nil');
+  end;
+
+  lName := ProviderPropertyToString(aProvider, UIA_NamePropertyId);
+  lClassName := ProviderPropertyToString(aProvider, UIA_ClassNamePropertyId);
+  lControlType := ProviderPropertyToString(aProvider, UIA_ControlTypePropertyId);
+  Result := Format('provider name="%s" class="%s" controlType="%s"', [lName, lClassName, lControlType]);
 end;
 
 function TAccessibilityUiaApi.ClientsAreListening: Boolean;
@@ -453,7 +502,13 @@ end;
 function TAccessibilityProviderNode.DoGetPropertyValue(aPropertyId: PROPERTYID; out aValue: OleVariant): Boolean;
 begin
   aValue := Unassigned;
-  Result := False;
+  Result := True;
+  case aPropertyId of
+    UIA_NativeWindowHandlePropertyId:
+      aValue := NativeInt(fHwnd);
+  else
+    Result := False;
+  end;
 end;
 
 function TAccessibilityProviderNode.DoSetFocus: HResult;
@@ -464,6 +519,41 @@ end;
 function TAccessibilityProviderNode.FragmentProvider: IRawElementProviderFragment;
 begin
   Result := Self as IRawElementProviderFragment;
+end;
+
+function TAccessibilityProviderNode.FindDescendantFromPoint(aX: Double; aY: Double;
+  out aProvider: IRawElementProviderFragment): Boolean;
+var
+  i: Integer;
+  lBounds: UiaRect;
+  lChild: TAccessibilityProviderNode;
+  lDeeperProvider: IRawElementProviderFragment;
+begin
+  aProvider := nil;
+  Result := False;
+  if fDisconnected then
+  begin
+    Exit;
+  end;
+
+  PrepareChildrenForNavigation;
+  for i := Pred(fChildren.Count) downto 0 do
+  begin
+    lChild := FromNode(fChildren[i]);
+    if lChild.IsDisconnected or (lChild.Get_BoundingRectangle(lBounds) <> S_OK) or
+      not UiaRectContainsPoint(lBounds, aX, aY) then
+    begin
+      Continue;
+    end;
+
+    if lChild.FindDescendantFromPoint(aX, aY, lDeeperProvider) then
+    begin
+      aProvider := lDeeperProvider;
+    end else begin
+      aProvider := lChild.FragmentProvider;
+    end;
+    Exit(True);
+  end;
 end;
 
 class function TAccessibilityProviderNode.FromNode(const aNode: IAccessibilityProviderNode): TAccessibilityProviderNode;
@@ -702,6 +792,8 @@ begin
   if aDisconnect then
   begin
     aChild.Disconnect;
+  end else begin
+    lChild.DetachFromParentDestruction;
   end;
 end;
 
@@ -744,6 +836,7 @@ function TAccessibilityProviderRoot.DoElementProviderFromPoint(aX: Double; aY: D
   out aProvider: IRawElementProviderFragment): HResult;
 begin
   aProvider := nil;
+  FindDescendantFromPoint(aX, aY, aProvider);
   Result := S_OK;
 end;
 
@@ -759,10 +852,14 @@ begin
   aRetVal := nil;
   if IsDisconnected then
   begin
+    TAccessibilityDiagnostics.Log(Format('UIA ElementProviderFromPoint x=%.0f y=%.0f result=UIA_E_ELEMENTNOTAVAILABLE',
+      [aX, aY]));
     Exit(UIA_E_ELEMENTNOTAVAILABLE);
   end;
 
   Result := DoElementProviderFromPoint(aX, aY, aRetVal);
+  TAccessibilityDiagnostics.Log(Format('UIA ElementProviderFromPoint x=%.0f y=%.0f hresult=$%.8x %s',
+    [aX, aY, Cardinal(Result), ProviderHitTestDescription(aRetVal)]));
 end;
 
 function TAccessibilityProviderRoot.GetFocus(out aRetVal: IRawElementProviderFragment): HResult;
@@ -881,11 +978,15 @@ begin
   Result := False;
   if (aLParam <> LPARAM(UiaRootObjectId)) or (aProvider = nil) then
   begin
+    TAccessibilityDiagnostics.Log(Format('WM_GETOBJECT ignored hwnd=%d lParam=%d providerPresent=%s',
+      [aHwnd, aLParam, BoolToStr(aProvider <> nil, True)]));
     Exit;
   end;
 
   lApi := ResolveApi(aApi);
   aResult := lApi.ReturnRawElementProvider(aHwnd, aWParam, aLParam, aProvider);
+  TAccessibilityDiagnostics.Log(Format('WM_GETOBJECT returned framework provider hwnd=%d wParam=%d lParam=%d lResult=$%.8x',
+    [aHwnd, aWParam, aLParam, Cardinal(aResult)]));
   Result := True;
 end;
 

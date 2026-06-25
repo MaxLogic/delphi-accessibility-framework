@@ -78,6 +78,7 @@ todo.md
 dunitx-results.xml
 pas-api-map.md
 /TASKS.md
+/TASKS.ARCHIVE.md
 /spec.md
 .roundtable/
 tmp*.json
@@ -141,3 +142,4 @@ msbuild.log
 # Generated from .dproj version info during local Delphi builds
 /projects/*.res
 /tests/*.res
+/demos/*.res

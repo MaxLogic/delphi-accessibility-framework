@@ -6,24 +6,25 @@ from __future__ import annotations
 import argparse
 import ctypes
 from ctypes import wintypes
-import hashlib
 import json
-import os
 from pathlib import Path
-import subprocess
 import time
-import urllib.error
-import urllib.request
+import winsound
 
 
-BELLA_VOICE_ID = "EXAVITQu4vr4xnSDxMaL"
-DEFAULT_MODEL = "eleven_turbo_v2_5"
 PIPE_PREFIX = "\\\\.\\pipe\\"
 START_TEXT = (
     "I am taking over control now. Please move away from the mouse and keyboard. "
     "I will begin in three seconds."
 )
 DONE_TEXT = "Thanks, I am done. You may resume work now."
+SCRIPT_DIR = Path(__file__).resolve().parent
+SKILL_DIR = SCRIPT_DIR.parent
+ANNOUNCEMENT_DIR = SKILL_DIR / "assets" / "announcements"
+ANNOUNCEMENTS = {
+    "takeover": ("takeover.wav", START_TEXT, 3),
+    "release": ("release.wav", DONE_TEXT, 0),
+}
 
 KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_UNICODE = 0x0004
@@ -45,7 +46,6 @@ VK_CODES = {
 
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 user32 = ctypes.WinDLL("user32", use_last_error=True)
-winmm = ctypes.WinDLL("winmm", use_last_error=True)
 
 
 class KEYBDINPUT(ctypes.Structure):
@@ -77,142 +77,29 @@ def fail(message: str, code: int = 1, **extra: object) -> int:
     return code
 
 
-def load_env_file(start: Path) -> None:
-    for folder in [start, *start.parents]:
-        env_path = folder / ".env"
-        if not env_path.exists():
-            continue
-        for raw_line in env_path.read_text(encoding="utf-8", errors="ignore").splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            name, value = line.split("=", 1)
-            name = name.strip()
-            value = value.strip().strip('"').strip("'")
-            if name and name not in os.environ:
-                os.environ[name] = value
-        return
-
-
-def cache_dir() -> Path:
-    base = os.environ.get("LOCALAPPDATA")
-    if base:
-        path = Path(base) / "MaxLogic" / "CodexDesktopControl" / "tts-cache"
-    else:
-        path = Path.cwd() / ".desktop-control-cache"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-def mci(command: str) -> None:
-    buffer = ctypes.create_unicode_buffer(512)
-    result = winmm.mciSendStringW(command, buffer, len(buffer), 0)
-    if result != 0:
-        raise OSError(f"MCI command failed ({result}): {command}")
-
-
-def play_audio(path: Path) -> None:
-    alias = "codex_tts_" + hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:12]
-    mci(f'open "{path}" type mpegvideo alias {alias}')
-    try:
-        mci(f"play {alias} wait")
-    finally:
-        mci(f"close {alias}")
-
-
-def sapi_speak(text: str, dry_run: bool) -> None:
-    if dry_run:
-        return
-
-    script = (
-        "Add-Type -AssemblyName System.Speech; "
-        "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
-        "$s.Rate = 1; $s.Volume = 100; "
-        "$s.Speak([Console]::In.ReadToEnd())"
-    )
-    subprocess.run(
-        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
-        input=text,
-        text=True,
-        check=True,
-    )
-
-
-def elevenlabs_speech(text: str, dry_run: bool, allow_sapi_fallback: bool) -> dict[str, object]:
-    load_env_file(Path.cwd())
-    api_key = os.environ.get("ELEVENLABS_API_KEY")
-    settings = {
-        "stability": 0.32,
-        "similarity_boost": 0.82,
-        "style": 0.62,
-        "speed": 1.0,
-        "use_speaker_boost": True,
-    }
-    payload = {
-        "text": text,
-        "model_id": DEFAULT_MODEL,
-        "voice_settings": settings,
-    }
-    cache_key = hashlib.sha256(
-        json.dumps({"voice": BELLA_VOICE_ID, "payload": payload}, sort_keys=True).encode("utf-8")
-    ).hexdigest()
-    output_path = cache_dir() / f"{cache_key}.mp3"
-
-    if dry_run:
-        return {"ok": True, "provider": "elevenlabs", "dryRun": True, "path": str(output_path), "text": text}
-
-    if not api_key:
-        if not allow_sapi_fallback:
-            raise RuntimeError("ELEVENLABS_API_KEY is not set. Pass --allow-sapi-fallback only with user approval.")
-        sapi_speak(text, dry_run)
-        return {"ok": True, "provider": "sapi", "fallback": True, "text": text}
-
-    if not output_path.exists():
-        url = (
-            f"https://api.elevenlabs.io/v1/text-to-speech/{BELLA_VOICE_ID}"
-            "?output_format=mp3_44100_128"
-        )
-        request = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Accept": "audio/mpeg",
-                "Content-Type": "application/json",
-                "xi-api-key": api_key,
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=60) as response:
-                output_path.write_bytes(response.read())
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"ElevenLabs request failed: HTTP {exc.code}: {detail}") from exc
-
-    play_audio(output_path)
-    return {"ok": True, "provider": "elevenlabs", "path": str(output_path), "text": text}
-
-
 def command_announce(args: argparse.Namespace) -> int:
     try:
-        result = elevenlabs_speech(args.text, args.dry_run, args.allow_sapi_fallback)
-        if args.sleep_after > 0 and not args.dry_run:
-            time.sleep(args.sleep_after)
-        print_json(result)
+        file_name, text, sleep_after = ANNOUNCEMENTS[args.asset]
+        path = ANNOUNCEMENT_DIR / file_name
+        if not path.exists():
+            return fail(f"Announcement asset is missing: {path}")
+        if not args.dry_run:
+            winsound.PlaySound(str(path), winsound.SND_FILENAME)
+            if sleep_after > 0:
+                time.sleep(sleep_after)
+        print_json({"ok": True, "provider": "asset", "asset": args.asset, "path": str(path), "text": text})
         return 0
     except Exception as exc:  # noqa: BLE001 - CLI boundary
-        return fail(str(exc), provider="elevenlabs")
+        return fail(str(exc), provider="asset")
 
 
 def command_takeover(args: argparse.Namespace) -> int:
-    args.text = START_TEXT
-    args.sleep_after = 3
+    args.asset = "takeover"
     return command_announce(args)
 
 
 def command_release(args: argparse.Namespace) -> int:
-    args.text = DONE_TEXT
-    args.sleep_after = 0
+    args.asset = "release"
     return command_announce(args)
 
 
@@ -406,22 +293,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Safe Windows desktop control helper.")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    def add_announce_flags(p: argparse.ArgumentParser) -> None:
-        p.add_argument("--dry-run", action="store_true")
-        p.add_argument("--allow-sapi-fallback", action="store_true")
-
     p = sub.add_parser("announce")
-    p.add_argument("--text", required=True)
-    p.add_argument("--sleep-after", type=float, default=0)
-    add_announce_flags(p)
+    p.add_argument("--asset", choices=sorted(ANNOUNCEMENTS), required=True)
+    p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=command_announce)
 
     p = sub.add_parser("takeover")
-    add_announce_flags(p)
+    p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=command_takeover)
 
     p = sub.add_parser("release")
-    add_announce_flags(p)
+    p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=command_release)
 
     p = sub.add_parser("bridge-request")

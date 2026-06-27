@@ -41,10 +41,10 @@ When UIA is the thing under test, do not use UIA as the only source of target co
 Useful commands:
 
 ```powershell
-# Audio safety announcements. Uses ElevenLabs Bella.
+# Audio safety announcements. Plays bundled Bella WAV assets; no runtime TTS call.
 python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py takeover
 python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py release
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py announce --text "Custom message"
+python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py announce --asset takeover
 
 # MaxLogic bridge. Pipe name may be either a plain name or \\.\pipe\name.
 python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py probe-bridge --pipe-name MaxLogicAccessibilityAgentBridge.1234
@@ -61,7 +61,7 @@ python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py
 python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py uia-map --focused --max-depth 4
 ```
 
-Use `--dry-run` on announcement commands when validating the skill without speaking or calling ElevenLabs. Set `ELEVENLABS_API_KEY` before real control sessions. Use `--allow-sapi-fallback` only when the user explicitly accepts a non-Bella fallback voice.
+Use `--dry-run` on announcement commands when validating the skill without speaking. The announcement files live in `assets/announcements/` and are generated once with ElevenLabs Bella; the helper must not call ElevenLabs or any other TTS provider at runtime.
 
 ## MaxLogic Bridge Workflow
 

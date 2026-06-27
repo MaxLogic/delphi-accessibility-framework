@@ -89,6 +89,9 @@ begin
   Assert.AreEqual(30013, UIA_HelpTextPropertyId);
   Assert.AreEqual(30016, UIA_IsControlElementPropertyId);
   Assert.AreEqual(30017, UIA_IsContentElementPropertyId);
+  Assert.AreEqual(30079, UIA_SelectionItemIsSelectedPropertyId);
+  Assert.AreEqual(30080, UIA_SelectionItemSelectionContainerPropertyId);
+  Assert.AreEqual(30086, UIA_ToggleToggleStatePropertyId);
   Assert.AreEqual(30107, UIA_ProviderDescriptionPropertyId);
 
   Assert.AreEqual(20000, UIA_ToolTipOpenedEventId);

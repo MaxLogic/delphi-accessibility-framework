@@ -51,5 +51,9 @@ begin
   TAccessibilityDiagnostics.Log('AccessibilityComplexDemo starting');
   Application.CreateForm(TAccessibilityDemoMainForm, AccessibilityDemoMain);
   SetDemoAccessibilityFrameworkEnabled(True);
-  Application.Run;
+  try
+    Application.Run;
+  finally
+    SetDemoAccessibilityFrameworkEnabled(False);
+  end;
 end.

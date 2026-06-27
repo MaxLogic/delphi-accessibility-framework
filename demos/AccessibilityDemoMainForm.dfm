@@ -15,6 +15,7 @@ object AccessibilityDemoMainForm: TAccessibilityDemoMainForm
   Scaled = True
   ShowHint = True
   OnCreate = FormCreate
+  OnDestroy = FormDestroy
   PixelsPerInch = 96
   TextHeight = 17
   object SplitterFilters: TSplitter

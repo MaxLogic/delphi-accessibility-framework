@@ -1207,6 +1207,8 @@ var
   lToolBar: TToolBar;
   lToolButton: TToolButton;
   lToolButtonFragment: IRawElementProviderFragment;
+  lRadioGroupItemFragment: IRawElementProviderFragment;
+  lSelectionItem: ISelectionItemProvider;
 begin
   lForm := TForm.Create(nil);
   lRecorder := TClickRecorder.Create;
@@ -1314,6 +1316,11 @@ begin
     AssertNamedControlType(lProvider.FragmentProvider, 'Compact', UIA_RadioButtonControlTypeId);
     AssertNamedControlType(lProvider.FragmentProvider, 'Detailed', UIA_RadioButtonControlTypeId);
     AssertNamedControlType(lProvider.FragmentProvider, 'Density', UIA_GroupControlTypeId);
+    AssertNamedControlType(lProvider.FragmentProvider, 'Comfortable', UIA_RadioButtonControlTypeId);
+    AssertNamedControlType(lProvider.FragmentProvider, 'Compact density', UIA_RadioButtonControlTypeId);
+    lRadioGroupItemFragment := FindDescendantByName(lProvider.FragmentProvider, 'Comfortable');
+    lPattern := ProviderPattern(lRadioGroupItemFragment, UIA_SelectionItemPatternId);
+    Assert.IsTrue(Supports(lPattern, ISelectionItemProvider, lSelectionItem));
     AssertNamedControlType(lProvider.FragmentProvider, 'DemoTabs', UIA_TabControlTypeId);
     AssertNamedControlType(lProvider.FragmentProvider, 'Orders', UIA_TabItemControlTypeId);
     AssertNamedControlType(lProvider.FragmentProvider, 'Command toolbar', UIA_ToolBarControlTypeId);

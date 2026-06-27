@@ -95,6 +95,7 @@ type
     procedure btnToggleDetailsClick(aSender: TObject);
     procedure chkAccessibilityEnabledClick(aSender: TObject);
     procedure FormCreate(aSender: TObject);
+    procedure FormDestroy(aSender: TObject);
     procedure ToolButtonClick(aSender: TObject);
   private
     procedure FillAdvStringGrid;
@@ -411,6 +412,12 @@ begin
   FillEventList;
   FillMemo;
   RefreshStatus(rsActionRefreshed);
+end;
+
+procedure TAccessibilityDemoMainForm.FormDestroy(aSender: TObject);
+begin
+  BalloonHideTimer.Enabled := False;
+  BalloonHint.HideHint;
 end;
 
 procedure TAccessibilityDemoMainForm.RefreshStatus(const aAction: string);

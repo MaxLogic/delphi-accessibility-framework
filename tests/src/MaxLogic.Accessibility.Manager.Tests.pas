@@ -29,6 +29,12 @@ type
     [Test]
     procedure ApplicationInstallScansCurrentFormsAndIsIdempotent;
     [Test]
+    procedure RunInstallsCurrentFormsAndUninstallsAfterApplicationRun;
+    [Test]
+    procedure RunUninstallsPartialApplicationInstallWhenInstallFails;
+    [Test]
+    procedure UninstallIsIdempotent;
+    [Test]
     procedure ApplicationInstallSkipsInternalNoActiveForm;
     [Test]
     procedure FormInstallIsScopedAndIdempotent;
@@ -44,6 +50,8 @@ type
     procedure FormInstallHandlesChildUiaGetObjectThroughFrameworkProvider;
     [Test]
     procedure FormInstallHandlesChildContainerHitTestingForNonWindowedLabel;
+    [Test]
+    procedure FormInstallLeavesCheckBoxAndRadioButtonNativeGetObject;
     [Test]
     procedure FormInstallLeavesUnsupportedFocusableControlNativeGetObject;
     [Test]
@@ -83,11 +91,23 @@ type
     [Test]
     procedure FormInstallRaisesMemoListBoxAndStatusBarHoverNotifications;
     [Test]
-    procedure FormInstallRaisesWindowedButtonHoverNotificationAndCheckBoxProvider;
+    procedure FormInstallRaisesWindowedButtonHoverNotificationAndKeepsCheckBoxNative;
     [Test]
-    procedure FormInstallRaisesCheckBoxHoverPlatformEventsWithoutNotification;
+    procedure FormInstallRaisesGroupBoxHoverAndRadioGroupItemHoverProviders;
     [Test]
-    procedure FormInstallRaisesCheckBoxFocusPlatformEventsWithoutNotification;
+    procedure FormInstallRaisesGroupBoxHoverFromNonClientMouseMove;
+    [Test]
+    procedure FormInstallRaisesRadioGroupItemHoverFromButtonWindow;
+    [Test]
+    procedure FormInstallRaisesCheckBoxHoverNativeWinEventsWithoutProviderReplacement;
+    [Test]
+    procedure FormInstallRaisesCheckBoxFocusNativeWinEventsWithoutProviderReplacement;
+    [Test]
+    procedure FormInstallRaisesRadioButtonHoverAndFocusNativeWinEventsWithoutProviderReplacement;
+    [Test]
+    procedure FormInstallLeavesCheckBoxToggleToNativeWindow;
+    [Test]
+    procedure FormInstallLeavesRadioButtonSelectionToNativeWindow;
     [Test]
     procedure FormInstallRaisesToggleSpeedButtonHoverWithoutCheckBoxStateText;
     [Test]
@@ -142,8 +162,13 @@ type
     function LastLParam: LPARAM;
     function LastNotificationProvider: IRawElementProviderSimple;
     function LastNotificationText: string;
+    function LastPropertyChangedNewValue: OleVariant;
+    function LastPropertyChangedOldValue: OleVariant;
+    function LastPropertyChangedPropertyId: PROPERTYID;
+    function LastPropertyChangedProvider: IRawElementProviderSimple;
     function ReturnedProvider: IRawElementProviderSimple;
     function NotificationCalls: Integer;
+    function PropertyChangedCalls: Integer;
     function ReturnCalls: Integer;
     procedure SetClientsAreListening(aValue: Boolean);
   end;
@@ -159,7 +184,12 @@ type
     fLastLParam: LPARAM;
     fLastNotificationProvider: IRawElementProviderSimple;
     fLastNotificationText: string;
+    fLastPropertyChangedNewValue: OleVariant;
+    fLastPropertyChangedOldValue: OleVariant;
+    fLastPropertyChangedPropertyId: PROPERTYID;
+    fLastPropertyChangedProvider: IRawElementProviderSimple;
     fNotificationCalls: Integer;
+    fPropertyChangedCalls: Integer;
     fReturnedProvider: IRawElementProviderSimple;
     fReturnCalls: Integer;
   public
@@ -174,7 +204,12 @@ type
     function LastLParam: LPARAM;
     function LastNotificationProvider: IRawElementProviderSimple;
     function LastNotificationText: string;
+    function LastPropertyChangedNewValue: OleVariant;
+    function LastPropertyChangedOldValue: OleVariant;
+    function LastPropertyChangedPropertyId: PROPERTYID;
+    function LastPropertyChangedProvider: IRawElementProviderSimple;
     function NotificationCalls: Integer;
+    function PropertyChangedCalls: Integer;
     function ReturnedProvider: IRawElementProviderSimple;
     function RaiseAutomationEvent(const aProvider: IRawElementProviderSimple; aEventId: EVENTID): HRESULT;
     function RaiseAutomationPropertyChanged(const aProvider: IRawElementProviderSimple; aPropertyId: PROPERTYID;
@@ -247,6 +282,24 @@ type
   end;
 
   TNativeAccessibleProbeControl = class(TCustomControl)
+  private
+    fGetObjectCalls: Integer;
+  protected
+    procedure WndProc(var aMessage: TMessage); override;
+  public
+    property GetObjectCalls: Integer read fGetObjectCalls;
+  end;
+
+  TNativeAccessibleProbeCheckBox = class(TCheckBox)
+  private
+    fGetObjectCalls: Integer;
+  protected
+    procedure WndProc(var aMessage: TMessage); override;
+  public
+    property GetObjectCalls: Integer read fGetObjectCalls;
+  end;
+
+  TNativeAccessibleProbeRadioButton = class(TRadioButton)
   private
     fGetObjectCalls: Integer;
   protected
@@ -343,6 +396,30 @@ begin
   inherited WndProc(aMessage);
 end;
 
+procedure TNativeAccessibleProbeCheckBox.WndProc(var aMessage: TMessage);
+begin
+  if aMessage.Msg = WM_GETOBJECT then
+  begin
+    Inc(fGetObjectCalls);
+    aMessage.Result := 24680;
+    Exit;
+  end;
+
+  inherited WndProc(aMessage);
+end;
+
+procedure TNativeAccessibleProbeRadioButton.WndProc(var aMessage: TMessage);
+begin
+  if aMessage.Msg = WM_GETOBJECT then
+  begin
+    Inc(fGetObjectCalls);
+    aMessage.Result := 97531;
+    Exit;
+  end;
+
+  inherited WndProc(aMessage);
+end;
+
 procedure ResetManager;
 begin
   TAccessibilityManager.Uninstall;
@@ -408,9 +485,34 @@ begin
   Result := fLastNotificationText;
 end;
 
+function TManagerTestUiaApi.LastPropertyChangedNewValue: OleVariant;
+begin
+  Result := fLastPropertyChangedNewValue;
+end;
+
+function TManagerTestUiaApi.LastPropertyChangedOldValue: OleVariant;
+begin
+  Result := fLastPropertyChangedOldValue;
+end;
+
+function TManagerTestUiaApi.LastPropertyChangedPropertyId: PROPERTYID;
+begin
+  Result := fLastPropertyChangedPropertyId;
+end;
+
+function TManagerTestUiaApi.LastPropertyChangedProvider: IRawElementProviderSimple;
+begin
+  Result := fLastPropertyChangedProvider;
+end;
+
 function TManagerTestUiaApi.NotificationCalls: Integer;
 begin
   Result := fNotificationCalls;
+end;
+
+function TManagerTestUiaApi.PropertyChangedCalls: Integer;
+begin
+  Result := fPropertyChangedCalls;
 end;
 
 function TManagerTestUiaApi.ReturnedProvider: IRawElementProviderSimple;
@@ -430,6 +532,11 @@ end;
 function TManagerTestUiaApi.RaiseAutomationPropertyChanged(const aProvider: IRawElementProviderSimple;
   aPropertyId: PROPERTYID; const aOldValue: OleVariant; const aNewValue: OleVariant): HRESULT;
 begin
+  Inc(fPropertyChangedCalls);
+  fLastPropertyChangedProvider := aProvider;
+  fLastPropertyChangedPropertyId := aPropertyId;
+  fLastPropertyChangedOldValue := aOldValue;
+  fLastPropertyChangedNewValue := aNewValue;
   Result := S_OK;
 end;
 
@@ -970,6 +1077,86 @@ begin
   end;
 end;
 
+procedure TAccessibilityManagerTests.RunInstallsCurrentFormsAndUninstallsAfterApplicationRun;
+var
+  lForm: TForm;
+  lRecorder: IFormInstallRecorder;
+begin
+  ResetManager;
+  lRecorder := TFormInstallRecorder.Create;
+  TAccessibilityManagerInternals.SetFormInstaller(lRecorder);
+  lForm := TForm.Create(nil);
+  try
+    TAccessibilityManager.Run(Application);
+
+    Assert.AreEqual(1, lRecorder.CountFor(lForm));
+    Assert.AreEqual(0, TAccessibilityManagerInternals.InstalledFormCount);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.RunUninstallsPartialApplicationInstallWhenInstallFails;
+var
+  lFirst: TForm;
+  lRaised: Boolean;
+  lRecorder: IFormInstallRecorder;
+  lSecond: TForm;
+begin
+  ResetManager;
+  lRecorder := TFormInstallRecorder.Create;
+  TAccessibilityManagerInternals.SetFormInstaller(lRecorder);
+  lFirst := TForm.Create(nil);
+  try
+    lSecond := TForm.Create(nil);
+    try
+      TAccessibilityManager.Install(lFirst);
+      lRecorder.FailNextInstall;
+      lRaised := False;
+
+      try
+        TAccessibilityManager.Run(Application);
+      except
+        on EInvalidOperation do
+        begin
+          lRaised := True;
+        end;
+      end;
+
+      Assert.IsTrue(lRaised, 'Run must preserve the install failure.');
+      Assert.AreEqual(0, TAccessibilityManagerInternals.InstalledFormCount);
+    finally
+      lSecond.Free;
+    end;
+  finally
+    lFirst.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.UninstallIsIdempotent;
+var
+  lForm: TForm;
+  lRecorder: IFormInstallRecorder;
+begin
+  ResetManager;
+  lRecorder := TFormInstallRecorder.Create;
+  TAccessibilityManagerInternals.SetFormInstaller(lRecorder);
+  lForm := TForm.Create(nil);
+  try
+    TAccessibilityManager.Install(Application);
+    TAccessibilityManager.Uninstall;
+    TAccessibilityManager.Uninstall;
+
+    Assert.AreEqual(1, lRecorder.CountFor(lForm));
+    Assert.AreEqual(0, TAccessibilityManagerInternals.InstalledFormCount);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
 procedure TAccessibilityManagerTests.ApplicationInstallSkipsInternalNoActiveForm;
 var
   lInternalForm: TForm;
@@ -1239,6 +1426,62 @@ begin
     Assert.AreEqual(S_OK, lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit));
     Assert.IsNotNull(lHit);
     Assert.AreEqual('Command title', ProviderStringProperty(lHit, UIA_NamePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallLeavesCheckBoxAndRadioButtonNativeGetObject;
+var
+  lApi: IManagerTestUiaApi;
+  lCheckBox: TNativeAccessibleProbeCheckBox;
+  lForm: TForm;
+  lMessage: TMessage;
+  lRadioButton: TNativeAccessibleProbeRadioButton;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 160);
+
+    lCheckBox := TNativeAccessibleProbeCheckBox.Create(lForm);
+    lCheckBox.Parent := lForm;
+    lCheckBox.Caption := 'Include archived rows';
+    lCheckBox.Checked := True;
+    lCheckBox.SetBounds(24, 24, 220, 24);
+    lCheckBox.HandleNeeded;
+
+    lRadioButton := TNativeAccessibleProbeRadioButton.Create(lForm);
+    lRadioButton.Parent := lForm;
+    lRadioButton.Caption := 'Compact';
+    lRadioButton.Checked := True;
+    lRadioButton.SetBounds(24, 64, 140, 24);
+    lRadioButton.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.WParam := 17;
+    lMessage.LParam := UiaRootObjectId;
+    lCheckBox.WindowProc(lMessage);
+
+    Assert.AreEqual(24680, lMessage.Result);
+    Assert.AreEqual(1, lCheckBox.GetObjectCalls);
+    Assert.AreEqual(0, lApi.ReturnCalls);
+
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.WParam := 17;
+    lMessage.LParam := UiaRootObjectId;
+    lRadioButton.WindowProc(lMessage);
+
+    Assert.AreEqual(97531, lMessage.Result);
+    Assert.AreEqual(1, lRadioButton.GetObjectCalls);
+    Assert.AreEqual(0, lApi.ReturnCalls);
   finally
     lForm.Free;
     ResetManager;
@@ -2174,7 +2417,7 @@ begin
   end;
 end;
 
-procedure TAccessibilityManagerTests.FormInstallRaisesWindowedButtonHoverNotificationAndCheckBoxProvider;
+procedure TAccessibilityManagerTests.FormInstallRaisesWindowedButtonHoverNotificationAndKeepsCheckBoxNative;
 var
   lApi: IManagerTestUiaApi;
   lButton: TButton;
@@ -2213,10 +2456,81 @@ begin
       UIA_NamePropertyId));
 
     lCheckBox.Perform(WM_MOUSEMOVE, 0, PointToLParam(Point(lCheckBox.Width div 2, lCheckBox.Height div 2)));
+
     Assert.AreEqual(1, lApi.NotificationCalls);
     Assert.AreEqual(1, lApi.EventCalls);
     Assert.AreEqual(UIA_AutomationFocusChangedEventId, lApi.LastEventId);
-    Assert.AreEqual('Include archived rows', ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider),
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallRaisesGroupBoxHoverAndRadioGroupItemHoverProviders;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lGroupBox: TGroupBox;
+  lPoint: TPoint;
+  lRadioGroup: TRadioGroup;
+  lRadioOne: TRadioButton;
+  lRadioTwo: TRadioButton;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 420, 260);
+
+    lGroupBox := TGroupBox.Create(lForm);
+    lGroupBox.Parent := lForm;
+    lGroupBox.Caption := 'View mode';
+    lGroupBox.Hint := 'Choose how the demo presents detail density';
+    lGroupBox.SetBounds(24, 24, 220, 86);
+    lGroupBox.HandleNeeded;
+
+    lRadioOne := TRadioButton.Create(lForm);
+    lRadioOne.Parent := lGroupBox;
+    lRadioOne.Caption := 'Compact';
+    lRadioOne.Checked := True;
+    lRadioOne.SetBounds(12, 28, 120, 22);
+    lRadioOne.HandleNeeded;
+
+    lRadioTwo := TRadioButton.Create(lForm);
+    lRadioTwo.Parent := lGroupBox;
+    lRadioTwo.Caption := 'Detailed';
+    lRadioTwo.SetBounds(12, 54, 120, 22);
+    lRadioTwo.HandleNeeded;
+
+    lRadioGroup := TRadioGroup.Create(lForm);
+    lRadioGroup.Parent := lForm;
+    lRadioGroup.Caption := 'Density';
+    lRadioGroup.Hint := 'TRadioGroup sample for role comparison';
+    lRadioGroup.Items.Add('Comfortable');
+    lRadioGroup.Items.Add('Compact density');
+    lRadioGroup.ItemIndex := 0;
+    lRadioGroup.SetBounds(24, 128, 220, 82);
+    lRadioGroup.HandleNeeded;
+    lRadioGroup.Buttons[0].HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+
+    lGroupBox.Perform(WM_MOUSEMOVE, 0, PointToLParam(Point(8, 8)));
+
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('View mode. Choose how the demo presents detail density', lApi.LastNotificationText);
+    Assert.AreEqual('View mode', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
+      UIA_NamePropertyId));
+
+    lPoint := lRadioGroup.Buttons[0].BoundsRect.CenterPoint;
+    lRadioGroup.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
+
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual(1, lApi.EventCalls);
+    Assert.AreEqual(UIA_AutomationFocusChangedEventId, lApi.LastEventId);
+    Assert.AreEqual('Comfortable', ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider),
       UIA_NamePropertyId));
   finally
     lForm.Free;
@@ -2224,11 +2538,93 @@ begin
   end;
 end;
 
-procedure TAccessibilityManagerTests.FormInstallRaisesCheckBoxHoverPlatformEventsWithoutNotification;
+procedure TAccessibilityManagerTests.FormInstallRaisesGroupBoxHoverFromNonClientMouseMove;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lGroupBox: TGroupBox;
+  lPoint: TPoint;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 180);
+
+    lGroupBox := TGroupBox.Create(lForm);
+    lGroupBox.Parent := lForm;
+    lGroupBox.Caption := 'View mode';
+    lGroupBox.Hint := 'Choose how the demo presents detail density';
+    lGroupBox.SetBounds(24, 24, 220, 86);
+    lGroupBox.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+
+    lPoint := lGroupBox.ClientToScreen(Point(8, 8));
+    lGroupBox.Perform(WM_NCMOUSEMOVE, HTCAPTION, PointToLParam(lPoint));
+
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('View mode. Choose how the demo presents detail density', lApi.LastNotificationText);
+    Assert.AreEqual('View mode', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
+      UIA_NamePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallRaisesRadioGroupItemHoverFromButtonWindow;
+var
+  lApi: IManagerTestUiaApi;
+  lButton: TRadioButton;
+  lForm: TForm;
+  lRadioGroup: TRadioGroup;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 180);
+
+    lRadioGroup := TRadioGroup.Create(lForm);
+    lRadioGroup.Parent := lForm;
+    lRadioGroup.Caption := 'Density';
+    lRadioGroup.Hint := 'TRadioGroup sample for role comparison';
+    lRadioGroup.Items.Add('Comfortable');
+    lRadioGroup.Items.Add('Compact density');
+    lRadioGroup.ItemIndex := 0;
+    lRadioGroup.SetBounds(24, 24, 220, 82);
+    lRadioGroup.HandleNeeded;
+    lRadioGroup.Buttons[0].HandleNeeded;
+    lButton := lRadioGroup.Buttons[0];
+
+    TAccessibilityManager.Install(lForm);
+
+    lButton.Perform(WM_MOUSEMOVE, 0, PointToLParam(Point(lButton.Width div 2, lButton.Height div 2)));
+
+    Assert.AreEqual(0, lApi.NotificationCalls);
+    Assert.AreEqual(1, lApi.EventCalls);
+    Assert.AreEqual(UIA_AutomationFocusChangedEventId, lApi.LastEventId);
+    Assert.AreEqual('Comfortable', ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider),
+      UIA_NamePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallRaisesCheckBoxHoverNativeWinEventsWithoutProviderReplacement;
 var
   lApi: IManagerTestUiaApi;
   lCheckBox: TCheckBox;
   lForm: TForm;
+  lPattern: IUnknown;
+  lToggle: IToggleProvider;
+  lToggleState: ToggleState;
   lWinEvents: TWinEventRecorder;
 begin
   ResetManager;
@@ -2256,8 +2652,12 @@ begin
     Assert.AreEqual(0, lApi.NotificationCalls);
     Assert.AreEqual(1, lApi.EventCalls);
     Assert.AreEqual(UIA_AutomationFocusChangedEventId, lApi.LastEventId);
-    Assert.AreEqual(UIA_CheckBoxControlTypeId, ProviderIntProperty(FragmentFromSimple(lApi.LastEventProvider),
-      UIA_ControlTypePropertyId));
+    Assert.AreEqual('Include archived rows', ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider),
+      UIA_NamePropertyId));
+    lPattern := ProviderPattern(FragmentFromSimple(lApi.LastEventProvider), UIA_TogglePatternId);
+    Assert.IsTrue(Supports(lPattern, IToggleProvider, lToggle));
+    Assert.AreEqual(S_OK, lToggle.Get_ToggleState(lToggleState));
+    Assert.AreEqual(ToggleState_On, lToggleState);
     Assert.AreEqual(2, lWinEvents.Calls);
     Assert.AreEqual(EVENT_OBJECT_STATECHANGE, lWinEvents.LastEvent);
     Assert.AreEqual(lCheckBox.Handle, lWinEvents.LastHwnd);
@@ -2269,7 +2669,7 @@ begin
   end;
 end;
 
-procedure TAccessibilityManagerTests.FormInstallRaisesCheckBoxFocusPlatformEventsWithoutNotification;
+procedure TAccessibilityManagerTests.FormInstallRaisesCheckBoxFocusNativeWinEventsWithoutProviderReplacement;
 var
   lApi: IManagerTestUiaApi;
   lCheckBox: TCheckBox;
@@ -2299,13 +2699,160 @@ begin
     lCheckBox.Perform(CM_ENTER, 0, 0);
 
     Assert.AreEqual(0, lApi.NotificationCalls);
-    Assert.AreEqual(1, lApi.EventCalls);
-    Assert.AreEqual(UIA_AutomationFocusChangedEventId, lApi.LastEventId);
-    Assert.AreEqual(UIA_CheckBoxControlTypeId, ProviderIntProperty(FragmentFromSimple(lApi.LastEventProvider),
-      UIA_ControlTypePropertyId));
+    Assert.AreEqual(0, lApi.EventCalls);
     Assert.AreEqual(2, lWinEvents.Calls);
     Assert.AreEqual(EVENT_OBJECT_STATECHANGE, lWinEvents.LastEvent);
     Assert.AreEqual(lCheckBox.Handle, lWinEvents.LastHwnd);
+    Assert.AreEqual(Cardinal($FFFFFFFC), lWinEvents.LastObjectId);
+    Assert.AreEqual(Cardinal(CHILDID_SELF), lWinEvents.LastChildId);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallRaisesRadioButtonHoverAndFocusNativeWinEventsWithoutProviderReplacement;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lIsSelected: BOOL;
+  lPattern: IUnknown;
+  lRadioButton: TRadioButton;
+  lSelectionItem: ISelectionItemProvider;
+  lWinEvents: TWinEventRecorder;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  lWinEvents := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 140);
+
+    lRadioButton := TRadioButton.Create(lForm);
+    lRadioButton.Parent := lForm;
+    lRadioButton.Caption := 'Compact';
+    lRadioButton.Checked := True;
+    lRadioButton.SetBounds(24, 24, 140, 24);
+    lRadioButton.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+
+    lRadioButton.Perform(WM_MOUSEMOVE, 0, PointToLParam(Point(lRadioButton.Width div 2, lRadioButton.Height div 2)));
+
+    Assert.AreEqual(0, lApi.NotificationCalls);
+    Assert.AreEqual(1, lApi.EventCalls);
+    Assert.AreEqual(UIA_AutomationFocusChangedEventId, lApi.LastEventId);
+    Assert.AreEqual('Compact', ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider),
+      UIA_NamePropertyId));
+    lPattern := ProviderPattern(FragmentFromSimple(lApi.LastEventProvider), UIA_SelectionItemPatternId);
+    Assert.IsTrue(Supports(lPattern, ISelectionItemProvider, lSelectionItem));
+    Assert.AreEqual(S_OK, lSelectionItem.Get_IsSelected(lIsSelected));
+    Assert.IsTrue(lIsSelected);
+    Assert.AreEqual(2, lWinEvents.Calls);
+    Assert.AreEqual(EVENT_OBJECT_STATECHANGE, lWinEvents.LastEvent);
+    Assert.AreEqual(lRadioButton.Handle, lWinEvents.LastHwnd);
+    Assert.AreEqual(Cardinal($FFFFFFFC), lWinEvents.LastObjectId);
+    Assert.AreEqual(Cardinal(CHILDID_SELF), lWinEvents.LastChildId);
+
+    lRadioButton.Perform(CM_ENTER, 0, 0);
+
+    Assert.AreEqual(0, lApi.NotificationCalls);
+    Assert.AreEqual(1, lApi.EventCalls);
+    Assert.AreEqual(4, lWinEvents.Calls);
+    Assert.AreEqual(EVENT_OBJECT_STATECHANGE, lWinEvents.LastEvent);
+    Assert.AreEqual(lRadioButton.Handle, lWinEvents.LastHwnd);
+    Assert.AreEqual(Cardinal($FFFFFFFC), lWinEvents.LastObjectId);
+    Assert.AreEqual(Cardinal(CHILDID_SELF), lWinEvents.LastChildId);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallLeavesCheckBoxToggleToNativeWindow;
+var
+  lApi: IManagerTestUiaApi;
+  lCheckBox: TCheckBox;
+  lForm: TForm;
+  lWinEvents: TWinEventRecorder;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  lWinEvents := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 140);
+
+    lCheckBox := TCheckBox.Create(lForm);
+    lCheckBox.Parent := lForm;
+    lCheckBox.Caption := 'Include archived rows';
+    lCheckBox.Checked := False;
+    lCheckBox.SetBounds(24, 24, 220, 24);
+    lCheckBox.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+
+    lCheckBox.Perform(BM_CLICK, 0, 0);
+
+    Assert.IsTrue(lCheckBox.Checked);
+    Assert.AreEqual(0, lApi.PropertyChangedCalls);
+    Assert.AreEqual(0, lApi.EventCalls);
+    Assert.IsTrue(lWinEvents.Calls > 0);
+    Assert.AreEqual(lCheckBox.Handle, lWinEvents.LastHwnd);
+    Assert.AreEqual(Cardinal($FFFFFFFC), lWinEvents.LastObjectId);
+    Assert.AreEqual(Cardinal(CHILDID_SELF), lWinEvents.LastChildId);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallLeavesRadioButtonSelectionToNativeWindow;
+var
+  lApi: IManagerTestUiaApi;
+  lFirstRadio: TRadioButton;
+  lForm: TForm;
+  lSecondRadio: TRadioButton;
+  lWinEvents: TWinEventRecorder;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  lWinEvents := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 160);
+
+    lFirstRadio := TRadioButton.Create(lForm);
+    lFirstRadio.Parent := lForm;
+    lFirstRadio.Caption := 'Compact';
+    lFirstRadio.Checked := True;
+    lFirstRadio.SetBounds(24, 24, 120, 22);
+    lFirstRadio.HandleNeeded;
+
+    lSecondRadio := TRadioButton.Create(lForm);
+    lSecondRadio.Parent := lForm;
+    lSecondRadio.Caption := 'Detailed';
+    lSecondRadio.SetBounds(24, 54, 120, 22);
+    lSecondRadio.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+
+    lSecondRadio.Perform(BM_CLICK, 0, 0);
+
+    Assert.IsTrue(lSecondRadio.Checked);
+    Assert.AreEqual(0, lApi.PropertyChangedCalls);
+    Assert.AreEqual(0, lApi.EventCalls);
+    Assert.IsTrue(lWinEvents.Calls > 0);
+    Assert.AreEqual(lSecondRadio.Handle, lWinEvents.LastHwnd);
     Assert.AreEqual(Cardinal($FFFFFFFC), lWinEvents.LastObjectId);
     Assert.AreEqual(Cardinal(CHILDID_SELF), lWinEvents.LastChildId);
   finally

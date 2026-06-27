@@ -82,6 +82,7 @@
     <DelphiCompile Include="$(MainSource)">
       <MainSource>MainSource</MainSource>
     </DelphiCompile>
+    <DCCReference Include="src\MaxLogic.Accessibility.AgentBridge.PipeServer.Tests.pas"/>
     <DCCReference Include="src\MaxLogic.Accessibility.AgentBridge.Tests.pas"/>
     <DCCReference Include="src\MaxLogic.Accessibility.Hints.Tests.pas"/>
     <DCCReference Include="src\MaxLogic.Accessibility.AdvStringGrid.Tests.pas"/>
@@ -98,6 +99,7 @@
     <DCCReference Include="src\MaxLogic.Accessibility.UIAutomationCore.Tests.pas"/>
     <DCCReference Include="src\MaxLogic.Accessibility.VclAdapters.Tests.pas"/>
     <DCCReference Include="..\demos\AccessibilityDemoMainForm.pas"/>
+    <DCCReference Include="..\src\MaxLogic.Accessibility.AgentBridge.PipeServer.pas"/>
     <DCCReference Include="..\src\MaxLogic.Accessibility.AgentBridge.pas"/>
     <DCCReference Include="..\src\MaxLogic.Accessibility.Framework.pas"/>
     <DCCReference Include="..\src\MaxLogic.Accessibility.Diagnostics.pas"/>

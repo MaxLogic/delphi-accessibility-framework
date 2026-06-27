@@ -156,7 +156,9 @@ For controls such as `TVirtualStringTree` that already provide their own accessi
 
 `MaxLogic.Accessibility.AgentBridge` exposes a JSON command executor for diagnostic automation. It supports a `hello` probe, visible form listing, `form.map` snapshots with Playwright-style refs such as `@a1`, VCL coordinate hit testing, and gated mutation commands including `control.focus`, `control.click`, `control.setText`, `control.typeText`, and `keyboard.tab`.
 
-The bridge does not choose a transport. A large legacy application can expose it through its own pipe, local HTTP endpoint, or debug window-message handler and call `TAccessibilityAgentBridge.Execute` on the VCL main thread. Mutations are disabled by default and require `TAccessibilityAgentBridge.SetMutationEnabled(True)`.
+`MaxLogic.Accessibility.AgentBridge.PipeServer` provides the built-in local named pipe transport. `TAccessibilityAgentBridgePipeServer.Start` opens a process-specific pipe by default, accepts one UTF-8 JSON request line per connection, marshals the command onto the VCL main thread, and returns one UTF-8 JSON response line. `Start` and `Stop` are idempotent for the same pipe name.
+
+A large legacy application can still expose the core executor through its own pipe, local HTTP endpoint, or debug window-message handler and call `TAccessibilityAgentBridge.Execute` on the VCL main thread. Mutations are disabled by default and require `TAccessibilityAgentBridge.SetMutationEnabled(True)`.
 
 See `docs\agent-bridge.md` for the command contract.
 

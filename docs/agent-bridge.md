@@ -2,7 +2,47 @@
 
 `MaxLogic.Accessibility.AgentBridge` exposes a small JSON command executor for diagnostic automation. It is intended for tools that already control the desktop through UIA, Win32, or `SendInput`, but need framework-specific VCL facts that UIA may not expose reliably.
 
-The bridge does not start a pipe, HTTP server, or window-message listener by itself. Applications or test harnesses choose the transport and call `TAccessibilityAgentBridge.Execute` on the VCL main thread.
+The core executor does not start a transport by itself. Applications can either call `TAccessibilityAgentBridge.Execute` from their own transport on the VCL main thread, or opt in to the built-in named pipe transport from `MaxLogic.Accessibility.AgentBridge.PipeServer`.
+
+## Named Pipe Transport
+
+For local diagnostic automation, add the pipe server unit and start it after the VCL application has initialized:
+
+```delphi
+uses
+  MaxLogic.Accessibility.AgentBridge.PipeServer;
+
+begin
+  TAccessibilityAgentBridgePipeServer.Start;
+  try
+    Application.Run;
+  finally
+    TAccessibilityAgentBridgePipeServer.Stop;
+  end;
+end;
+```
+
+`Start` and `Stop` are idempotent when repeated for the same pipe name. The default pipe name is process-specific and available through `TAccessibilityAgentBridgePipeServer.DefaultPipeName`; the active pipe path is `\\.\pipe\` plus `TAccessibilityAgentBridgePipeServer.PipeName`.
+
+The pipe protocol is one UTF-8 JSON object per line in, one UTF-8 JSON object per line out. The server accepts one request per connection, executes `TAccessibilityAgentBridge.Execute` on the VCL main thread, writes the response line, then disconnects. This keeps the transport small while preserving the bridge rule that VCL state is only touched on the UI thread.
+
+For legacy applications with their own existing shutdown flow, the longer explicit form is fine:
+
+```delphi
+TAccessibilityAgentBridgePipeServer.Start('MyApp.AccessibilityBridge');
+try
+  TAccessibilityManager.Install(Application);
+  try
+    Application.Run;
+  finally
+    TAccessibilityManager.Uninstall;
+  end;
+finally
+  TAccessibilityAgentBridgePipeServer.Stop;
+end;
+```
+
+Mutation commands still require `TAccessibilityAgentBridge.SetMutationEnabled(True)`.
 
 ## Handshake
 
@@ -50,4 +90,4 @@ Framework mutations are diagnostic helpers. End-to-end acceptance tests should s
 
 ## Threading
 
-Commands must run on the VCL main thread. A future pipe or HTTP transport should marshal requests onto the UI thread before calling `Execute`; the bridge intentionally rejects background-thread calls instead of touching VCL controls off-thread.
+Commands must run on the VCL main thread. The built-in pipe server does this marshalling before calling `Execute`; custom pipe, HTTP, or window-message transports must do the same. The bridge intentionally rejects background-thread calls instead of touching VCL controls off-thread.

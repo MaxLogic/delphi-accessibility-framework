@@ -81,9 +81,14 @@ begin
   lText := ReadRepoText('docs\agent-bridge.md');
 
   RequireText(lReadmeText, 'MaxLogic.Accessibility.AgentBridge', 'README');
+  RequireText(lReadmeText, 'MaxLogic.Accessibility.AgentBridge.PipeServer', 'README');
   RequireText(lReadmeText, 'TAccessibilityAgentBridge.Execute', 'README');
+  RequireText(lReadmeText, 'TAccessibilityAgentBridgePipeServer.Start', 'README');
   RequireText(lReadmeText, 'control.click', 'README');
   RequireText(lReadmeText, 'keyboard.tab', 'README');
+  RequireText(lText, 'TAccessibilityAgentBridgePipeServer.Start', 'agent bridge documentation');
+  RequireText(lText, 'one UTF-8 JSON object per line', 'agent bridge documentation');
+  RequireText(lText, 'Start` and `Stop` are idempotent', 'agent bridge documentation');
   RequireText(lText, '"cmd":"hello"', 'agent bridge documentation');
   RequireText(lText, '"cmd":"form.map"', 'agent bridge documentation');
   RequireText(lText, '"cmd":"hitTest"', 'agent bridge documentation');

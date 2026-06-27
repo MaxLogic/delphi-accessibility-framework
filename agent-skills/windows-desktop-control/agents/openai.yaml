@@ -1,0 +1,4 @@
+interface:
+  display_name: "Windows Desktop Control"
+  short_description: "Control desktop apps safely"
+  default_prompt: "Use Windows desktop control to announce takeover, inspect the target app, drive mouse and keyboard actions, and release control when finished."

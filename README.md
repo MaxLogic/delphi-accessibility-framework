@@ -6,7 +6,7 @@ The framework exposes normally invisible or weakly exposed VCL controls through 
 
 ## Install
 
-For normal application-wide adoption, install once after the application creates its initial forms:
+For normal application-wide adoption, create the initial forms as usual and replace the VCL `Application.Run` line:
 
 ```delphi
 uses
@@ -16,12 +16,24 @@ uses
 begin
   Application.Initialize;
   Application.CreateForm(TMainForm, MainForm);
-  TAccessibilityManager.Install(Application);
-  Application.Run;
+  TAccessibilityManager.Run(Application);
 end.
 ```
 
-`TAccessibilityManager.Install(Application)` scans all current `Screen.Forms`, installs each form once, observes VCL hint and balloon hint activity, and hooks `Screen.OnActiveFormChange` so future active forms are discovered and installed. Existing `OnActiveFormChange` handlers are chained.
+`TAccessibilityManager.Run(Application)` installs the framework, runs the normal VCL message loop, and uninstalls the framework in a `finally` block when `Application.Run` returns.
+
+If the application already owns the `Application.Run` block, for example because it has existing startup/shutdown code around it, use the explicit lifecycle instead:
+
+```delphi
+TAccessibilityManager.Install(Application);
+try
+  Application.Run;
+finally
+  TAccessibilityManager.Uninstall;
+end;
+```
+
+`TAccessibilityManager.Install(Application)` scans all current `Screen.Forms`, installs each form once, observes VCL hint and balloon hint activity, and hooks `Screen.OnActiveFormChange` so future active forms are discovered and installed. Existing `OnActiveFormChange` handlers are chained. Both `TAccessibilityManager.Install` and `TAccessibilityManager.Uninstall` are idempotent when repeated with the same active adapter registry.
 
 For a scoped rollout, install one form only:
 
@@ -52,9 +64,10 @@ begin
   Application.CreateForm(TMainForm, MainForm);
   if TAccessibilityScreenReaderDetector.IsLikelyActive then
   begin
-    TAccessibilityManager.Install(Application);
+    TAccessibilityManager.Run(Application);
+  end else begin
+    Application.Run;
   end;
-  Application.Run;
 end.
 ```
 
@@ -68,9 +81,9 @@ The default VCL adapter registry covers:
 - `TButton`: UIA button fragment with caption-derived name, hint-derived help text, native window handle, and Invoke support.
 - `TSpeedButton`: UIA button fragment with Invoke and toggle support when the button has toggle semantics.
 - `TComboBox`: UIA combo-box fragment with associated label/name, value text, help text, and native window handle.
-- `TCheckBox`: UIA checkbox fragment with caption-derived name, hint-derived help text, native window handle, Toggle support, and MSAA checkbutton state. Mouse-over uses platform object/state events instead of framework-injected state words so screen readers can localize role and state.
-- `TRadioButton`: UIA radio-button fragment with caption-derived name, hint-derived help text, native window handle, SelectionItem support, and MSAA radio-button selected state. Radio buttons intentionally do not expose TogglePattern.
-- `TGroupBox` and `TRadioGroup`: UIA group fragments for named option regions.
+- `TCheckBox`: UIA checkbox fragment with caption-derived name, hint-derived help text, native window handle, Toggle support, and MSAA checkbutton state when reached through the framework tree. The manager preserves the real checkbox HWND accessibility path. On hover it also raises a UIA focus event from the framework provider and emits native HWND focus/state WinEvents, so screen readers can query state without framework-injected English state text.
+- `TRadioButton`: UIA radio-button fragment with caption-derived name, hint-derived help text, native window handle, SelectionItem support, and MSAA radio-button selected state when reached through the framework tree. The manager preserves the real standalone radio-button HWND accessibility path. On hover it also raises a UIA focus event from the framework provider and emits native HWND focus/state WinEvents. Radio buttons intentionally do not expose TogglePattern.
+- `TGroupBox` and `TRadioGroup`: UIA group fragments for named option regions. `TRadioGroup` internal button hover is routed to the framework radio-item provider instead of treating the private child buttons as standalone radio controls.
 - `TPanel`: UIA pane when the panel has useful text or accessible children; decorative empty panels are omitted.
 - `TPageControl` and `TTabSheet`: UIA tab/tab-item fragments for page-control tab headers.
 - `TToolBar` and `TToolButton`: UIA toolbar/button fragments for toolbar commands.
@@ -84,7 +97,7 @@ The default VCL adapter registry covers:
 
 TMS `TAdvStringGrid` support is available in the opt-in unit `MaxLogic.Accessibility.TmsAdvStringGridAdapters`. It keeps ordinary applications from compiling TMS units unless they explicitly include the adapter.
 
-For app-wide TMS support, install with the opt-in registry:
+For app-wide TMS support or another custom adapter registry, use the explicit lifecycle:
 
 ```delphi
 uses
@@ -94,6 +107,11 @@ uses
 
 begin
   TAccessibilityManager.Install(Application, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+  try
+    Application.Run;
+  finally
+    TAccessibilityManager.Uninstall;
+  end;
 end;
 ```
 
@@ -128,11 +146,19 @@ MaxLogicFoundation remains independent. The framework can be used without MaxLog
 
 ## Native Fallback
 
-The manager only returns framework providers for controls that are part of the framework scan tree or for non-focusable containers needed to hit-test descendant providers. Focusable windowed controls without a framework adapter are left unhooked so their native `WM_GETOBJECT`/MSAA/UIA implementation can still answer screen readers.
+The manager only returns framework providers for controls that are part of the framework scan tree or for non-focusable containers needed to hit-test descendant providers. Focusable windowed controls without a framework adapter are left unhooked so their native `WM_GETOBJECT`/MSAA/UIA implementation can still answer screen readers. Standard VCL `TCheckBox` and standalone `TRadioButton` controls remain on their native HWND accessibility path even though the framework keeps provider fragments for form-tree traversal; their child window hook observes hover/focus but does not answer `WM_GETOBJECT`.
 
 For controls such as `TVirtualStringTree` that already provide their own accessibility, do not register a framework adapter unless the framework is meant to replace that native tree. If a custom adapter is registered, it becomes the explicit accessibility surface for that control.
 
 ## Diagnostics
+
+### Agent Bridge
+
+`MaxLogic.Accessibility.AgentBridge` exposes a JSON command executor for diagnostic automation. It supports a `hello` probe, visible form listing, `form.map` snapshots with Playwright-style refs such as `@a1`, VCL coordinate hit testing, and gated mutation commands including `control.focus`, `control.click`, `control.setText`, `control.typeText`, and `keyboard.tab`.
+
+The bridge does not choose a transport. A large legacy application can expose it through its own pipe, local HTTP endpoint, or debug window-message handler and call `TAccessibilityAgentBridge.Execute` on the VCL main thread. Mutations are disabled by default and require `TAccessibilityAgentBridge.SetMutationEnabled(True)`.
+
+See `docs\agent-bridge.md` for the command contract.
 
 Canonical commands:
 

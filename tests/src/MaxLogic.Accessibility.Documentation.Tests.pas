@@ -11,9 +11,13 @@ type
   TAccessibilityDocumentationTests = class
   public
     [Test]
+    procedure AgentBridgeDocumentationDescribesContract;
+    [Test]
     procedure ReadmeDocumentsInstallAndSupportedScenarios;
     [Test]
     procedure DemoContainsWrappedAndUnwrappedMemoTabs;
+    [Test]
+    procedure DemoShutdownDisarmsAccessibilityHooksAndTimers;
     [Test]
     procedure UiaProbeDocumentationListsRunnableScenarios;
     [Test]
@@ -48,6 +52,49 @@ end;
 procedure RejectText(const aText: string; const aRejected: string; const aContext: string);
 begin
   Assert.IsFalse(Pos(aRejected, aText) > 0, Format('%s must not contain "%s".', [aContext, aRejected]));
+end;
+
+procedure TAccessibilityDocumentationTests.DemoShutdownDisarmsAccessibilityHooksAndTimers;
+var
+  lDfmText: string;
+  lDprText: string;
+  lPasText: string;
+begin
+  lDfmText := ReadRepoText('demos\AccessibilityDemoMainForm.dfm');
+  lDprText := ReadRepoText('demos\AccessibilityComplexDemo.dpr');
+  lPasText := ReadRepoText('demos\AccessibilityDemoMainForm.pas');
+
+  RequireText(lDprText, 'try' + sLineBreak + '    Application.Run;' + sLineBreak + '  finally' + sLineBreak +
+    '    SetDemoAccessibilityFrameworkEnabled(False);' + sLineBreak + '  end;', 'demo DPR shutdown');
+  RequireText(lDfmText, 'OnDestroy = FormDestroy', 'demo DFM shutdown');
+  RequireText(lPasText, 'procedure TAccessibilityDemoMainForm.FormDestroy(aSender: TObject);' + sLineBreak +
+    'begin' + sLineBreak + '  BalloonHideTimer.Enabled := False;' + sLineBreak + '  BalloonHint.HideHint;' +
+    sLineBreak + 'end;', 'demo form shutdown');
+end;
+
+procedure TAccessibilityDocumentationTests.AgentBridgeDocumentationDescribesContract;
+var
+  lReadmeText: string;
+  lText: string;
+begin
+  lReadmeText := ReadRepoText('README.md');
+  lText := ReadRepoText('docs\agent-bridge.md');
+
+  RequireText(lReadmeText, 'MaxLogic.Accessibility.AgentBridge', 'README');
+  RequireText(lReadmeText, 'TAccessibilityAgentBridge.Execute', 'README');
+  RequireText(lReadmeText, 'control.click', 'README');
+  RequireText(lReadmeText, 'keyboard.tab', 'README');
+  RequireText(lText, '"cmd":"hello"', 'agent bridge documentation');
+  RequireText(lText, '"cmd":"form.map"', 'agent bridge documentation');
+  RequireText(lText, '"cmd":"hitTest"', 'agent bridge documentation');
+  RequireText(lText, '"cmd":"control.focus"', 'agent bridge documentation');
+  RequireText(lText, '"cmd":"control.click"', 'agent bridge documentation');
+  RequireText(lText, '"cmd":"control.setText"', 'agent bridge documentation');
+  RequireText(lText, '"cmd":"control.typeText"', 'agent bridge documentation');
+  RequireText(lText, '"cmd":"keyboard.tab"', 'agent bridge documentation');
+  RequireText(lText, 'snapshotInvalidated', 'agent bridge documentation');
+  RequireText(lText, 'VCL main thread', 'agent bridge documentation');
+  RequireText(lText, 'should continue with generic UIA/Win32 control', 'agent bridge documentation');
 end;
 
 procedure TAccessibilityDocumentationTests.NvdaChecklistDocumentsExpectedSpeech;
@@ -137,9 +184,12 @@ var
 begin
   lText := ReadRepoText('README.md');
 
+  RequireText(lText, 'TAccessibilityManager.Run(Application)', 'README');
   RequireText(lText, 'TAccessibilityManager.Install(Application)', 'README');
   RequireText(lText, 'TAccessibilityManager.Install(Form)', 'README');
   RequireText(lText, 'TAccessibilityManager.Uninstall', 'README');
+  RequireText(lText, 'already owns the `Application.Run` block', 'README');
+  RequireText(lText, 'idempotent', 'README');
   RequireText(lText, 'Accessibility enabled', 'README');
   RequireText(lText, 'MaxLogic.Accessibility.ScreenReaders', 'README');
   RequireText(lText, 'TAccessibilityScreenReaderDetector.IsLikelyActive', 'README');

@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-06-26
+### Added
+- Added `TAccessibilityManager.Run(Application)` as a one-call app-wide lifecycle helper that installs accessibility, runs the VCL message loop, and uninstalls on shutdown.
+- Added `MaxLogic.Accessibility.AgentBridge`, a VCL-main-thread JSON command executor for diagnostic automation with framework handshake, form maps, VCL hit testing, and gated mutation commands.
+
+### Fixed
+- `TCheckBox` and standalone `TRadioButton` hover now keep the native HWND accessibility path, raise a state-capable UIA focus event from the framework provider, and nudge the native HWND with focus/state WinEvents so screen readers can query localized checked/selected state without framework-injected English state text.
+- `TGroupBox` hover now handles non-client mouse movement over the frame/caption.
+- `TRadioGroup` internal button hover now routes to the framework radio-item provider instead of preserving the private child `TRadioButton` native path, so the item caption/state surface is reachable under the mouse.
+
 ## 2026-06-24
 ### Added
 - Added `TAccessibilityScreenReaderDetector` for optional framework activation based on Windows `SPI_GETSCREENREADER` and UIA client-listener signals.
@@ -7,6 +17,7 @@
 - The demo now includes a checked-by-default `Accessibility enabled` checkbox that can disable and re-enable the framework at runtime.
 
 ### Fixed
+- The demo now uninstalls accessibility hooks after `Application.Run` and disables its balloon timer during form destruction, preventing shutdown-time callbacks into torn-down VCL state.
 - `TCheckBox` mouse-over now raises platform object/state events instead of plain notification-only speech, while checkbox state is exposed through UIA TogglePattern and MSAA checked/mixed flags so screen readers can localize it.
 - `TRadioButton` providers now expose UIA RadioButton/SelectionItem semantics and MSAA radio-button checked state.
 - Standard VCL combo boxes, page controls, group boxes, radio groups, toolbars, tool buttons, and status bars now resolve to intentional UIA/MSAA roles instead of generic text/client fallbacks where a standard role exists.

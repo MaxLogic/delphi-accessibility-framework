@@ -97,6 +97,8 @@ type
     [Test]
     procedure FormInstallRaisesGroupBoxHoverFromNonClientMouseMove;
     [Test]
+    procedure FormInstallIgnoresFormNonClientHoverWithoutRangeCheck;
+    [Test]
     procedure FormInstallRaisesRadioGroupItemHoverFromButtonWindow;
     [Test]
     procedure FormInstallRaisesLazyRadioGroupItemHoverFromButtonWindow;
@@ -709,6 +711,24 @@ end;
 function ControlScreenCenter(aControl: TControl): TPoint;
 begin
   Result := aControl.ClientToScreen(Point(aControl.Width div 2, aControl.Height div 2));
+end;
+
+function MouseCoordinateWord(aValue: Integer): Word;
+begin
+  Result := Word(aValue and $FFFF);
+end;
+
+function PointToMouseLParam(const aPoint: TPoint): LPARAM;
+var
+  lValue: Int64;
+begin
+  lValue := Int64(MouseCoordinateWord(aPoint.X)) or (Int64(MouseCoordinateWord(aPoint.Y)) shl 16);
+  if (lValue and $80000000) <> 0 then
+  begin
+    Dec(lValue, $100000000);
+  end;
+
+  Result := LPARAM(lValue);
 end;
 
 function PointFromMessageResult(aValue: LRESULT): TPoint;
@@ -2533,7 +2553,10 @@ begin
     lPoint := lRadioGroup.Buttons[0].BoundsRect.CenterPoint;
     lRadioGroup.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
 
-    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual(2, lApi.NotificationCalls);
+    Assert.AreEqual('Comfortable', lApi.LastNotificationText);
+    Assert.AreEqual('Comfortable', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
+      UIA_NamePropertyId));
     Assert.AreEqual(2, lApi.EventCalls);
     Assert.AreEqual(UIA_AutomationFocusChangedEventId, lApi.LastEventId);
     Assert.AreEqual('Comfortable', ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider),
@@ -2585,6 +2608,34 @@ begin
   end;
 end;
 
+procedure TAccessibilityManagerTests.FormInstallIgnoresFormNonClientHoverWithoutRangeCheck;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lPoint: TPoint;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 180);
+    lForm.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+
+    lPoint := lForm.ClientToScreen(Point(lForm.ClientWidth - 8, -8));
+    lForm.Perform(WM_NCMOUSEMOVE, HTCLOSE, PointToMouseLParam(lPoint));
+
+    Assert.AreEqual(0, lApi.NotificationCalls);
+    Assert.AreEqual(0, lApi.EventCalls);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
 procedure TAccessibilityManagerTests.FormInstallRaisesRadioGroupItemHoverFromButtonWindow;
 var
   lApi: IManagerTestUiaApi;
@@ -2616,7 +2667,10 @@ begin
 
     lButton.Perform(WM_MOUSEMOVE, 0, PointToLParam(Point(lButton.Width div 2, lButton.Height div 2)));
 
-    Assert.AreEqual(0, lApi.NotificationCalls);
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('Comfortable', lApi.LastNotificationText);
+    Assert.AreEqual('Comfortable', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
+      UIA_NamePropertyId));
     Assert.AreEqual(1, lApi.EventCalls);
     Assert.AreEqual(UIA_AutomationFocusChangedEventId, lApi.LastEventId);
     Assert.AreEqual('Comfortable', ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider),
@@ -2658,7 +2712,10 @@ begin
     lButton.HandleNeeded;
     lButton.Perform(WM_MOUSEMOVE, 0, PointToLParam(Point(lButton.Width div 2, lButton.Height div 2)));
 
-    Assert.AreEqual(0, lApi.NotificationCalls);
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('Comfortable', lApi.LastNotificationText);
+    Assert.AreEqual('Comfortable', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
+      UIA_NamePropertyId));
     Assert.AreEqual(1, lApi.EventCalls);
     Assert.AreEqual(UIA_AutomationFocusChangedEventId, lApi.LastEventId);
     Assert.AreEqual('Comfortable', ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider),

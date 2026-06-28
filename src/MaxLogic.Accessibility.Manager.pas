@@ -237,9 +237,58 @@ begin
   Result := (aControl is TCustomCheckBox) or ((aControl is TRadioButton) and not (aControl.Parent is TRadioGroup));
 end;
 
-function PointToMouseLParam(const aPoint: TPoint): LPARAM;
+procedure EnsureRadioGroupButtonHandles(aControl: TControl);
+var
+  i: Integer;
+  lRadioGroup: TRadioGroup;
 begin
-  Result := LPARAM(MakeLong(Word(SmallInt(aPoint.X)), Word(SmallInt(aPoint.Y))));
+  if not (aControl is TRadioGroup) then
+  begin
+    Exit;
+  end;
+
+  lRadioGroup := TRadioGroup(aControl);
+  for i := 0 to Pred(lRadioGroup.Items.Count) do
+  begin
+    lRadioGroup.Buttons[i].HandleNeeded;
+  end;
+end;
+
+function MouseCoordinateWord(aValue: Integer): Word;
+begin
+  Result := Word(aValue and $FFFF);
+end;
+
+function SignedMouseCoordinate(aValue: Word): Integer;
+begin
+  Result := aValue;
+  if (aValue and $8000) <> 0 then
+  begin
+    Dec(Result, $10000);
+  end;
+end;
+
+function MouseLParamLowWord(aValue: LPARAM): Word;
+begin
+  Result := Word(NativeUInt(aValue) and $FFFF);
+end;
+
+function MouseLParamHighWord(aValue: LPARAM): Word;
+begin
+  Result := Word((NativeUInt(aValue) shr 16) and $FFFF);
+end;
+
+function PointToMouseLParam(const aPoint: TPoint): LPARAM;
+var
+  lValue: Int64;
+begin
+  lValue := Int64(MouseCoordinateWord(aPoint.X)) or (Int64(MouseCoordinateWord(aPoint.Y)) shl 16);
+  if (lValue and $80000000) <> 0 then
+  begin
+    Dec(lValue, $100000000);
+  end;
+
+  Result := LPARAM(lValue);
 end;
 
 function MouseMoveClientLParam(aControl: TWinControl; const aMessage: TMessage): LPARAM;
@@ -252,7 +301,8 @@ begin
     Exit;
   end;
 
-  lPoint := Point(SmallInt(LoWord(aMessage.LParam)), SmallInt(HiWord(aMessage.LParam)));
+  lPoint := Point(SignedMouseCoordinate(MouseLParamLowWord(aMessage.LParam)),
+    SignedMouseCoordinate(MouseLParamHighWord(aMessage.LParam)));
   lPoint := aControl.ScreenToClient(lPoint);
   Result := PointToMouseLParam(lPoint);
 end;
@@ -470,6 +520,21 @@ begin
   Result := ProviderControlType(aProvider) = UIA_GroupControlTypeId;
 end;
 
+function ProviderWrapsRadioGroupButton(const aProvider: IRawElementProviderSimple): Boolean;
+var
+  lControl: TControl;
+  lInfo: IAccessibilityVclControlProviderInfo;
+begin
+  Result := False;
+  if not Supports(aProvider, IAccessibilityVclControlProviderInfo, lInfo) then
+  begin
+    Exit;
+  end;
+
+  lControl := lInfo.Control;
+  Result := (lControl is TRadioButton) and (lControl.Parent is TRadioGroup);
+end;
+
 function TryCaptureProviderState(const aProvider: IRawElementProviderSimple; out aState: TProviderStateSnapshot):
   Boolean;
 var
@@ -604,8 +669,11 @@ begin
     begin
       NotifyAccessibilityWinEvent(EVENT_OBJECT_FOCUS, lHwnd, cMsaaObjIdClient, CHILDID_SELF);
       NotifyAccessibilityWinEvent(EVENT_OBJECT_STATECHANGE, lHwnd, cMsaaObjIdClient, CHILDID_SELF);
+      if not ProviderWrapsRadioGroupButton(aProvider) then
+      begin
+        Exit;
+      end;
     end;
-    Exit;
   end;
 
   if ProviderUsesHoverFocusEvent(aProvider) then
@@ -645,7 +713,7 @@ begin
     Exit;
   end;
 
-  lClientPoint := Point(SmallInt(LoWord(aLParam)), SmallInt(HiWord(aLParam)));
+  lClientPoint := Point(SignedMouseCoordinate(MouseLParamLowWord(aLParam)), SignedMouseCoordinate(MouseLParamHighWord(aLParam)));
   lScreenPoint := aControl.ClientToScreen(lClientPoint);
   lHit := nil;
   if (lRoot.ElementProviderFromPoint(lScreenPoint.X, lScreenPoint.Y, lHit) <> S_OK) or (lHit = nil) or
@@ -949,6 +1017,7 @@ begin
   if Supports(aProvider, IAccessibilityVclControlProviderInfo, lInfo) then
   begin
     lControl := lInfo.Control;
+    EnsureRadioGroupButtonHandles(lControl);
     if (lControl is TWinControl) and (lControl <> fForm) then
     begin
       lPreserveNativeAccessibility := ShouldPreserveNativeWindowAccessibility(TWinControl(lControl));

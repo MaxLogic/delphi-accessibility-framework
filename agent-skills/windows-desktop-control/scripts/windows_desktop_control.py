@@ -286,6 +286,28 @@ def command_probe_bridge(args: argparse.Namespace) -> int:
     return command_bridge_request(args)
 
 
+def build_bridge_window_info_request(args: argparse.Namespace) -> str:
+    payload: dict[str, object] = {"cmd": "window.info", "target": args.target}
+    if args.target == "handle":
+        if args.handle is None:
+            raise ValueError("--handle is required when --target handle is used.")
+        payload["handle"] = args.handle
+    elif args.target == "name":
+        if not args.name:
+            raise ValueError("--name is required when --target name is used.")
+        payload["name"] = args.name
+    return json.dumps(payload, separators=(",", ":"))
+
+
+def command_bridge_window_info(args: argparse.Namespace) -> int:
+    try:
+        result = bridge_request(args.pipe_name, build_bridge_window_info_request(args), args.timeout_ms)
+        print_json(result)
+        return 0 if result.get("ok") is not False else 2
+    except Exception as exc:  # noqa: BLE001 - CLI boundary
+        return fail(str(exc))
+
+
 def hwnd_to_int(hwnd: object) -> int:
     value = getattr(hwnd, "value", hwnd)
     return int(value or 0)
@@ -677,6 +699,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--pipe-name", required=True)
     p.add_argument("--timeout-ms", type=int, default=5000)
     p.set_defaults(func=command_probe_bridge)
+
+    p = sub.add_parser("bridge-window-info")
+    p.add_argument("--pipe-name", required=True)
+    p.add_argument("--target", choices=["focused", "handle", "name"], default="focused")
+    p.add_argument("--handle", type=int)
+    p.add_argument("--name")
+    p.add_argument("--timeout-ms", type=int, default=5000)
+    p.set_defaults(func=command_bridge_window_info)
 
     p = sub.add_parser("foreground-window")
     p.set_defaults(func=command_foreground_window)

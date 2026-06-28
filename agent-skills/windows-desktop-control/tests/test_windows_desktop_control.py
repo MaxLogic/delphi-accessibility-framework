@@ -57,6 +57,27 @@ class WindowsDesktopControlTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn("screenshot-window", result.stdout)
 
+    def test_bridge_window_info_command_is_documented_in_help(self) -> None:
+        result = self.run_helper("--help")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("bridge-window-info", result.stdout)
+
+    def test_bridge_window_info_request_uses_handle_target(self) -> None:
+        helper = load_helper_module()
+        args = type("Args", (), {"target": "handle", "handle": 1234, "name": None})()
+
+        payload = json.loads(helper.build_bridge_window_info_request(args))
+
+        self.assertEqual({"cmd": "window.info", "target": "handle", "handle": 1234}, payload)
+
+    def test_bridge_window_info_request_rejects_missing_name(self) -> None:
+        helper = load_helper_module()
+        args = type("Args", (), {"target": "name", "handle": None, "name": None})()
+
+        with self.assertRaises(ValueError):
+            helper.build_bridge_window_info_request(args)
+
     def test_screenshot_window_captures_foreground_window(self) -> None:
         foreground = self.run_helper("foreground-window")
         self.assertEqual(0, foreground.returncode, foreground.stderr)

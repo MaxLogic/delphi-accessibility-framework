@@ -147,6 +147,7 @@ begin
   RequireText(lSkillText, 'Foreground Drive Mode', 'desktop-control skill');
   RequireText(lSkillText, 'Background Drive Mode', 'desktop-control skill');
   RequireText(lSkillText, 'screenshot-window', 'desktop-control skill');
+  RequireText(lSkillText, 'bridge-window-info', 'desktop-control skill');
   RequireText(lSkillText, 'Do not mention machine-local evidence stores', 'desktop-control skill');
   RejectText(lSkillText, 'Shadow Journal', 'desktop-control skill');
 end;

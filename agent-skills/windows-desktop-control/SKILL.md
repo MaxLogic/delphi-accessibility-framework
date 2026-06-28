@@ -55,6 +55,7 @@ python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py
 
 # MaxLogic bridge. Pipe name may be either a plain name or \\.\pipe\name.
 python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py probe-bridge --pipe-name MaxLogicAccessibilityAgentBridge.1234
+python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-window-info --pipe-name MaxLogicAccessibilityAgentBridge.1234 --target focused
 python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-request --pipe-name MaxLogicAccessibilityAgentBridge.1234 --request '{"cmd":"forms.list"}'
 
 # Foreground safety.
@@ -128,6 +129,7 @@ python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py
 If the response is a successful `hello`, use:
 
 - `{"cmd":"forms.list"}` to identify visible forms.
+- `bridge-window-info` or `{"cmd":"window.info","target":"focused"}` to get form handle, screen/client rectangles, DPI, and window state for screenshots and coordinate-sensitive automation.
 - `{"cmd":"form.map","target":"focused"}` or `target:name/handle` to get controls, captions, refs, state, screen rectangles, and target points.
 - `{"cmd":"hitTest","x":500,"y":300}` to map a screen point back to the framework snapshot.
 - Mutation commands only when the app has explicitly enabled them.

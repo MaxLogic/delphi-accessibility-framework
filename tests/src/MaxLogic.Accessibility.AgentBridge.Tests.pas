@@ -13,6 +13,8 @@ type
     [Test]
     procedure HelloReportsFrameworkPresenceAndMutationGate;
     [Test]
+    procedure WindowInfoReturnsGeometryAndDpi;
+    [Test]
     procedure FormMapReturnsSnapshotRefsAndTargetPoints;
     [Test]
     procedure HitTestReturnsControlFromLastSnapshot;
@@ -163,6 +165,51 @@ begin
     Assert.AreEqual('false', JsonText(lResponse, 'mutationEnabled'));
   finally
     lResponse.Free;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.WindowInfoReturnsGeometryAndDpi;
+var
+  lButton: TButton;
+  lClientRect: TJSONObject;
+  lClientScreenRect: TJSONObject;
+  lEdit: TEdit;
+  lForm: TForm;
+  lPoint: TPoint;
+  lResponse: TJSONObject;
+  lWindow: TJSONObject;
+begin
+  BuildBridgeTestForm(lForm, lEdit, lButton);
+  try
+    lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+      '{"cmd":"window.info","target":"handle","handle":' + UIntToStr(NativeUInt(lForm.Handle)) + '}'));
+    try
+      AssertOk(lResponse);
+      Assert.AreEqual('window.info', JsonText(lResponse, 'cmd'));
+      Assert.AreEqual(1, JsonInt(lResponse, 'protocolVersion'));
+
+      lWindow := JsonObjectValue(lResponse, 'window');
+      Assert.AreEqual('BridgeForm', JsonText(lWindow, 'name'));
+      Assert.AreEqual(UIntToStr(NativeUInt(lForm.Handle)), JsonText(lWindow, 'handle'));
+      Assert.AreEqual(lForm.PixelsPerInch, JsonInt(lWindow, 'pixelsPerInch'));
+
+      lClientRect := JsonObjectValue(lWindow, 'clientRect');
+      Assert.AreEqual(0, JsonInt(lClientRect, 'left'));
+      Assert.AreEqual(0, JsonInt(lClientRect, 'top'));
+      Assert.AreEqual(lForm.ClientWidth, JsonInt(lClientRect, 'width'));
+      Assert.AreEqual(lForm.ClientHeight, JsonInt(lClientRect, 'height'));
+
+      lClientScreenRect := JsonObjectValue(lWindow, 'clientScreenRect');
+      lPoint := lForm.ClientToScreen(Point(0, 0));
+      Assert.AreEqual(lPoint.X, JsonInt(lClientScreenRect, 'left'));
+      Assert.AreEqual(lPoint.Y, JsonInt(lClientScreenRect, 'top'));
+      Assert.AreEqual(lForm.ClientWidth, JsonInt(lClientScreenRect, 'width'));
+      Assert.AreEqual(lForm.ClientHeight, JsonInt(lClientScreenRect, 'height'));
+    finally
+      lResponse.Free;
+    end;
+  finally
+    lForm.Free;
   end;
 end;
 

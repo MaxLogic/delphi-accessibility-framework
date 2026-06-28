@@ -40,6 +40,7 @@ type
     function ExecuteHitTest(aRequest: TJSONObject): string;
     function ExecuteKeyboardTab(aRequest: TJSONObject): string;
     function ExecuteSetText(aRequest: TJSONObject; aAppend: Boolean): string;
+    function ExecuteWindowInfo(aRequest: TJSONObject): string;
     function Failure(const aErrorCode: string; const aMessage: string): string;
     function FormSummaryJson(aForm: TCustomForm): TJSONObject;
     function HitControlAt(const aPoint: TPoint): TControl;
@@ -53,6 +54,7 @@ type
     function ResolveControl(aRequest: TJSONObject; out aControl: TControl): Boolean;
     function ResolveForm(aRequest: TJSONObject): TCustomForm;
     function SuccessMutation: string;
+    function WindowInfoJson(aForm: TCustomForm): TJSONObject;
     procedure CollectTabControls(aParent: TWinControl; aControls: TList<TWinControl>);
     procedure FocusWinControl(aControl: TWinControl);
   public
@@ -450,6 +452,9 @@ begin
   end else if lCommand = 'forms.list' then
   begin
     Result := ExecuteFormsList;
+  end else if lCommand = 'window.info' then
+  begin
+    Result := ExecuteWindowInfo(aRequest);
   end else if lCommand = 'form.map' then
   begin
     Result := ExecuteFormMap(aRequest);
@@ -727,6 +732,25 @@ begin
   Result := SuccessMutation;
 end;
 
+function TAccessibilityAgentBridgeState.ExecuteWindowInfo(aRequest: TJSONObject): string;
+var
+  lForm: TCustomForm;
+  lResponse: TJSONObject;
+begin
+  lForm := ResolveForm(aRequest);
+  if lForm = nil then
+  begin
+    Exit(Failure('form_not_found', 'Requested form was not found.'));
+  end;
+
+  lResponse := TJSONObject.Create;
+  AddBool(lResponse, 'ok', True);
+  lResponse.AddPair('cmd', 'window.info');
+  AddInt(lResponse, 'protocolVersion', 1);
+  lResponse.AddPair('window', WindowInfoJson(lForm));
+  Result := JsonObjectToString(lResponse);
+end;
+
 function TAccessibilityAgentBridgeState.Failure(const aErrorCode: string; const aMessage: string): string;
 begin
   Result := FailureResponse(aErrorCode, aMessage);
@@ -901,6 +925,21 @@ begin
   AddBool(lResponse, 'ok', True);
   AddBool(lResponse, 'snapshotInvalidated', True);
   Result := JsonObjectToString(lResponse);
+end;
+
+function TAccessibilityAgentBridgeState.WindowInfoJson(aForm: TCustomForm): TJSONObject;
+var
+  lClientRect: TRect;
+  lClientScreenRect: TRect;
+begin
+  Result := FormSummaryJson(aForm);
+  AddInt(Result, 'pixelsPerInch', aForm.PixelsPerInch);
+  Result.AddPair('windowState', GetEnumName(TypeInfo(TWindowState), Ord(aForm.WindowState)));
+
+  lClientRect := Rect(0, 0, aForm.ClientWidth, aForm.ClientHeight);
+  lClientScreenRect := aForm.ClientToScreen(lClientRect);
+  Result.AddPair('clientRect', RectJson(lClientRect));
+  Result.AddPair('clientScreenRect', RectJson(lClientScreenRect));
 end;
 
 class function TAccessibilityAgentBridge.Execute(const aRequestJson: string): string;

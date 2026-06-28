@@ -114,6 +114,9 @@ begin
   RequireText(lText, 'one UTF-8 JSON object per line', 'agent bridge documentation');
   RequireText(lText, 'Start` and `Stop` are idempotent', 'agent bridge documentation');
   RequireText(lText, '"cmd":"hello"', 'agent bridge documentation');
+  RequireText(lText, '"cmd":"window.info"', 'agent bridge documentation');
+  RequireText(lText, 'clientScreenRect', 'agent bridge documentation');
+  RequireText(lText, 'pixelsPerInch', 'agent bridge documentation');
   RequireText(lText, '"cmd":"form.map"', 'agent bridge documentation');
   RequireText(lText, '"cmd":"hitTest"', 'agent bridge documentation');
   RequireText(lText, '"cmd":"control.focus"', 'agent bridge documentation');

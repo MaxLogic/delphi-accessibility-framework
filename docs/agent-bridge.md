@@ -14,7 +14,7 @@ This repository now serves three separate purposes:
 
 Those purposes share code and evidence, but they should not be collapsed into one concept. Foreground and background are automation modes; they are not screen-reader modes. Foreground mode means the automation drives the application like a human user would, with the target window active and normal mouse/keyboard input. Background mode means the automation avoids taking focus and uses bridge commands, UIA patterns, or Win32 messages where the target application supports that style of control.
 
-Screenshots belong to the desktop-control helper first, not to the Delphi accessibility framework. The bridge should provide reliable process-local metadata such as form handles, screen rectangles, client geometry, DPI, and control target points. A future metadata command such as `window.info` may be useful before considering any bridge-owned screenshot command.
+Screenshots belong to the desktop-control helper first, not to the Delphi accessibility framework. The bridge provides reliable process-local metadata such as form handles, screen rectangles, client geometry, DPI, and control target points so an agent does not need to depend on UIA for coordinates when UIA is the thing under test.
 
 ## Named Pipe Transport
 
@@ -78,11 +78,16 @@ The response includes `ok`, `protocolVersion`, `frameworkName`, `processId`, and
 
 ```json
 {"cmd":"forms.list"}
+{"cmd":"window.info","target":"focused"}
+{"cmd":"window.info","target":"handle","handle":123456}
+{"cmd":"window.info","target":"name","name":"MainForm"}
 {"cmd":"form.map","target":"focused"}
 {"cmd":"form.map","target":"handle","handle":123456}
 {"cmd":"form.map","target":"name","name":"MainForm"}
 {"cmd":"hitTest","x":500,"y":300}
 ```
+
+`window.info` returns the selected form's name, class, caption, visibility, enabled and active state, native handle, `screenRect`, `clientRect`, `clientScreenRect`, `pixelsPerInch`, and `windowState`. Use this before taking screenshots or doing coordinate-sensitive automation because it reports process-local VCL geometry.
 
 `form.map` returns a snapshot with refs such as `@a0`, `@a1`, and `@a2`. Refs are scoped to the latest snapshot, like browser automation element refs. Controls include VCL name, class, caption, value, hint, accessible name/help text, enabled/visible/focus state, tab metadata, native handle, screen rectangle, and a center target point.
 

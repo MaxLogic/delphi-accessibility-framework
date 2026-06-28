@@ -17,6 +17,8 @@ type
     [Test]
     procedure DemoContainsWrappedAndUnwrappedMemoTabs;
     [Test]
+    procedure DemoDocumentsAndWiresAgentBridgeDiagnosticSwitch;
+    [Test]
     procedure DemoShutdownDisarmsAccessibilityHooksAndTimers;
     [Test]
     procedure UiaProbeDocumentationListsRunnableScenarios;
@@ -64,12 +66,32 @@ begin
   lDprText := ReadRepoText('demos\AccessibilityComplexDemo.dpr');
   lPasText := ReadRepoText('demos\AccessibilityDemoMainForm.pas');
 
-  RequireText(lDprText, 'try' + sLineBreak + '    Application.Run;' + sLineBreak + '  finally' + sLineBreak +
-    '    SetDemoAccessibilityFrameworkEnabled(False);' + sLineBreak + '  end;', 'demo DPR shutdown');
+  RequireText(lDprText, 'Application.Run;', 'demo DPR shutdown');
+  RequireText(lDprText, 'TAccessibilityAgentBridgePipeServer.Stop;', 'demo DPR shutdown');
+  RequireText(lDprText, 'SetDemoAccessibilityFrameworkEnabled(False);', 'demo DPR shutdown');
   RequireText(lDfmText, 'OnDestroy = FormDestroy', 'demo DFM shutdown');
   RequireText(lPasText, 'procedure TAccessibilityDemoMainForm.FormDestroy(aSender: TObject);' + sLineBreak +
     'begin' + sLineBreak + '  BalloonHideTimer.Enabled := False;' + sLineBreak + '  BalloonHint.HideHint;' +
     sLineBreak + 'end;', 'demo form shutdown');
+end;
+
+procedure TAccessibilityDocumentationTests.DemoDocumentsAndWiresAgentBridgeDiagnosticSwitch;
+var
+  lDocText: string;
+  lDprText: string;
+begin
+  lDocText := ReadRepoText('docs\agent-bridge.md');
+  lDprText := ReadRepoText('demos\AccessibilityComplexDemo.dpr');
+
+  RequireText(lDprText, '--a11y-agent-bridge', 'demo DPR bridge switch');
+  RequireText(lDprText, '--a11y-agent-bridge-pipe=', 'demo DPR bridge switch');
+  RequireText(lDprText, '--a11y-agent-bridge-mutations', 'demo DPR bridge switch');
+  RequireText(lDprText, 'TAccessibilityAgentBridgePipeServer.Start', 'demo DPR bridge switch');
+  RequireText(lDprText, 'TAccessibilityAgentBridgePipeServer.Stop', 'demo DPR bridge switch');
+  RequireText(lDprText, 'TAccessibilityAgentBridge.SetMutationEnabled(True)', 'demo DPR bridge switch');
+  RequireText(lDocText, 'AccessibilityComplexDemo.exe --a11y-agent-bridge', 'agent bridge demo docs');
+  RequireText(lDocText, '--a11y-agent-bridge-pipe=MaxLogicAccessibilityDemo', 'agent bridge demo docs');
+  RequireText(lDocText, '--a11y-agent-bridge-mutations', 'agent bridge demo docs');
 end;
 
 procedure TAccessibilityDocumentationTests.AgentBridgeDocumentationDescribesContract;

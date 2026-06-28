@@ -5,6 +5,7 @@
 - Added `TAccessibilityManager.Run(Application)` as a one-call app-wide lifecycle helper that installs accessibility, runs the VCL message loop, and uninstalls on shutdown.
 - Added `MaxLogic.Accessibility.AgentBridge`, a VCL-main-thread JSON command executor for diagnostic automation with framework handshake, form maps, VCL hit testing, and gated mutation commands.
 - Added `MaxLogic.Accessibility.AgentBridge.PipeServer`, an opt-in local named pipe transport for the agent bridge.
+- Added explicit `--a11y-agent-bridge` diagnostics switches to the complex demo.
 
 ### Fixed
 - `TCheckBox` and standalone `TRadioButton` hover now keep the native HWND accessibility path, raise a state-capable UIA focus event from the framework provider, and nudge the native HWND with focus/state WinEvents so screen readers can query localized checked/selected state without framework-injected English state text.

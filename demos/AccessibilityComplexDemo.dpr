@@ -14,7 +14,14 @@ uses
   MaxLogic.MadExcept.AiRunner in '..\lib\MaxLogicFoundation\MaxLogic.MadExcept.AiRunner.pas',
   {$IFEND}
   AccessibilityDemoMainForm in 'AccessibilityDemoMainForm.pas' {AccessibilityDemoMainForm},
+  MaxLogic.Accessibility.AgentBridge in '..\src\MaxLogic.Accessibility.AgentBridge.pas',
+  MaxLogic.Accessibility.AgentBridge.PipeServer in '..\src\MaxLogic.Accessibility.AgentBridge.PipeServer.pas',
   MaxLogic.Accessibility.Diagnostics in '..\src\MaxLogic.Accessibility.Diagnostics.pas';
+
+const
+  cDemoAgentBridgeMutationsSwitch = '--a11y-agent-bridge-mutations';
+  cDemoAgentBridgePipePrefix = '--a11y-agent-bridge-pipe=';
+  cDemoAgentBridgeSwitch = '--a11y-agent-bridge';
 
 {$IF DEFINED(madExcept) AND DEFINED(DEBUG)}
 procedure RunMadExceptAiProbe;
@@ -36,6 +43,64 @@ begin
 end;
 {$IFEND}
 
+function HasCommandLineSwitch(const aSwitch: string): Boolean;
+var
+  i: Integer;
+begin
+  for i := 1 to ParamCount do
+  begin
+    if SameText(ParamStr(i), aSwitch) then
+    begin
+      Exit(True);
+    end;
+  end;
+
+  Result := False;
+end;
+
+function DemoAgentBridgePipeName: string;
+var
+  i: Integer;
+  lParam: string;
+begin
+  for i := 1 to ParamCount do
+  begin
+    lParam := ParamStr(i);
+    if SameText(Copy(lParam, 1, Length(cDemoAgentBridgePipePrefix)), cDemoAgentBridgePipePrefix) then
+    begin
+      Exit(Copy(lParam, Succ(Length(cDemoAgentBridgePipePrefix)), MaxInt));
+    end;
+  end;
+
+  Result := '';
+end;
+
+procedure StartDemoAgentBridgeIfRequested;
+var
+  lPipeName: string;
+begin
+  if not HasCommandLineSwitch(cDemoAgentBridgeSwitch) then
+  begin
+    Exit;
+  end;
+
+  lPipeName := DemoAgentBridgePipeName;
+  TAccessibilityAgentBridgePipeServer.Start(lPipeName);
+  TAccessibilityDiagnostics.Log('Agent bridge pipe server started: ' + TAccessibilityAgentBridgePipeServer.PipeName);
+
+  if HasCommandLineSwitch(cDemoAgentBridgeMutationsSwitch) then
+  begin
+    TAccessibilityAgentBridge.SetMutationEnabled(True);
+    TAccessibilityDiagnostics.Log('Agent bridge mutations enabled');
+  end;
+end;
+
+procedure StopDemoAgentBridge;
+begin
+  TAccessibilityAgentBridge.SetMutationEnabled(False);
+  TAccessibilityAgentBridgePipeServer.Stop;
+end;
+
 begin
   {$IF DEFINED(madExcept) AND DEFINED(DEBUG)}
   MaxLogic.MadExcept.AiRunner.ConfigureFromEnvironment;
@@ -51,9 +116,11 @@ begin
   TAccessibilityDiagnostics.Log('AccessibilityComplexDemo starting');
   Application.CreateForm(TAccessibilityDemoMainForm, AccessibilityDemoMain);
   SetDemoAccessibilityFrameworkEnabled(True);
+  StartDemoAgentBridgeIfRequested;
   try
     Application.Run;
   finally
+    StopDemoAgentBridge;
     SetDemoAccessibilityFrameworkEnabled(False);
   end;
 end.

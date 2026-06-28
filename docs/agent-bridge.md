@@ -44,6 +44,16 @@ end;
 
 Mutation commands still require `TAccessibilityAgentBridge.SetMutationEnabled(True)`.
 
+## Demo Diagnostic Switch
+
+The complex demo exposes the bridge only when started with an explicit diagnostic switch:
+
+```powershell
+.\bin\Win32\Debug\AccessibilityComplexDemo.exe --a11y-agent-bridge --a11y-agent-bridge-pipe=MaxLogicAccessibilityDemo
+```
+
+Add `--a11y-agent-bridge-mutations` only when the automation run should use bridge mutation commands. Without that switch, the demo still allows snapshots and hit testing, but mutation commands remain disabled. The demo stops the pipe server before uninstalling the accessibility framework when `Application.Run` exits.
+
 ## Handshake
 
 ```json

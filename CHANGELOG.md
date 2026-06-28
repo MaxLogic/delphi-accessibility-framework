@@ -8,6 +8,7 @@
 - Added explicit `--a11y-agent-bridge` diagnostics switches to the complex demo.
 
 ### Fixed
+- `TGroupBox` and `TRadioGroup` hovers now raise a UIA focus event for the group provider before the existing notification, improving screen-reader mouse tracking for group captions.
 - `TCheckBox` and standalone `TRadioButton` hover now keep the native HWND accessibility path, raise a state-capable UIA focus event from the framework provider, and nudge the native HWND with focus/state WinEvents so screen readers can query localized checked/selected state without framework-injected English state text.
 - `TGroupBox` hover now handles non-client mouse movement over the frame/caption.
 - `TRadioGroup` internal button hover now routes to the framework radio-item provider instead of preserving the private child `TRadioButton` native path, so the item caption/state surface is reachable under the mouse.

@@ -465,6 +465,11 @@ begin
   Result := (lControlType = UIA_CheckBoxControlTypeId) or (lControlType = UIA_RadioButtonControlTypeId);
 end;
 
+function ProviderUsesHoverFocusEvent(const aProvider: IRawElementProviderSimple): Boolean;
+begin
+  Result := ProviderControlType(aProvider) = UIA_GroupControlTypeId;
+end;
+
 function TryCaptureProviderState(const aProvider: IRawElementProviderSimple; out aState: TProviderStateSnapshot):
   Boolean;
 var
@@ -601,6 +606,11 @@ begin
       NotifyAccessibilityWinEvent(EVENT_OBJECT_STATECHANGE, lHwnd, cMsaaObjIdClient, CHILDID_SELF);
     end;
     Exit;
+  end;
+
+  if ProviderUsesHoverFocusEvent(aProvider) then
+  begin
+    TAccessibilityProviderEvents.RaiseAutomationEvent(aProvider, UIA_AutomationFocusChangedEventId, aApi);
   end;
 
   TAccessibilityProviderEvents.RaiseNotification(aProvider, NotificationKind_Other,

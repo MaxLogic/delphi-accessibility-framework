@@ -19,6 +19,8 @@ type
     [Test]
     procedure DemoDocumentsAndWiresAgentBridgeDiagnosticSwitch;
     [Test]
+    procedure AgentBridgeDocumentationSeparatesAccessibilityControlAndAgentModes;
+    [Test]
     procedure DemoShutdownDisarmsAccessibilityHooksAndTimers;
     [Test]
     procedure UiaProbeDocumentationListsRunnableScenarios;
@@ -122,6 +124,28 @@ begin
   RequireText(lText, 'snapshotInvalidated', 'agent bridge documentation');
   RequireText(lText, 'VCL main thread', 'agent bridge documentation');
   RequireText(lText, 'should continue with generic UIA/Win32 control', 'agent bridge documentation');
+end;
+
+procedure TAccessibilityDocumentationTests.AgentBridgeDocumentationSeparatesAccessibilityControlAndAgentModes;
+var
+  lBridgeText: string;
+  lSkillText: string;
+begin
+  lBridgeText := ReadRepoText('docs\agent-bridge.md');
+  lSkillText := ReadRepoText('agent-skills\windows-desktop-control\SKILL.md');
+
+  RequireText(lBridgeText, 'separate purposes', 'agent bridge documentation');
+  RequireText(lBridgeText, 'screen-reader accessibility', 'agent bridge documentation');
+  RequireText(lBridgeText, 'application control bridge', 'agent bridge documentation');
+  RequireText(lBridgeText, 'agent desktop-control skill', 'agent bridge documentation');
+  RequireText(lBridgeText, 'Foreground and background are automation modes', 'agent bridge documentation');
+  RequireText(lBridgeText, 'Screenshots belong to the desktop-control helper first', 'agent bridge documentation');
+  RequireText(lBridgeText, 'window.info', 'agent bridge documentation');
+  RequireText(lSkillText, 'Foreground Drive Mode', 'desktop-control skill');
+  RequireText(lSkillText, 'Background Drive Mode', 'desktop-control skill');
+  RequireText(lSkillText, 'screenshot-window', 'desktop-control skill');
+  RequireText(lSkillText, 'Do not mention machine-local evidence stores', 'desktop-control skill');
+  RejectText(lSkillText, 'Shadow Journal', 'desktop-control skill');
 end;
 
 procedure TAccessibilityDocumentationTests.NvdaChecklistDocumentsExpectedSpeech;

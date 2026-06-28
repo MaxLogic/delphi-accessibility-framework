@@ -4,6 +4,18 @@
 
 The core executor does not start a transport by itself. Applications can either call `TAccessibilityAgentBridge.Execute` from their own transport on the VCL main thread, or opt in to the built-in named pipe transport from `MaxLogic.Accessibility.AgentBridge.PipeServer`.
 
+## Purpose Boundaries
+
+This repository now serves three separate purposes:
+
+- screen-reader accessibility for Delphi VCL applications, with NVDA as the primary practical target
+- application control bridge support for Delphi VCL applications that opt in to framework diagnostics
+- agent desktop-control skill guidance for driving Windows applications through UIA, Win32 messages, screenshots, OS input, and the MaxLogic bridge when available
+
+Those purposes share code and evidence, but they should not be collapsed into one concept. Foreground and background are automation modes; they are not screen-reader modes. Foreground mode means the automation drives the application like a human user would, with the target window active and normal mouse/keyboard input. Background mode means the automation avoids taking focus and uses bridge commands, UIA patterns, or Win32 messages where the target application supports that style of control.
+
+Screenshots belong to the desktop-control helper first, not to the Delphi accessibility framework. The bridge should provide reliable process-local metadata such as form handles, screen rectangles, client geometry, DPI, and control target points. A future metadata command such as `window.info` may be useful before considering any bridge-owned screenshot command.
+
 ## Named Pipe Transport
 
 For local diagnostic automation, add the pipe server unit and start it after the VCL application has initialized:

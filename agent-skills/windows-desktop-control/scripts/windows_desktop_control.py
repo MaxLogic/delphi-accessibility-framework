@@ -8,6 +8,7 @@ import ctypes
 from ctypes import wintypes
 import json
 from pathlib import Path
+import struct
 import time
 import winsound
 
@@ -30,6 +31,8 @@ KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_UNICODE = 0x0004
 MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
+PW_RENDERFULLCONTENT = 0x00000002
+SRCCOPY = 0x00CC0020
 SW_RESTORE = 9
 
 VK_CODES = {
@@ -46,6 +49,7 @@ VK_CODES = {
 }
 
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 
 
@@ -61,8 +65,60 @@ class RECT(ctypes.Structure):
     ]
 
 
+class BITMAPINFOHEADER(ctypes.Structure):
+    _fields_ = [
+        ("biSize", wintypes.DWORD),
+        ("biWidth", wintypes.LONG),
+        ("biHeight", wintypes.LONG),
+        ("biPlanes", wintypes.WORD),
+        ("biBitCount", wintypes.WORD),
+        ("biCompression", wintypes.DWORD),
+        ("biSizeImage", wintypes.DWORD),
+        ("biXPelsPerMeter", wintypes.LONG),
+        ("biYPelsPerMeter", wintypes.LONG),
+        ("biClrUsed", wintypes.DWORD),
+        ("biClrImportant", wintypes.DWORD),
+    ]
+
+
+class BITMAPINFO(ctypes.Structure):
+    _fields_ = [("bmiHeader", BITMAPINFOHEADER), ("bmiColors", wintypes.DWORD * 3)]
+
+
 EnumWindowsProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 
+gdi32.BitBlt.argtypes = [
+    wintypes.HDC,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    wintypes.HDC,
+    ctypes.c_int,
+    ctypes.c_int,
+    wintypes.DWORD,
+]
+gdi32.BitBlt.restype = wintypes.BOOL
+gdi32.CreateCompatibleBitmap.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int]
+gdi32.CreateCompatibleBitmap.restype = wintypes.HBITMAP
+gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
+gdi32.CreateCompatibleDC.restype = wintypes.HDC
+gdi32.DeleteDC.argtypes = [wintypes.HDC]
+gdi32.DeleteDC.restype = wintypes.BOOL
+gdi32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+gdi32.DeleteObject.restype = wintypes.BOOL
+gdi32.GetDIBits.argtypes = [
+    wintypes.HDC,
+    wintypes.HBITMAP,
+    wintypes.UINT,
+    wintypes.UINT,
+    wintypes.LPVOID,
+    ctypes.POINTER(BITMAPINFO),
+    wintypes.UINT,
+]
+gdi32.GetDIBits.restype = ctypes.c_int
+gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HGDIOBJ]
+gdi32.SelectObject.restype = wintypes.HGDIOBJ
 kernel32.GetCurrentThreadId.argtypes = []
 kernel32.GetCurrentThreadId.restype = wintypes.DWORD
 user32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
@@ -85,6 +141,10 @@ user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintyp
 user32.GetWindowThreadProcessId.restype = wintypes.DWORD
 user32.IsWindowVisible.argtypes = [wintypes.HWND]
 user32.IsWindowVisible.restype = wintypes.BOOL
+user32.PrintWindow.argtypes = [wintypes.HWND, wintypes.HDC, wintypes.UINT]
+user32.PrintWindow.restype = wintypes.BOOL
+user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+user32.ReleaseDC.restype = ctypes.c_int
 user32.SetForegroundWindow.argtypes = [wintypes.HWND]
 user32.SetForegroundWindow.restype = wintypes.BOOL
 user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
@@ -314,6 +374,18 @@ def matching_windows(pid: int | None, title_contains: str | None) -> list[dict[s
     return result
 
 
+def resolve_target_window(args: argparse.Namespace) -> tuple[dict[str, object], list[dict[str, object]]]:
+    if args.hwnd is None and args.pid is None and not args.title_contains:
+        raise ValueError("Provide --hwnd, --pid, or --title-contains.")
+    if args.hwnd is not None:
+        target = window_info(int_to_hwnd(args.hwnd))
+        return target, [target]
+    matches = matching_windows(args.pid, args.title_contains)
+    if not matches:
+        raise LookupError("No matching visible top-level window was found.")
+    return matches[0], matches
+
+
 def activate_hwnd(hwnd: wintypes.HWND, timeout_ms: int) -> bool:
     deadline = time.monotonic() + max(timeout_ms, 1) / 1000.0
     current_thread_id = int(kernel32.GetCurrentThreadId())
@@ -349,16 +421,7 @@ def command_foreground_window(_args: argparse.Namespace) -> int:
 
 def command_activate_window(args: argparse.Namespace) -> int:
     try:
-        if args.hwnd is None and args.pid is None and not args.title_contains:
-            return fail("Provide --hwnd, --pid, or --title-contains.")
-        if args.hwnd is not None:
-            target = window_info(int_to_hwnd(args.hwnd))
-            matches = [target]
-        else:
-            matches = matching_windows(args.pid, args.title_contains)
-            if not matches:
-                return fail("No matching visible top-level window was found.", pid=args.pid, titleContains=args.title_contains)
-            target = matches[0]
+        target, matches = resolve_target_window(args)
         ok = activate_hwnd(int_to_hwnd(int(target["hwnd"])), args.timeout_ms)
         payload = {
             "ok": ok,
@@ -369,6 +432,91 @@ def command_activate_window(args: argparse.Namespace) -> int:
         }
         print_json(payload)
         return 0 if ok else 2
+    except Exception as exc:  # noqa: BLE001 - CLI boundary
+        return fail(str(exc))
+
+
+def write_bitmap(path: Path, width: int, height: int, pixels: bytes) -> None:
+    image_size = len(pixels)
+    file_header_size = 14
+    dib_header_size = 40
+    offset = file_header_size + dib_header_size
+    file_size = offset + image_size
+    with path.open("wb") as handle:
+        handle.write(struct.pack("<2sIHHI", b"BM", file_size, 0, 0, offset))
+        handle.write(struct.pack("<IiiHHIIiiII", dib_header_size, width, -height, 1, 32, 0, image_size, 0, 0, 0, 0))
+        handle.write(pixels)
+
+
+def capture_window_bitmap(hwnd: wintypes.HWND, output_path: Path) -> dict[str, object]:
+    rect = get_window_rect(hwnd)
+    width = int(rect["width"])
+    height = int(rect["height"])
+    if width <= 0 or height <= 0:
+        raise ValueError("Window has no capturable area.")
+
+    source_dc = user32.GetWindowDC(hwnd)
+    if not source_dc:
+        raise OSError(f"GetWindowDC failed: {ctypes.get_last_error()}")
+    memory_dc = 0
+    bitmap = 0
+    old_bitmap = 0
+    try:
+        memory_dc = gdi32.CreateCompatibleDC(source_dc)
+        if not memory_dc:
+            raise OSError(f"CreateCompatibleDC failed: {ctypes.get_last_error()}")
+        bitmap = gdi32.CreateCompatibleBitmap(source_dc, width, height)
+        if not bitmap:
+            raise OSError(f"CreateCompatibleBitmap failed: {ctypes.get_last_error()}")
+        old_bitmap = gdi32.SelectObject(memory_dc, bitmap)
+        method = "PrintWindow"
+        if not user32.PrintWindow(hwnd, memory_dc, PW_RENDERFULLCONTENT):
+            method = "BitBlt"
+            if not gdi32.BitBlt(memory_dc, 0, 0, width, height, source_dc, 0, 0, SRCCOPY):
+                raise OSError(f"BitBlt failed: {ctypes.get_last_error()}")
+
+        info = BITMAPINFO()
+        info.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+        info.bmiHeader.biWidth = width
+        info.bmiHeader.biHeight = -height
+        info.bmiHeader.biPlanes = 1
+        info.bmiHeader.biBitCount = 32
+        image_size = width * height * 4
+        buffer = ctypes.create_string_buffer(image_size)
+        scan_lines = gdi32.GetDIBits(memory_dc, bitmap, 0, height, buffer, ctypes.byref(info), 0)
+        if scan_lines != height:
+            raise OSError(f"GetDIBits failed: {ctypes.get_last_error()}")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        write_bitmap(output_path, width, height, buffer.raw)
+        return {"method": method, "width": width, "height": height, "bytes": output_path.stat().st_size}
+    finally:
+        if old_bitmap:
+            gdi32.SelectObject(memory_dc, old_bitmap)
+        if bitmap:
+            gdi32.DeleteObject(bitmap)
+        if memory_dc:
+            gdi32.DeleteDC(memory_dc)
+        user32.ReleaseDC(hwnd, source_dc)
+
+
+def command_screenshot_window(args: argparse.Namespace) -> int:
+    try:
+        target, matches = resolve_target_window(args)
+        output_path = Path(args.output).resolve()
+        capture = capture_window_bitmap(int_to_hwnd(int(target["hwnd"])), output_path)
+        print_json(
+            {
+                "ok": True,
+                "action": "screenshot-window",
+                "path": str(output_path),
+                "window": target,
+                "capture": capture,
+                "matches": matches[:5],
+            }
+        )
+        return 0
+    except LookupError as exc:
+        return fail(str(exc), pid=args.pid, titleContains=args.title_contains)
     except Exception as exc:  # noqa: BLE001 - CLI boundary
         return fail(str(exc))
 
@@ -539,6 +687,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--title-contains")
     p.add_argument("--timeout-ms", type=int, default=3000)
     p.set_defaults(func=command_activate_window)
+
+    p = sub.add_parser("screenshot-window")
+    p.add_argument("--hwnd", type=int)
+    p.add_argument("--pid", type=int)
+    p.add_argument("--title-contains")
+    p.add_argument("--output", required=True)
+    p.set_defaults(func=command_screenshot_window)
 
     p = sub.add_parser("move")
     p.add_argument("--x", type=int, required=True)

@@ -89,6 +89,7 @@ type
       aPreserveNativeWindowAccessibility: Boolean);
     procedure HookMissingWindowControls(aParent: TWinControl);
     procedure HookProviderWindow(const aProvider: IRawElementProviderSimple);
+    procedure HookRadioGroupButtonWindows(aRadioGroup: TRadioGroup; const aProvider: IRawElementProviderSimple);
     procedure MaybeRaiseProviderHover(aLParam: LPARAM);
     function Passivate: Boolean;
     procedure ReleaseChildHooks;
@@ -989,6 +990,10 @@ begin
     if lChild is TWinControl then
     begin
       lWinControl := TWinControl(lChild);
+      if lWinControl is TRadioGroup then
+      begin
+        HookRadioGroupButtonWindows(TRadioGroup(lWinControl), fProvider.RawElementProvider);
+      end;
       if ShouldHookMissingWindowControl(lWinControl) then
       begin
         HookControlWindow(lWinControl, fProvider.RawElementProvider, False);
@@ -1018,6 +1023,10 @@ begin
   begin
     lControl := lInfo.Control;
     EnsureRadioGroupButtonHandles(lControl);
+    if lControl is TRadioGroup then
+    begin
+      HookRadioGroupButtonWindows(TRadioGroup(lControl), aProvider);
+    end;
     if (lControl is TWinControl) and (lControl <> fForm) then
     begin
       lPreserveNativeAccessibility := ShouldPreserveNativeWindowAccessibility(TWinControl(lControl));
@@ -1056,6 +1065,35 @@ begin
       Exit;
     end;
     lChild := lNextChild;
+  end;
+end;
+
+procedure TAccessibilityFormWindowHook.HookRadioGroupButtonWindows(aRadioGroup: TRadioGroup;
+  const aProvider: IRawElementProviderSimple);
+var
+  i: Integer;
+  lButton: TRadioButton;
+  lButtonCenter: TPoint;
+  lHit: IRawElementProviderFragment;
+  lHitProvider: IRawElementProviderSimple;
+  lRoot: IRawElementProviderFragmentRoot;
+begin
+  if (aRadioGroup = nil) or not Supports(aProvider, IRawElementProviderFragmentRoot, lRoot) then
+  begin
+    Exit;
+  end;
+
+  for i := 0 to Pred(aRadioGroup.Items.Count) do
+  begin
+    lButton := aRadioGroup.Buttons[i];
+    lButton.HandleNeeded;
+    lButtonCenter := lButton.ClientToScreen(Point(lButton.Width div 2, lButton.Height div 2));
+    lHit := nil;
+    if (lRoot.ElementProviderFromPoint(lButtonCenter.X, lButtonCenter.Y, lHit) = S_OK) and
+      Supports(lHit, IRawElementProviderSimple, lHitProvider) then
+    begin
+      HookControlWindow(lButton, lHitProvider, False);
+    end;
   end;
 end;
 

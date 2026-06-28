@@ -10,6 +10,7 @@
 ### Fixed
 - `TGroupBox` and `TRadioGroup` hovers now raise a UIA focus event for the group provider before the existing notification, improving screen-reader mouse tracking for group captions.
 - `TRadioGroup` item hover now keeps the item focus event and also emits an item-caption notification for the virtual radio button provider, covering screen readers that ignore focus-only events for the internal group button.
+- `TRadioGroup` item hover now hooks VCL's private item button windows, so real mouse movement reaches the item provider instead of stopping at the group caption.
 - Non-client mouse hover, including over the window close button, no longer trips Delphi range checking while converting signed mouse coordinates.
 - `TCheckBox` and standalone `TRadioButton` hover now keep the native HWND accessibility path, raise a state-capable UIA focus event from the framework provider, and nudge the native HWND with focus/state WinEvents so screen readers can query localized checked/selected state without framework-injected English state text.
 - `TGroupBox` hover now handles non-client mouse movement over the frame/caption.

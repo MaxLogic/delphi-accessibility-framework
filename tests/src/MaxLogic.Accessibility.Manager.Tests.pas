@@ -101,6 +101,8 @@ type
     [Test]
     procedure FormInstallRaisesRadioGroupItemHoverFromButtonWindow;
     [Test]
+    procedure DemoFormInstallRaisesRadioGroupItemHoverFromButtonWindow;
+    [Test]
     procedure FormInstallRaisesLazyRadioGroupItemHoverFromButtonWindow;
     [Test]
     procedure FormInstallRaisesCheckBoxHoverNativeWinEventsWithoutProviderReplacement;
@@ -2662,6 +2664,41 @@ begin
     lRadioGroup.HandleNeeded;
     lRadioGroup.Buttons[0].HandleNeeded;
     lButton := lRadioGroup.Buttons[0];
+
+    TAccessibilityManager.Install(lForm);
+
+    lButton.Perform(WM_MOUSEMOVE, 0, PointToLParam(Point(lButton.Width div 2, lButton.Height div 2)));
+
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('Comfortable', lApi.LastNotificationText);
+    Assert.AreEqual('Comfortable', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
+      UIA_NamePropertyId));
+    Assert.AreEqual(1, lApi.EventCalls);
+    Assert.AreEqual(UIA_AutomationFocusChangedEventId, lApi.LastEventId);
+    Assert.AreEqual('Comfortable', ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider),
+      UIA_NamePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.DemoFormInstallRaisesRadioGroupItemHoverFromButtonWindow;
+var
+  lApi: IManagerTestUiaApi;
+  lButton: TRadioButton;
+  lForm: TAccessibilityDemoMainForm;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TAccessibilityDemoMainForm.Create(nil);
+  try
+    lForm.HandleNeeded;
+    lForm.radioGroupDensity.HandleNeeded;
+    lForm.radioGroupDensity.Buttons[0].HandleNeeded;
+    lButton := lForm.radioGroupDensity.Buttons[0];
 
     TAccessibilityManager.Install(lForm);
 

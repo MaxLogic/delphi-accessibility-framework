@@ -30,6 +30,7 @@ KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_UNICODE = 0x0004
 MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
+SW_RESTORE = 9
 
 VK_CODES = {
     "tab": 0x09,
@@ -48,18 +49,82 @@ kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 
 
+ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
+
+
+class RECT(ctypes.Structure):
+    _fields_ = [
+        ("left", wintypes.LONG),
+        ("top", wintypes.LONG),
+        ("right", wintypes.LONG),
+        ("bottom", wintypes.LONG),
+    ]
+
+
+EnumWindowsProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+kernel32.GetCurrentThreadId.argtypes = []
+kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+user32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
+user32.AttachThreadInput.restype = wintypes.BOOL
+user32.BringWindowToTop.argtypes = [wintypes.HWND]
+user32.BringWindowToTop.restype = wintypes.BOOL
+user32.EnumWindows.argtypes = [EnumWindowsProc, wintypes.LPARAM]
+user32.EnumWindows.restype = wintypes.BOOL
+user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+user32.GetClassNameW.restype = ctypes.c_int
+user32.GetForegroundWindow.argtypes = []
+user32.GetForegroundWindow.restype = wintypes.HWND
+user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(RECT)]
+user32.GetWindowRect.restype = wintypes.BOOL
+user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+user32.GetWindowTextLengthW.restype = ctypes.c_int
+user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+user32.GetWindowTextW.restype = ctypes.c_int
+user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+user32.IsWindowVisible.argtypes = [wintypes.HWND]
+user32.IsWindowVisible.restype = wintypes.BOOL
+user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+user32.SetForegroundWindow.restype = wintypes.BOOL
+user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.ShowWindow.restype = wintypes.BOOL
+if hasattr(user32, "SwitchToThisWindow"):
+    user32.SwitchToThisWindow.argtypes = [wintypes.HWND, wintypes.BOOL]
+    user32.SwitchToThisWindow.restype = None
+
+
 class KEYBDINPUT(ctypes.Structure):
     _fields_ = [
         ("wVk", wintypes.WORD),
         ("wScan", wintypes.WORD),
         ("dwFlags", wintypes.DWORD),
         ("time", wintypes.DWORD),
-        ("dwExtraInfo", ctypes.c_size_t),
+        ("dwExtraInfo", ULONG_PTR),
+    ]
+
+
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", wintypes.LONG),
+        ("dy", wintypes.LONG),
+        ("mouseData", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ULONG_PTR),
+    ]
+
+
+class HARDWAREINPUT(ctypes.Structure):
+    _fields_ = [
+        ("uMsg", wintypes.DWORD),
+        ("wParamL", wintypes.WORD),
+        ("wParamH", wintypes.WORD),
     ]
 
 
 class INPUTUNION(ctypes.Union):
-    _fields_ = [("ki", KEYBDINPUT)]
+    _fields_ = [("mi", MOUSEINPUT), ("ki", KEYBDINPUT), ("hi", HARDWAREINPUT)]
 
 
 class INPUT(ctypes.Structure):
@@ -67,7 +132,7 @@ class INPUT(ctypes.Structure):
 
 
 def print_json(value: object) -> None:
-    print(json.dumps(value, ensure_ascii=False, indent=2))
+    print(json.dumps(value, ensure_ascii=True, indent=2))
 
 
 def fail(message: str, code: int = 1, **extra: object) -> int:
@@ -159,6 +224,153 @@ def command_probe_bridge(args: argparse.Namespace) -> int:
     args.request = '{"cmd":"hello"}'
     args.request_file = None
     return command_bridge_request(args)
+
+
+def hwnd_to_int(hwnd: object) -> int:
+    value = getattr(hwnd, "value", hwnd)
+    return int(value or 0)
+
+
+def int_to_hwnd(value: int) -> wintypes.HWND:
+    return wintypes.HWND(int(value))
+
+
+def get_window_text(hwnd: wintypes.HWND) -> str:
+    length = user32.GetWindowTextLengthW(hwnd)
+    if length <= 0:
+        return ""
+    buffer = ctypes.create_unicode_buffer(length + 1)
+    user32.GetWindowTextW(hwnd, buffer, len(buffer))
+    return buffer.value
+
+
+def get_class_name(hwnd: wintypes.HWND) -> str:
+    buffer = ctypes.create_unicode_buffer(256)
+    user32.GetClassNameW(hwnd, buffer, len(buffer))
+    return buffer.value
+
+
+def get_window_pid_and_thread(hwnd: wintypes.HWND) -> tuple[int, int]:
+    pid = wintypes.DWORD(0)
+    thread_id = user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return int(pid.value), int(thread_id)
+
+
+def get_window_rect(hwnd: wintypes.HWND) -> dict[str, int]:
+    rect = RECT()
+    if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return {"left": 0, "top": 0, "right": 0, "bottom": 0, "width": 0, "height": 0}
+    return {
+        "left": int(rect.left),
+        "top": int(rect.top),
+        "right": int(rect.right),
+        "bottom": int(rect.bottom),
+        "width": int(rect.right - rect.left),
+        "height": int(rect.bottom - rect.top),
+    }
+
+
+def window_info(hwnd: wintypes.HWND) -> dict[str, object]:
+    pid, thread_id = get_window_pid_and_thread(hwnd)
+    foreground = hwnd_to_int(user32.GetForegroundWindow()) == hwnd_to_int(hwnd)
+    return {
+        "hwnd": hwnd_to_int(hwnd),
+        "pid": pid,
+        "threadId": thread_id,
+        "title": get_window_text(hwnd),
+        "className": get_class_name(hwnd),
+        "visible": bool(user32.IsWindowVisible(hwnd)),
+        "foreground": foreground,
+        "rect": get_window_rect(hwnd),
+    }
+
+
+def enum_top_windows() -> list[wintypes.HWND]:
+    windows: list[wintypes.HWND] = []
+
+    @EnumWindowsProc
+    def callback(hwnd: wintypes.HWND, _lparam: wintypes.LPARAM) -> bool:
+        windows.append(hwnd)
+        return True
+
+    if not user32.EnumWindows(callback, 0):
+        raise OSError(f"EnumWindows failed: {ctypes.get_last_error()}")
+    return windows
+
+
+def matching_windows(pid: int | None, title_contains: str | None) -> list[dict[str, object]]:
+    title_filter = (title_contains or "").lower()
+    result: list[dict[str, object]] = []
+    for hwnd in enum_top_windows():
+        item = window_info(hwnd)
+        if not item["visible"]:
+            continue
+        if pid is not None and item["pid"] != pid:
+            continue
+        if title_filter and title_filter not in str(item["title"]).lower():
+            continue
+        result.append(item)
+    result.sort(key=lambda item: (not bool(item["title"]), -int(item["rect"]["width"]) * int(item["rect"]["height"])))
+    return result
+
+
+def activate_hwnd(hwnd: wintypes.HWND, timeout_ms: int) -> bool:
+    deadline = time.monotonic() + max(timeout_ms, 1) / 1000.0
+    current_thread_id = int(kernel32.GetCurrentThreadId())
+    while time.monotonic() <= deadline:
+        foreground_hwnd = user32.GetForegroundWindow()
+        _, foreground_thread_id = get_window_pid_and_thread(foreground_hwnd)
+        _, target_thread_id = get_window_pid_and_thread(hwnd)
+        attached: list[int] = []
+        try:
+            for thread_id in {foreground_thread_id, target_thread_id}:
+                if thread_id and thread_id != current_thread_id:
+                    if user32.AttachThreadInput(current_thread_id, thread_id, True):
+                        attached.append(thread_id)
+            user32.ShowWindow(hwnd, SW_RESTORE)
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+            if hasattr(user32, "SwitchToThisWindow"):
+                user32.SwitchToThisWindow(hwnd, True)
+        finally:
+            for thread_id in attached:
+                user32.AttachThreadInput(current_thread_id, thread_id, False)
+        if hwnd_to_int(user32.GetForegroundWindow()) == hwnd_to_int(hwnd):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def command_foreground_window(_args: argparse.Namespace) -> int:
+    hwnd = user32.GetForegroundWindow()
+    print_json({"ok": hwnd_to_int(hwnd) != 0, "window": window_info(hwnd)})
+    return 0
+
+
+def command_activate_window(args: argparse.Namespace) -> int:
+    try:
+        if args.hwnd is None and args.pid is None and not args.title_contains:
+            return fail("Provide --hwnd, --pid, or --title-contains.")
+        if args.hwnd is not None:
+            target = window_info(int_to_hwnd(args.hwnd))
+            matches = [target]
+        else:
+            matches = matching_windows(args.pid, args.title_contains)
+            if not matches:
+                return fail("No matching visible top-level window was found.", pid=args.pid, titleContains=args.title_contains)
+            target = matches[0]
+        ok = activate_hwnd(int_to_hwnd(int(target["hwnd"])), args.timeout_ms)
+        payload = {
+            "ok": ok,
+            "action": "activate-window",
+            "target": target,
+            "foreground": window_info(user32.GetForegroundWindow()),
+            "matches": matches[:5],
+        }
+        print_json(payload)
+        return 0 if ok else 2
+    except Exception as exc:  # noqa: BLE001 - CLI boundary
+        return fail(str(exc))
 
 
 def command_move(args: argparse.Namespace) -> int:
@@ -317,6 +529,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--pipe-name", required=True)
     p.add_argument("--timeout-ms", type=int, default=5000)
     p.set_defaults(func=command_probe_bridge)
+
+    p = sub.add_parser("foreground-window")
+    p.set_defaults(func=command_foreground_window)
+
+    p = sub.add_parser("activate-window")
+    p.add_argument("--hwnd", type=int)
+    p.add_argument("--pid", type=int)
+    p.add_argument("--title-contains")
+    p.add_argument("--timeout-ms", type=int, default=3000)
+    p.set_defaults(func=command_activate_window)
 
     p = sub.add_parser("move")
     p.add_argument("--x", type=int, required=True)

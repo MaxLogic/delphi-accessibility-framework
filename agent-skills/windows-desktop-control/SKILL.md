@@ -29,8 +29,9 @@ If the active Codex runtime exposes a first-class computer-control tool, prefer 
 
 1. Use the app's MaxLogic bridge if available. It gives process-local form/control maps and coordinates without trusting UIA as the only source.
 2. Use UIA to cross-check generic apps or to compare actual accessibility output.
-3. Use Win32 pointer/keyboard commands for real user input.
-4. Use screenshots/manual coordinates only when bridge and UIA are not enough.
+3. Activate and verify the intended foreground window before sending input.
+4. Use Win32 pointer/keyboard commands for real user input.
+5. Use screenshots/manual coordinates only when bridge and UIA are not enough.
 
 When UIA is the thing under test, do not use UIA as the only source of target coordinates. Prefer bridge `form.map` target points or another non-UIA geometry source, then use UIA only as a cross-check.
 
@@ -49,6 +50,10 @@ python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py
 # MaxLogic bridge. Pipe name may be either a plain name or \\.\pipe\name.
 python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py probe-bridge --pipe-name MaxLogicAccessibilityAgentBridge.1234
 python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-request --pipe-name MaxLogicAccessibilityAgentBridge.1234 --request '{"cmd":"forms.list"}'
+
+# Foreground safety.
+python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py foreground-window
+python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py activate-window --pid 12345
 
 # Generic Windows input.
 python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py move --x 500 --y 300
@@ -79,6 +84,8 @@ If the response is a successful `hello`, use:
 - Mutation commands only when the app has explicitly enabled them.
 
 For user-realistic tests, prefer OS input for actions (`click`, `type-text`, `tab`) and use bridge responses to choose coordinates and verify state.
+
+Before each OS input batch, use `activate-window --pid <processId>` for the target process and verify `foreground-window` reports that same PID. If activation fails, do not click or type; collect bridge/UIA evidence instead and report the blocker.
 
 ## Speech Evidence
 

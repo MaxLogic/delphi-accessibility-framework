@@ -15,6 +15,10 @@ type
     [Test]
     procedure MsaaPageControlTabHeaderExposesSelectionStateAndDefaultAction;
     [Test]
+    procedure MsaaGetChildReturnsFailureForProviderExceptions;
+    [Test]
+    procedure MsaaChildNavigationDoesNotAliasReceiverAndOutParameter;
+    [Test]
     procedure MsaaFocusReturnsCurrentStringGridCell;
     [Test]
     procedure MsaaCheckboxAndRadioExposePlatformRoleAndState;
@@ -26,6 +30,24 @@ uses
   System.SysUtils, System.Variants, Winapi.ActiveX, Winapi.oleacc, Winapi.Windows, Vcl.ComCtrls, Vcl.Controls,
   Vcl.Forms, Vcl.Grids, Vcl.StdCtrls, MaxLogic.Accessibility.Msaa, MaxLogic.Accessibility.ProviderCore,
   MaxLogic.Accessibility.UIAutomationCore, MaxLogic.Accessibility.VclAdapters;
+
+type
+  TFailingMsaaChildProvider = class(TAccessibilityProviderRoot)
+  protected
+    procedure PrepareChildrenForNavigation; override;
+  public
+    constructor Create;
+  end;
+
+constructor TFailingMsaaChildProvider.Create;
+begin
+  inherited CreateNode([1], 0, nil, nil);
+end;
+
+procedure TFailingMsaaChildProvider.PrepareChildrenForNavigation;
+begin
+  raise Exception.Create('Synthetic provider failure while navigating MSAA children.');
+end;
 
 function FragmentFromProvider(const aProvider: IAccessibilityProviderNode): IRawElementProviderFragment;
 begin
@@ -209,6 +231,65 @@ begin
     Assert.AreEqual(S_OK, lTmsAccessible.accDoDefaultAction(CHILDID_SELF));
     Assert.AreSame(lTabTms, lPageControl.ActivePage);
     Assert.IsTrue((AccessibleState(lTmsAccessible) and STATE_SYSTEM_SELECTED) <> 0);
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityMsaaTests.MsaaGetChildReturnsFailureForProviderExceptions;
+var
+  lAccessible: IAccessible;
+  lDispatch: IDispatch;
+  lProvider: IAccessibilityProviderNode;
+begin
+  lProvider := TFailingMsaaChildProvider.Create as IAccessibilityProviderNode;
+  lAccessible := TAccessibilityMsaaBridge.CreateAccessible(lProvider.RawElementProvider);
+
+  lDispatch := nil;
+  Assert.AreEqual(E_UNEXPECTED, lAccessible.Get_accChild(1, lDispatch));
+  Assert.IsNull(lDispatch);
+end;
+
+procedure TAccessibilityMsaaTests.MsaaChildNavigationDoesNotAliasReceiverAndOutParameter;
+var
+  lAccessible: IAccessible;
+  lChildAccessible: IAccessible;
+  lChildCount: Integer;
+  lChildDispatch: IDispatch;
+  lFirstEdit: TEdit;
+  lForm: TForm;
+  lProvider: IAccessibilityProviderNode;
+  lSecondEdit: TEdit;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 180);
+
+    lFirstEdit := TEdit.Create(lForm);
+    lFirstEdit.Name := 'edtFirst';
+    lFirstEdit.Text := 'First child';
+    lFirstEdit.Parent := lForm;
+
+    lSecondEdit := TEdit.Create(lForm);
+    lSecondEdit.Name := 'edtSecond';
+    lSecondEdit.Text := 'Second child';
+    lSecondEdit.Parent := lForm;
+
+    lForm.HandleNeeded;
+    lFirstEdit.HandleNeeded;
+    lSecondEdit.HandleNeeded;
+
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lAccessible := TAccessibilityMsaaBridge.CreateAccessible(lProvider.RawElementProvider);
+
+    lChildCount := 0;
+    Assert.AreEqual(S_OK, lAccessible.Get_accChildCount(lChildCount));
+    Assert.AreEqual(2, lChildCount);
+
+    lChildDispatch := nil;
+    Assert.AreEqual(S_OK, lAccessible.Get_accChild(2, lChildDispatch));
+    lChildAccessible := AccessibleFromDispatch(lChildDispatch);
+    Assert.AreEqual('Second child', AccessibleName(lChildAccessible));
   finally
     lForm.Free;
   end;

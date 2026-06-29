@@ -209,6 +209,7 @@ function TAccessibilityMsaaProvider.Get_accChildCount(out pcountChildren: Intege
 var
   lChild: IRawElementProviderFragment;
   lFragment: IRawElementProviderFragment;
+  lNextChild: IRawElementProviderFragment;
 begin
   pcountChildren := 0;
   lFragment := Fragment;
@@ -225,10 +226,12 @@ begin
   while lChild <> nil do
   begin
     Inc(pcountChildren);
-    if lChild.Navigate(NavigateDirection_NextSibling, lChild) <> S_OK then
+    lNextChild := nil;
+    if lChild.Navigate(NavigateDirection_NextSibling, lNextChild) <> S_OK then
     begin
       Break;
     end;
+    lChild := lNextChild;
   end;
   Result := S_OK;
 end;
@@ -238,34 +241,47 @@ var
   i: Integer;
   lChild: IRawElementProviderFragment;
   lFragment: IRawElementProviderFragment;
+  lNextChild: IRawElementProviderFragment;
 begin
   ppdispChild := nil;
-  if not VarIsNumeric(varChild) or (Integer(varChild) <= CHILDID_SELF) then
-  begin
-    Exit(E_INVALIDARG);
-  end;
+  try
+    if not VarIsNumeric(varChild) or (Integer(varChild) <= CHILDID_SELF) then
+    begin
+      Exit(E_INVALIDARG);
+    end;
 
-  lFragment := Fragment;
-  if (lFragment = nil) or (lFragment.Navigate(NavigateDirection_FirstChild, lChild) <> S_OK) then
-  begin
-    Exit(S_FALSE);
-  end;
-
-  for i := 2 to Integer(varChild) do
-  begin
-    if (lChild = nil) or (lChild.Navigate(NavigateDirection_NextSibling, lChild) <> S_OK) then
+    lFragment := Fragment;
+    if (lFragment = nil) or (lFragment.Navigate(NavigateDirection_FirstChild, lChild) <> S_OK) then
     begin
       Exit(S_FALSE);
     end;
-  end;
 
-  if lChild = nil then
-  begin
-    Exit(S_FALSE);
-  end;
+    for i := 2 to Integer(varChild) do
+    begin
+      if lChild = nil then
+      begin
+        Exit(S_FALSE);
+      end;
 
-  ppdispChild := TAccessibilityMsaaBridge.CreateAccessible(lChild as IRawElementProviderSimple) as IDispatch;
-  Result := S_OK;
+      lNextChild := nil;
+      if lChild.Navigate(NavigateDirection_NextSibling, lNextChild) <> S_OK then
+      begin
+        Exit(S_FALSE);
+      end;
+      lChild := lNextChild;
+    end;
+
+    if lChild = nil then
+    begin
+      Exit(S_FALSE);
+    end;
+
+    ppdispChild := TAccessibilityMsaaBridge.CreateAccessible(lChild as IRawElementProviderSimple) as IDispatch;
+    Result := S_OK;
+  except
+    ppdispChild := nil;
+    Result := E_UNEXPECTED;
+  end;
 end;
 
 function TAccessibilityMsaaProvider.Get_accName(varChild: OleVariant; out pszName: WideString): HResult;

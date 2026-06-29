@@ -16,6 +16,7 @@ type
     VisibleItemProbeCount: Integer;
     EnsureItemProviderCount: Integer;
     CreatedItemProviderCount: Integer;
+    ItemTextProbeCount: Integer;
     LastElapsedTicks: Int64;
     TotalElapsedTicks: Int64;
     function ToJson(const aScenario: string; const aSource: string): string;
@@ -36,6 +37,7 @@ type
     class procedure RecordListBoxFocusMovement(aElapsedTicks: Int64); static;
     class procedure RecordListBoxGetFocus; static;
     class procedure RecordListBoxGetSelection; static;
+    class procedure RecordListBoxItemTextProbe; static;
     class procedure RecordListBoxNotification(aDisplayStringLength: Integer); static;
     class procedure RecordListBoxPrepareChildren; static;
     class procedure RecordListBoxVisibleItemProbe; static;
@@ -107,8 +109,9 @@ begin
     ',"getSelectionCount":' + IntToStr(GetSelectionCount) + ',"prepareChildrenCount":' +
     IntToStr(PrepareChildrenCount) + ',"visibleItemProbeCount":' + IntToStr(VisibleItemProbeCount) +
     ',"ensureItemProviderCount":' + IntToStr(EnsureItemProviderCount) + ',"createdItemProviderCount":' +
-    IntToStr(CreatedItemProviderCount) + ',"lastElapsedTicks":' + IntToStr(LastElapsedTicks) +
-    ',"totalElapsedTicks":' + IntToStr(TotalElapsedTicks) + '}';
+    IntToStr(CreatedItemProviderCount) + ',"itemTextProbeCount":' + IntToStr(ItemTextProbeCount) +
+    ',"lastElapsedTicks":' + IntToStr(LastElapsedTicks) + ',"totalElapsedTicks":' + IntToStr(TotalElapsedTicks) +
+    '}';
 end;
 
 class procedure TAccessibilityDiagnostics.Configure(const aLogFile: string);
@@ -306,6 +309,24 @@ begin
     if gListBoxFocusMetricsEnabled then
     begin
       Inc(gListBoxFocusMetrics.GetSelectionCount);
+    end;
+  finally
+    TMonitor.Exit(gDiagnosticsLock);
+  end;
+end;
+
+class procedure TAccessibilityDiagnostics.RecordListBoxItemTextProbe;
+begin
+  if not gListBoxFocusMetricsEnabled then
+  begin
+    Exit;
+  end;
+
+  TMonitor.Enter(gDiagnosticsLock);
+  try
+    if gListBoxFocusMetricsEnabled then
+    begin
+      Inc(gListBoxFocusMetrics.ItemTextProbeCount);
     end;
   finally
     TMonitor.Exit(gDiagnosticsLock);

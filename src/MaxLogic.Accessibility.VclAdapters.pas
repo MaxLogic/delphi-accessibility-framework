@@ -191,13 +191,24 @@ type
     ISelectionProvider)
   private
     fItems: TDictionary<Integer, IAccessibilityProviderNode>;
+    fItemRawTexts: TDictionary<Integer, string>;
     fListBox: TCustomListBox;
+    fPreparedClientHeight: Integer;
+    fPreparedClientWidth: Integer;
+    fPreparedFocusedIndex: Integer;
+    fPreparedHandle: HWND;
+    fPreparedItemCount: Integer;
+    fPreparedItemHeight: Integer;
+    fPreparedTopIndex: Integer;
+    fPreparedValid: Boolean;
     fRuntimeId: Integer;
     fUiaApi: IAccessibilityUiaApi;
+    function ChildrenPreparationIsCurrent: Boolean;
     function CreateSelectionArray(const aProviders: TArray<IRawElementProviderSimple>): PSafeArray;
     function EnsureItemProvider(aIndex: Integer): IAccessibilityProviderNode;
     function ItemProvider(aIndex: Integer): IAccessibilityProviderNode;
     function ListBoxOwnsFocus: Boolean;
+    procedure RememberChildrenPreparation;
   protected
     function DoGetPatternProvider(aPatternId: PATTERNID): IUnknown; override;
     procedure PrepareChildrenForNavigation; override;
@@ -470,7 +481,17 @@ begin
   Result := '';
   if (aListBox <> nil) and (aIndex >= 0) and (aIndex < aListBox.Items.Count) then
   begin
+    TAccessibilityDiagnostics.RecordListBoxItemTextProbe;
     Result := TAccessibilityText.Clean(aListBox.Items[aIndex]);
+  end;
+end;
+
+function ListBoxRawItemText(aListBox: TCustomListBox; aIndex: Integer): string;
+begin
+  Result := '';
+  if (aListBox <> nil) and (aIndex >= 0) and (aIndex < aListBox.Items.Count) then
+  begin
+    Result := aListBox.Items[aIndex];
   end;
 end;
 
@@ -498,6 +519,24 @@ end;
 function ListBoxItemIndexExists(aListBox: TCustomListBox; aIndex: Integer): Boolean;
 begin
   Result := (aListBox <> nil) and (aIndex >= 0) and (aIndex < aListBox.Items.Count);
+end;
+
+function ListBoxWindowItemHeight(aListBox: TCustomListBox): Integer;
+var
+  lIndex: Integer;
+begin
+  Result := 0;
+  if (aListBox = nil) or not aListBox.HandleAllocated or (aListBox.Items.Count = 0) then
+  begin
+    Exit;
+  end;
+
+  lIndex := EnsureRange(aListBox.TopIndex, 0, Pred(aListBox.Items.Count));
+  Result := Integer(aListBox.Perform(LB_GETITEMHEIGHT, lIndex, 0));
+  if Result < 0 then
+  begin
+    Result := 0;
+  end;
 end;
 
 function ListBoxOwnsKeyboardFocus(aListBox: TCustomListBox): Boolean;
@@ -2062,9 +2101,18 @@ constructor TAccessibilityListBoxProvider.Create(aListBox: TCustomListBox; aRunt
 begin
   inherited Create(aListBox, [aRuntimeId], UIA_ListControlTypeId, aName, aHelpText, aApi);
   fItems := TDictionary<Integer, IAccessibilityProviderNode>.Create;
+  fItemRawTexts := TDictionary<Integer, string>.Create;
   fListBox := aListBox;
   fRuntimeId := aRuntimeId;
   fUiaApi := aApi;
+end;
+
+function TAccessibilityListBoxProvider.ChildrenPreparationIsCurrent: Boolean;
+begin
+  Result := fPreparedValid and (fListBox <> nil) and (fPreparedHandle = fListBox.Handle) and
+    (fPreparedItemCount = fListBox.Items.Count) and (fPreparedTopIndex = fListBox.TopIndex) and
+    (fPreparedFocusedIndex = fListBox.ItemIndex) and (fPreparedClientWidth = fListBox.ClientWidth) and
+    (fPreparedClientHeight = fListBox.ClientHeight) and (fPreparedItemHeight = ListBoxWindowItemHeight(fListBox));
 end;
 
 function TAccessibilityListBoxProvider.CreateSelectionArray(
@@ -2103,6 +2151,7 @@ end;
 destructor TAccessibilityListBoxProvider.Destroy;
 begin
   fItems.Free;
+  fItemRawTexts.Free;
   inherited Destroy;
 end;
 
@@ -2152,17 +2201,46 @@ end;
 
 function TAccessibilityListBoxProvider.EnsureItemProvider(aIndex: Integer): IAccessibilityProviderNode;
 var
+  lCachedRawText: string;
   lCreated: Boolean;
+  lRawText: string;
 begin
   Result := nil;
-  if (fListBox = nil) or (aIndex < 0) or (aIndex >= fListBox.Items.Count) or
-    (ListBoxItemText(fListBox, aIndex) = '') then
+  if (fListBox = nil) or (aIndex < 0) or (aIndex >= fListBox.Items.Count) then
   begin
     Exit;
   end;
 
+  lRawText := ListBoxRawItemText(fListBox, aIndex);
   lCreated := False;
   Result := ItemProvider(aIndex);
+  if Result <> nil then
+  begin
+    if fItemRawTexts.TryGetValue(aIndex, lCachedRawText) and (lCachedRawText = lRawText) then
+    begin
+      TAccessibilityDiagnostics.RecordListBoxEnsureItemProvider(False);
+      Exit;
+    end;
+
+    if ListBoxItemText(fListBox, aIndex) = '' then
+    begin
+      RemoveChildNode(Result, True);
+      fItems.Remove(aIndex);
+      fItemRawTexts.Remove(aIndex);
+      Result := nil;
+      Exit;
+    end;
+
+    fItemRawTexts.AddOrSetValue(aIndex, lRawText);
+    TAccessibilityDiagnostics.RecordListBoxEnsureItemProvider(False);
+    Exit;
+  end;
+
+  if ListBoxItemText(fListBox, aIndex) = '' then
+  begin
+    Exit;
+  end;
+
   if Result = nil then
   begin
     lCreated := True;
@@ -2170,6 +2248,7 @@ begin
       IAccessibilityProviderNode;
     AddChild(Result);
     fItems.Add(aIndex, Result);
+    fItemRawTexts.AddOrSetValue(aIndex, lRawText);
   end;
   TAccessibilityDiagnostics.RecordListBoxEnsureItemProvider(lCreated);
 end;
@@ -2275,6 +2354,8 @@ begin
     Result := nil;
   end else if Result.IsDisconnected then
   begin
+    fItems.Remove(aIndex);
+    fItemRawTexts.Remove(aIndex);
     Result := nil;
   end;
 end;
@@ -2282,6 +2363,24 @@ end;
 function TAccessibilityListBoxProvider.ListBoxOwnsFocus: Boolean;
 begin
   Result := ListBoxOwnsKeyboardFocus(fListBox);
+end;
+
+procedure TAccessibilityListBoxProvider.RememberChildrenPreparation;
+begin
+  if fListBox = nil then
+  begin
+    fPreparedValid := False;
+    Exit;
+  end;
+
+  fPreparedHandle := fListBox.Handle;
+  fPreparedItemCount := fListBox.Items.Count;
+  fPreparedTopIndex := fListBox.TopIndex;
+  fPreparedFocusedIndex := fListBox.ItemIndex;
+  fPreparedClientWidth := fListBox.ClientWidth;
+  fPreparedClientHeight := fListBox.ClientHeight;
+  fPreparedItemHeight := ListBoxWindowItemHeight(fListBox);
+  fPreparedValid := True;
 end;
 
 procedure TAccessibilityListBoxProvider.PrepareChildrenForNavigation;
@@ -2299,11 +2398,17 @@ begin
     Exit;
   end;
 
+  if ChildrenPreparationIsCurrent then
+  begin
+    Exit;
+  end;
+
   TAccessibilityDiagnostics.RecordListBoxPrepareChildren;
   lFocusedIndex := fListBox.ItemIndex;
   lFocusedPrepared := False;
   if fListBox.Items.Count = 0 then
   begin
+    RememberChildrenPreparation;
     Exit;
   end;
 
@@ -2329,6 +2434,7 @@ begin
   begin
     EnsureItemProvider(lFocusedIndex);
   end;
+  RememberChildrenPreparation;
 end;
 
 constructor TAccessibilityStatusBarProvider.Create(aStatusBar: TCustomStatusBar; const aRuntimeId: array of Integer;

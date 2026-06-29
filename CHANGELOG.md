@@ -4,6 +4,8 @@
 ### Fixed
 - `TListBox` and `TCheckListBox` focus changes no longer queue an extra UIA notification for the same focused item, reducing duplicate screen-reader speech.
 - Large listbox provider preparation now scans visible rows instead of every item, improving focus-change responsiveness in hosts with long list controls.
+- Repeated unchanged listbox provider navigation now reuses the prepared visible/focused item state instead of re-scanning rows, reducing UIA work during screen-reader focus queries.
+- Cached listbox item providers now avoid repeated item-text cleanup on unchanged focus queries while still dropping cached items whose text becomes empty.
 
 ## 2026-06-26
 ### Added

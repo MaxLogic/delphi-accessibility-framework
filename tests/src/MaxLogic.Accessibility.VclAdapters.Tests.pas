@@ -45,6 +45,8 @@ type
     [Test]
     procedure ListBoxItemProviderHandlesStaleItemIndex;
     [Test]
+    procedure ListBoxProviderStopsReturningFocusItemWhenCachedTextBecomesEmpty;
+    [Test]
     procedure StatusBarProviderUsesVisibleStatusText;
     [Test]
     procedure RootHitTestingReturnsDeepestNonWindowedLabel;
@@ -786,6 +788,43 @@ begin
     lListBox.Items.Clear;
     Assert.AreEqual(UIA_E_ELEMENTNOTAVAILABLE, lItemPattern.Get_IsSelected(lIsSelected));
     Assert.AreEqual(UIA_E_ELEMENTNOTAVAILABLE, lItemPattern.RemoveFromSelection);
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityVclAdaptersTests.ListBoxProviderStopsReturningFocusItemWhenCachedTextBecomesEmpty;
+var
+  lFocus: IRawElementProviderFragment;
+  lForm: TForm;
+  lListBox: TListBox;
+  lListBoxFragment: IRawElementProviderFragment;
+  lListBoxRoot: IRawElementProviderFragmentRoot;
+  lProvider: IAccessibilityProviderNode;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 420, 220);
+
+    lListBox := TListBox.Create(lForm);
+    lListBox.Parent := lForm;
+    lListBox.SetBounds(16, 16, 240, 110);
+    lListBox.Items.Add('Queued order');
+    lListBox.ItemIndex := 0;
+
+    lForm.HandleNeeded;
+    lListBox.HandleNeeded;
+    lForm.ActiveControl := lListBox;
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lListBoxFragment := FirstChildFragment(lProvider);
+    Assert.IsTrue(Supports(lListBoxFragment, IRawElementProviderFragmentRoot, lListBoxRoot));
+
+    Assert.AreEqual(S_OK, lListBoxRoot.GetFocus(lFocus));
+    Assert.IsNotNull(lFocus, 'listbox focused item before text change');
+
+    lListBox.Items[0] := '   ';
+    Assert.AreEqual(S_OK, lListBoxRoot.GetFocus(lFocus));
+    Assert.IsNull(lFocus, 'empty cleaned listbox text must not stay exposed through a cached item provider');
   finally
     lForm.Free;
   end;

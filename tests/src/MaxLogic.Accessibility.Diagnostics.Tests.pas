@@ -25,6 +25,12 @@ type
     [Test]
     procedure ListBoxPreparationScalesWithVisibleRows;
     [Test]
+    procedure ListBoxPreparationInvalidatesWhenVisibleStateChanges;
+    [Test]
+    procedure ListBoxRepeatedNavigationPreparationIsIdempotent;
+    [Test]
+    procedure ListBoxCachedFocusProviderAvoidsTextCleanup;
+    [Test]
     procedure ListBoxFocusBaselineArtifactIsWritten;
   end;
 
@@ -33,7 +39,7 @@ implementation
 uses
   System.IOUtils, System.SysUtils, Winapi.ActiveX, Winapi.Messages, Winapi.Windows, Vcl.CheckLst, Vcl.Forms,
   MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.Manager, MaxLogic.Accessibility.ProviderCore,
-  MaxLogic.Accessibility.UIAutomationCore;
+  MaxLogic.Accessibility.UIAutomationCore, MaxLogic.Accessibility.VclAdapters;
 
 type
   TListBoxPerformanceTestUiaApi = class(TInterfacedObject, IAccessibilityUiaApi)
@@ -79,6 +85,12 @@ begin
   TAccessibilityManagerInternals.SetWinEventSink(nil);
 end;
 
+function FragmentRoot(const aProvider: IAccessibilityProviderNode): IRawElementProviderFragmentRoot;
+begin
+  Result := nil;
+  Assert.IsTrue(Supports(aProvider.RawElementProvider, IRawElementProviderFragmentRoot, Result));
+end;
+
 procedure RunCheckListBoxFocusScenario(aItemCount: Integer; out aMetrics: TAccessibilityListBoxFocusMetrics);
 var
   i: Integer;
@@ -113,6 +125,18 @@ begin
     ResetManager;
     TAccessibilityDiagnostics.DisableListBoxFocusMetrics;
   end;
+end;
+
+procedure NavigateListBoxFirstChild(const aRoot: IRawElementProviderFragment; out aItem: IRawElementProviderFragment);
+var
+  lListBox: IRawElementProviderFragment;
+begin
+  aItem := nil;
+  lListBox := nil;
+  Assert.AreEqual(S_OK, aRoot.Navigate(NavigateDirection_FirstChild, lListBox));
+  Assert.IsNotNull(lListBox, 'Listbox provider was not reachable from the form root.');
+  Assert.AreEqual(S_OK, lListBox.Navigate(NavigateDirection_FirstChild, aItem));
+  Assert.IsNotNull(aItem, 'Listbox item provider was not reachable from the listbox provider.');
 end;
 
 function TListBoxPerformanceTestUiaApi.ClientsAreListening: Boolean;
@@ -229,6 +253,129 @@ begin
   Assert.IsTrue(lMetrics.VisibleItemProbeCount <= lMaxProbeCount,
     Format('Listbox preparation inspected %d item rects; expected no more than %d for visible rows.',
     [lMetrics.VisibleItemProbeCount, lMaxProbeCount]));
+end;
+
+procedure TAccessibilityListBoxPerformanceTests.ListBoxPreparationInvalidatesWhenVisibleStateChanges;
+var
+  i: Integer;
+  lForm: TForm;
+  lItem: IRawElementProviderFragment;
+  lListBox: TCheckListBox;
+  lMetrics: TAccessibilityListBoxFocusMetrics;
+  lProvider: IAccessibilityProviderNode;
+  lRoot: IRawElementProviderFragment;
+begin
+  ResetManager;
+  TAccessibilityDiagnostics.EnableListBoxFocusMetrics;
+  TAccessibilityDiagnostics.ResetListBoxFocusMetrics;
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 240);
+    lListBox := TCheckListBox.Create(lForm);
+    lListBox.Parent := lForm;
+    lListBox.SetBounds(16, 16, 280, 140);
+    for i := 0 to 179 do
+    begin
+      lListBox.Items.Add(Format('Client %.4d', [i]));
+    end;
+    lListBox.ItemIndex := 0;
+    lListBox.HandleNeeded;
+    lForm.ActiveControl := lListBox;
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lRoot := lProvider.FragmentProvider;
+
+    NavigateListBoxFirstChild(lRoot, lItem);
+    NavigateListBoxFirstChild(lRoot, lItem);
+    lListBox.TopIndex := 3;
+    NavigateListBoxFirstChild(lRoot, lItem);
+    lListBox.Height := lListBox.Height + 32;
+    NavigateListBoxFirstChild(lRoot, lItem);
+    lListBox.Items.Add('Client 0180');
+    NavigateListBoxFirstChild(lRoot, lItem);
+    lListBox.ItemIndex := 2;
+    NavigateListBoxFirstChild(lRoot, lItem);
+
+    lMetrics := TAccessibilityDiagnostics.ListBoxFocusMetrics;
+    Assert.AreEqual(5, lMetrics.PrepareChildrenCount,
+      'Listbox preparation should run once initially, skip the unchanged repeat, then run once per visible/focus state change.');
+    Assert.IsTrue(lMetrics.VisibleItemProbeCount <= 120,
+      Format('Listbox invalidation probe count was %d; expected no more than one visible pass per changed state.',
+      [lMetrics.VisibleItemProbeCount]));
+  finally
+    lForm.Free;
+    ResetManager;
+    TAccessibilityDiagnostics.DisableListBoxFocusMetrics;
+  end;
+end;
+
+procedure TAccessibilityListBoxPerformanceTests.ListBoxRepeatedNavigationPreparationIsIdempotent;
+var
+  lMaxEnsureCount: Integer;
+  lMaxProbeCount: Integer;
+  lMetrics: TAccessibilityListBoxFocusMetrics;
+begin
+  RunCheckListBoxFocusScenario(180, lMetrics);
+
+  lMaxProbeCount := 24;
+  lMaxEnsureCount := 26;
+  Assert.IsTrue(lMetrics.PrepareChildrenCount <= 2,
+    Format('Listbox repeated unchanged navigation prepared children %d times; expected at most 2 real passes.',
+    [lMetrics.PrepareChildrenCount]));
+  Assert.IsTrue(lMetrics.VisibleItemProbeCount <= lMaxProbeCount,
+    Format('Listbox repeated unchanged navigation inspected %d item rects; expected no more than %d.',
+    [lMetrics.VisibleItemProbeCount, lMaxProbeCount]));
+  Assert.IsTrue(lMetrics.EnsureItemProviderCount <= lMaxEnsureCount,
+    Format('Listbox repeated unchanged navigation ensured %d item providers; expected no more than %d.',
+    [lMetrics.EnsureItemProviderCount, lMaxEnsureCount]));
+end;
+
+procedure TAccessibilityListBoxPerformanceTests.ListBoxCachedFocusProviderAvoidsTextCleanup;
+var
+  i: Integer;
+  lFocus: IRawElementProviderFragment;
+  lForm: TForm;
+  lItem: IRawElementProviderFragment;
+  lListBox: TCheckListBox;
+  lMetrics: TAccessibilityListBoxFocusMetrics;
+  lProvider: IAccessibilityProviderNode;
+  lRoot: IRawElementProviderFragmentRoot;
+begin
+  ResetManager;
+  TAccessibilityDiagnostics.EnableListBoxFocusMetrics;
+  TAccessibilityDiagnostics.ResetListBoxFocusMetrics;
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 240);
+    lListBox := TCheckListBox.Create(lForm);
+    lListBox.Parent := lForm;
+    lListBox.SetBounds(16, 16, 280, 140);
+    for i := 0 to 29 do
+    begin
+      lListBox.Items.Add(Format('Client %.4d', [i]));
+    end;
+    lListBox.ItemIndex := 0;
+    lListBox.HandleNeeded;
+    lForm.ActiveControl := lListBox;
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lRoot := FragmentRoot(lProvider);
+
+    NavigateListBoxFirstChild(lProvider.FragmentProvider, lItem);
+    TAccessibilityDiagnostics.ResetListBoxFocusMetrics;
+
+    Assert.AreEqual(S_OK, lRoot.GetFocus(lFocus));
+    Assert.IsNotNull(lFocus, 'Cached focused listbox item provider was not returned.');
+
+    lMetrics := TAccessibilityDiagnostics.ListBoxFocusMetrics;
+    Assert.AreEqual(1, lMetrics.GetFocusCount);
+    Assert.AreEqual(1, lMetrics.EnsureItemProviderCount);
+    Assert.AreEqual(0, lMetrics.CreatedItemProviderCount);
+    Assert.AreEqual(0, lMetrics.ItemTextProbeCount,
+      'Cached focused listbox item provider should return without re-cleaning item text.');
+  finally
+    lForm.Free;
+    ResetManager;
+    TAccessibilityDiagnostics.DisableListBoxFocusMetrics;
+  end;
 end;
 
 procedure TAccessibilityListBoxPerformanceTests.ListBoxFocusMetricsAreGatedAndCaptureFocusPath;

@@ -3209,11 +3209,8 @@ begin
     Assert.AreEqual(2, lListBox.ItemIndex);
     Assert.AreEqual(2, lApi.EventCalls);
     Assert.AreEqual(UIA_SelectionItem_ElementSelectedEventId, lApi.LastEventId);
-    Assert.AreEqual(1, lApi.NotificationCalls);
-    Assert.AreEqual('Completed action', lApi.LastNotificationText);
+    Assert.AreEqual(0, lApi.NotificationCalls);
     Assert.AreEqual('Completed action', ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider),
-      UIA_NamePropertyId));
-    Assert.AreEqual('Completed action', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
       UIA_NamePropertyId));
   finally
     lForm.Free;

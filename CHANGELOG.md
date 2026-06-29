@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-06-29
+### Fixed
+- `TListBox` and `TCheckListBox` focus changes no longer queue an extra UIA notification for the same focused item, reducing duplicate screen-reader speech.
+- Large listbox provider preparation now scans visible rows instead of every item, improving focus-change responsiveness in hosts with long list controls.
+
 ## 2026-06-26
 ### Added
 - Added `TAccessibilityManager.Run(Application)` as a one-call app-wide lifecycle helper that installs accessibility, runs the VCL message loop, and uninstalls on shutdown.

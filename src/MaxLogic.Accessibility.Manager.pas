@@ -39,7 +39,7 @@ type
 implementation
 
 uses
-  System.Classes, System.Generics.Collections, System.SysUtils, System.Types, Winapi.Messages, Vcl.ComCtrls,
+  System.Classes, System.Diagnostics, System.Generics.Collections, System.SysUtils, System.Types, Winapi.Messages, Vcl.ComCtrls,
   Vcl.Controls, Vcl.ExtCtrls, Vcl.Grids, Vcl.StdCtrls, MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.Hints,
   MaxLogic.Accessibility.Msaa, MaxLogic.Accessibility.UIAutomationCore,
   MaxLogic.Accessibility.VclAdapters;
@@ -1516,9 +1516,11 @@ end;
 procedure TAccessibilityControlWindowHook.RaiseListBoxFocusChanged;
 var
   lFocus: IRawElementProviderFragment;
-  lFocusName: string;
   lFocusProvider: IRawElementProviderSimple;
+  lMetricsEnabled: Boolean;
+  lRecordedMovement: Boolean;
   lRoot: IRawElementProviderFragmentRoot;
+  lStopwatch: TStopwatch;
 begin
   if (fProvider = nil) or not (fControl is TCustomListBox) or
     not Supports(fProvider, IRawElementProviderFragmentRoot, lRoot) then
@@ -1526,23 +1528,33 @@ begin
     Exit;
   end;
 
-  if (lRoot.GetFocus(lFocus) <> S_OK) or (lFocus = nil) then
+  lMetricsEnabled := TAccessibilityDiagnostics.ListBoxFocusMetricsEnabled;
+  lRecordedMovement := False;
+  if lMetricsEnabled then
   begin
-    Exit;
+    lStopwatch := TStopwatch.StartNew;
   end;
+  try
+    if (lRoot.GetFocus(lFocus) <> S_OK) or (lFocus = nil) then
+    begin
+      Exit;
+    end;
 
-  if not Supports(lFocus, IRawElementProviderSimple, lFocusProvider) then
-  begin
-    Exit;
-  end;
+    if not Supports(lFocus, IRawElementProviderSimple, lFocusProvider) then
+    begin
+      Exit;
+    end;
 
-  TAccessibilityProviderEvents.RaiseAutomationEvent(lFocusProvider, UIA_AutomationFocusChangedEventId, fApi);
-  TAccessibilityProviderEvents.RaiseAutomationEvent(lFocusProvider, UIA_SelectionItem_ElementSelectedEventId, fApi);
-  lFocusName := ProviderName(lFocusProvider);
-  if lFocusName <> '' then
-  begin
-    TAccessibilityProviderEvents.RaiseNotification(lFocusProvider, NotificationKind_Other,
-      NotificationProcessing_MostRecent, lFocusName, 'vcl-listbox-item-focus', fApi);
+    lRecordedMovement := True;
+    TAccessibilityDiagnostics.RecordListBoxAutomationEvent(UIA_AutomationFocusChangedEventId);
+    TAccessibilityProviderEvents.RaiseAutomationEvent(lFocusProvider, UIA_AutomationFocusChangedEventId, fApi);
+    TAccessibilityDiagnostics.RecordListBoxAutomationEvent(UIA_SelectionItem_ElementSelectedEventId);
+    TAccessibilityProviderEvents.RaiseAutomationEvent(lFocusProvider, UIA_SelectionItem_ElementSelectedEventId, fApi);
+  finally
+    if lMetricsEnabled and lRecordedMovement then
+    begin
+      TAccessibilityDiagnostics.RecordListBoxFocusMovement(lStopwatch.ElapsedTicks);
+    end;
   end;
 end;
 

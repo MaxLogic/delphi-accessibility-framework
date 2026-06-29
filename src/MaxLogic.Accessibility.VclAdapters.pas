@@ -38,7 +38,7 @@ implementation
 uses
   System.Actions, System.Classes, System.Generics.Collections, System.Math, System.SysUtils, System.Types, System.TypInfo,
   Winapi.ActiveX, Winapi.Messages, Winapi.Windows, Vcl.Buttons, Vcl.ComCtrls, Vcl.ExtCtrls, Vcl.Grids, Vcl.StdCtrls,
-  MaxLogic.Accessibility.Text, MaxLogic.Accessibility.UIAutomationCore;
+  MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.Text, MaxLogic.Accessibility.UIAutomationCore;
 
 type
   IAccessibilityVclRootProvider = interface
@@ -474,6 +474,12 @@ begin
   end;
 end;
 
+function ListBoxItemRectIsVisible(aListBox: TCustomListBox; const aItemRect: TRect): Boolean;
+begin
+  Result := (aListBox <> nil) and (aItemRect.Width > 0) and (aItemRect.Height > 0) and
+    aItemRect.IntersectsWith(Rect(0, 0, aListBox.ClientWidth, aListBox.ClientHeight));
+end;
+
 function ListBoxItemIsVisible(aListBox: TCustomListBox; aIndex: Integer): Boolean;
 var
   lItemRect: TRect;
@@ -486,8 +492,7 @@ begin
   end;
 
   lItemRect := aListBox.ItemRect(aIndex);
-  Result := (lItemRect.Width > 0) and (lItemRect.Height > 0) and
-    lItemRect.IntersectsWith(Rect(0, 0, aListBox.ClientWidth, aListBox.ClientHeight));
+  Result := ListBoxItemRectIsVisible(aListBox, lItemRect);
 end;
 
 function ListBoxItemIndexExists(aListBox: TCustomListBox; aIndex: Integer): Boolean;
@@ -2146,6 +2151,8 @@ begin
 end;
 
 function TAccessibilityListBoxProvider.EnsureItemProvider(aIndex: Integer): IAccessibilityProviderNode;
+var
+  lCreated: Boolean;
 begin
   Result := nil;
   if (fListBox = nil) or (aIndex < 0) or (aIndex >= fListBox.Items.Count) or
@@ -2154,14 +2161,17 @@ begin
     Exit;
   end;
 
+  lCreated := False;
   Result := ItemProvider(aIndex);
   if Result = nil then
   begin
+    lCreated := True;
     Result := TAccessibilityListBoxItemProvider.Create(fListBox, aIndex, [fRuntimeId, aIndex], fUiaApi) as
       IAccessibilityProviderNode;
     AddChild(Result);
     fItems.Add(aIndex, Result);
   end;
+  TAccessibilityDiagnostics.RecordListBoxEnsureItemProvider(lCreated);
 end;
 
 function TAccessibilityListBoxProvider.GetFocus(out aRetVal: IRawElementProviderFragment): HResult;
@@ -2174,6 +2184,7 @@ begin
     Exit(UIA_E_ELEMENTNOTAVAILABLE);
   end;
 
+  TAccessibilityDiagnostics.RecordListBoxGetFocus;
   if ListBoxOwnsFocus then
   begin
     lItem := EnsureItemProvider(fListBox.ItemIndex);
@@ -2220,6 +2231,7 @@ begin
     Exit(UIA_E_ELEMENTNOTAVAILABLE);
   end;
 
+  TAccessibilityDiagnostics.RecordListBoxGetSelection;
   lSelectedProviders := TList<IRawElementProviderSimple>.Create;
   try
     if fListBox.MultiSelect then
@@ -2274,7 +2286,12 @@ end;
 
 procedure TAccessibilityListBoxProvider.PrepareChildrenForNavigation;
 var
+  lFocusedPrepared: Boolean;
   i: Integer;
+  lFocusedIndex: Integer;
+  lItemRect: TRect;
+  lLastIndex: Integer;
+  lTopIndex: Integer;
 begin
   inherited PrepareChildrenForNavigation;
   if (fListBox = nil) or not ControlIsInActiveVisibleTree(fListBox) then
@@ -2282,12 +2299,35 @@ begin
     Exit;
   end;
 
-  for i := 0 to Pred(fListBox.Items.Count) do
+  TAccessibilityDiagnostics.RecordListBoxPrepareChildren;
+  lFocusedIndex := fListBox.ItemIndex;
+  lFocusedPrepared := False;
+  if fListBox.Items.Count = 0 then
   begin
-    if ListBoxItemIsVisible(fListBox, i) then
+    Exit;
+  end;
+
+  lLastIndex := Pred(fListBox.Items.Count);
+  lTopIndex := EnsureRange(fListBox.TopIndex, 0, lLastIndex);
+  for i := lTopIndex to lLastIndex do
+  begin
+    TAccessibilityDiagnostics.RecordListBoxVisibleItemProbe;
+    lItemRect := fListBox.ItemRect(i);
+    if (i > lTopIndex) and (lItemRect.Top >= fListBox.ClientHeight) then
+    begin
+      Break;
+    end;
+
+    if ListBoxItemRectIsVisible(fListBox, lItemRect) then
     begin
       EnsureItemProvider(i);
+      lFocusedPrepared := lFocusedPrepared or (i = lFocusedIndex);
     end;
+  end;
+
+  if (not lFocusedPrepared) and ListBoxItemIndexExists(fListBox, lFocusedIndex) then
+  begin
+    EnsureItemProvider(lFocusedIndex);
   end;
 end;
 

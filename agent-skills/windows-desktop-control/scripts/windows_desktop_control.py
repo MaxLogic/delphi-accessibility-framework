@@ -15,10 +15,10 @@ import winsound
 
 PIPE_PREFIX = "\\\\.\\pipe\\"
 START_TEXT = (
-    "I am taking over control now. Please move away from the mouse and keyboard. "
-    "I will begin in three seconds."
+    "Quick heads-up: I am going to borrow the mouse and keyboard for a moment. "
+    "Please lift your hands, enjoy a tiny coffee break, and I will start in three seconds."
 )
-DONE_TEXT = "Thanks, I am done. You may resume work now."
+DONE_TEXT = "All done. The mouse and keyboard are yours again. Thanks for the tiny coffee break."
 SCRIPT_DIR = Path(__file__).resolve().parent
 SKILL_DIR = SCRIPT_DIR.parent
 ANNOUNCEMENT_DIR = SKILL_DIR / "assets" / "announcements"

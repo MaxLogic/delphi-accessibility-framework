@@ -1192,9 +1192,22 @@ begin
     IAccessibilityProviderNode;
 end;
 
-function TryFindTabHeaderProviderFromPoint(const aFragment: IRawElementProviderFragment; aX: Double; aY: Double;
-  out aProvider: IRawElementProviderFragment): Boolean;
+type
+  THitTestCandidates = record
+    TabHeader: IRawElementProviderFragment;
+    VisibleControl: IRawElementProviderFragment;
+  end;
+
+function UiaRectContainsPoint(const aRect: UiaRect; aX: Double; aY: Double): Boolean;
+begin
+  Result := (aX >= aRect.Left) and (aY >= aRect.Top) and (aX < aRect.Left + aRect.Width) and
+    (aY < aRect.Top + aRect.Height);
+end;
+
+procedure FindHitTestCandidatesFromPoint(const aFragment: IRawElementProviderFragment; aX: Double; aY: Double;
+  const aScreenPoint: TPoint; var aCandidates: THitTestCandidates);
 var
+  lBounds: UiaRect;
   lChild: IRawElementProviderFragment;
   lControl: TControl;
   lInfo: IAccessibilityVclControlProviderInfo;
@@ -1205,13 +1218,12 @@ var
   lTabRect: TRect;
   lTabSheet: TTabSheet;
 begin
-  aProvider := nil;
-  Result := False;
   if aFragment = nil then
   begin
     Exit;
   end;
 
+  lControl := nil;
   if Supports(aFragment, IAccessibilityVclControlProviderInfo, lInfo) then
   begin
     lControl := lInfo.Control;
@@ -1224,65 +1236,23 @@ begin
         lTabRect := lPageControl.TabRect(lTabSheet.TabIndex);
         lPoint := lPageControl.ClientToScreen(lTabRect.TopLeft);
         lScreenRect := Rect(lPoint.X, lPoint.Y, lPoint.X + lTabRect.Width, lPoint.Y + lTabRect.Height);
-        if PtInRect(lScreenRect, Point(Integer(Round(aX)), Integer(Round(aY)))) then
+        if PtInRect(lScreenRect, aScreenPoint) then
         begin
-          aProvider := aFragment;
-          Exit(True);
+          aCandidates.TabHeader := aFragment;
+          Exit;
         end;
       end;
     end;
-  end;
-
-  if aFragment.Navigate(NavigateDirection_FirstChild, lChild) <> S_OK then
-  begin
-    Exit;
-  end;
-
-  while lChild <> nil do
-  begin
-    if TryFindTabHeaderProviderFromPoint(lChild, aX, aY, aProvider) then
-    begin
-      Exit(True);
-    end;
-
-    lNextChild := nil;
-    if lChild.Navigate(NavigateDirection_NextSibling, lNextChild) <> S_OK then
-    begin
-      Exit;
-    end;
-    lChild := lNextChild;
-  end;
-end;
-
-function UiaRectContainsPoint(const aRect: UiaRect; aX: Double; aY: Double): Boolean;
-begin
-  Result := (aX >= aRect.Left) and (aY >= aRect.Top) and (aX < aRect.Left + aRect.Width) and
-    (aY < aRect.Top + aRect.Height);
-end;
-
-function TryFindVisibleControlProviderFromPoint(const aFragment: IRawElementProviderFragment; aX: Double; aY: Double;
-  out aProvider: IRawElementProviderFragment): Boolean;
-var
-  lBounds: UiaRect;
-  lChild: IRawElementProviderFragment;
-  lControl: TControl;
-  lInfo: IAccessibilityVclControlProviderInfo;
-  lNextChild: IRawElementProviderFragment;
-begin
-  aProvider := nil;
-  Result := False;
-  if aFragment = nil then
-  begin
-    Exit;
   end;
 
   if aFragment.Navigate(NavigateDirection_FirstChild, lChild) = S_OK then
   begin
     while lChild <> nil do
     begin
-      if TryFindVisibleControlProviderFromPoint(lChild, aX, aY, aProvider) then
+      FindHitTestCandidatesFromPoint(lChild, aX, aY, aScreenPoint, aCandidates);
+      if aCandidates.TabHeader <> nil then
       begin
-        Exit(True);
+        Exit;
       end;
 
       lNextChild := nil;
@@ -1294,14 +1264,12 @@ begin
     end;
   end;
 
-  if Supports(aFragment, IAccessibilityVclControlProviderInfo, lInfo) then
+  if (aCandidates.VisibleControl = nil) and (lControl <> nil) then
   begin
-    lControl := lInfo.Control;
     if ControlIsInActiveVisibleTree(lControl) and (aFragment.Get_BoundingRectangle(lBounds) = S_OK) and
       UiaRectContainsPoint(lBounds, aX, aY) then
     begin
-      aProvider := aFragment;
-      Exit(True);
+      aCandidates.VisibleControl := aFragment;
     end;
   end;
 end;
@@ -1329,13 +1297,19 @@ end;
 function TAccessibilityVclFormProviderRoot.DoElementProviderFromPoint(aX: Double; aY: Double;
   out aProvider: IRawElementProviderFragment): HResult;
 var
+  lCandidates: THitTestCandidates;
   i: Integer;
   lProvider: IRawElementProviderFragment;
   lResult: HResult;
+  lScreenPoint: TPoint;
 begin
   aProvider := nil;
-  if TryFindTabHeaderProviderFromPoint(FragmentProvider, aX, aY, aProvider) then
+  lCandidates := Default(THitTestCandidates);
+  lScreenPoint := Point(Integer(Round(aX)), Integer(Round(aY)));
+  FindHitTestCandidatesFromPoint(FragmentProvider, aX, aY, lScreenPoint, lCandidates);
+  if lCandidates.TabHeader <> nil then
   begin
+    aProvider := lCandidates.TabHeader;
     Exit(S_OK);
   end;
 
@@ -1361,8 +1335,9 @@ begin
     end;
   end;
 
-  if TryFindVisibleControlProviderFromPoint(FragmentProvider, aX, aY, aProvider) then
+  if lCandidates.VisibleControl <> nil then
   begin
+    aProvider := lCandidates.VisibleControl;
     Exit(S_OK);
   end;
 

@@ -51,14 +51,16 @@ type
     [Test]
     procedure RootHitTestingReturnsDeepestNonWindowedLabel;
     [Test]
+    procedure RootHitTestingAvoidsRepeatedProviderTreeWalks;
+    [Test]
     procedure SpeedButtonProviderSupportsInvokeAndOptionalToggle;
   end;
 
 implementation
 
 uses
-  System.SysUtils, System.Types, System.Variants, Winapi.ActiveX, Winapi.Messages, Winapi.Windows, Vcl.Buttons,
-  Vcl.Controls, Vcl.ComCtrls, Vcl.ExtCtrls, Vcl.Forms, Vcl.Grids, Vcl.StdCtrls, DUnitX.Assert,
+  System.Diagnostics, System.SysUtils, System.Types, System.Variants, Winapi.ActiveX, Winapi.Messages, Winapi.Windows,
+  Vcl.Buttons, Vcl.Controls, Vcl.ComCtrls, Vcl.ExtCtrls, Vcl.Forms, Vcl.Grids, Vcl.StdCtrls, DUnitX.Assert,
   MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.Scanner, MaxLogic.Accessibility.UIAutomationCore,
   MaxLogic.Accessibility.VclAdapters;
 
@@ -1409,6 +1411,58 @@ begin
     AssertNamedControlType(lProvider.FragmentProvider, 'OrdersGrid', UIA_DataGridControlTypeId);
   finally
     lRecorder.Free;
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityVclAdaptersTests.RootHitTestingAvoidsRepeatedProviderTreeWalks;
+const
+  cControlCount = 700;
+  cIterations = 100;
+  cMaxElapsedTicks = 220000;
+var
+  i: Integer;
+  lForm: TForm;
+  lHit: IRawElementProviderFragment;
+  lLabel: TLabel;
+  lPoint: TPoint;
+  lProvider: IAccessibilityProviderNode;
+  lRoot: IRawElementProviderFragmentRoot;
+  lStopwatch: TStopwatch;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 900, 900);
+
+    for i := 1 to cControlCount do
+    begin
+      lLabel := TLabel.Create(lForm);
+      lLabel.Caption := Format('Hit node %d', [i]);
+      lLabel.Parent := lForm;
+      lLabel.SetBounds(8 + ((i - 1) mod 20) * 40, 8 + ((i - 1) div 20) * 22, 36, 18);
+    end;
+
+    lForm.HandleNeeded;
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lRoot := FragmentRoot(lProvider);
+    lPoint := ControlScreenCenter(lLabel);
+
+    Assert.AreEqual(S_OK, lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit));
+    Assert.AreEqual(Format('Hit node %d', [cControlCount]), ProviderStringProperty(lHit, UIA_NamePropertyId));
+
+    lStopwatch := TStopwatch.StartNew;
+    for i := 1 to cIterations do
+    begin
+      lHit := nil;
+      Assert.AreEqual(S_OK, lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit));
+      Assert.IsNotNull(lHit);
+    end;
+    lStopwatch.Stop;
+
+    Assert.IsTrue(lStopwatch.ElapsedTicks <= cMaxElapsedTicks,
+      Format('Root hit testing should avoid repeated full tree walks; elapsed=%d ticks for %d controls and %d calls.',
+      [lStopwatch.ElapsedTicks, cControlCount, cIterations]));
+  finally
     lForm.Free;
   end;
 end;

@@ -1947,11 +1947,16 @@ end;
 
 procedure TAccessibilityMemoProvider.PrepareChildrenForNavigation;
 var
+  lCaretLine: Integer;
+  lCaretLineResult: LRESULT;
   lCreatedCount: Integer;
   lExistingProvider: IAccessibilityProviderNode;
+  lFirstVisibleLine: Integer;
   lLine: Integer;
   lLineCount: LRESULT;
   lLineProbeCount: Integer;
+  lLastVisibleLine: Integer;
+  lLineHeight: Integer;
   lMetricsEnabled: Boolean;
   lStopwatch: TStopwatch;
 begin
@@ -1970,7 +1975,16 @@ begin
   end;
 
   lLineCount := fMemo.Perform(EM_GETLINECOUNT, 0, 0);
-  for lLine := 0 to Pred(Integer(lLineCount)) do
+  if lLineCount <= 0 then
+  begin
+    Exit;
+  end;
+
+  lLineHeight := TextLineHeight(fMemo);
+  lFirstVisibleLine := Integer(fMemo.Perform(EM_GETFIRSTVISIBLELINE, 0, 0));
+  lFirstVisibleLine := EnsureRange(lFirstVisibleLine, 0, Pred(Integer(lLineCount)));
+  lLastVisibleLine := Min(Pred(Integer(lLineCount)), lFirstVisibleLine + Max(1, fMemo.ClientHeight div lLineHeight) + 1);
+  for lLine := lFirstVisibleLine to lLastVisibleLine do
   begin
     if lMetricsEnabled then
     begin
@@ -1983,6 +1997,27 @@ begin
       end;
     end else begin
       EnsureLineProvider(lLine);
+    end;
+  end;
+
+  lCaretLineResult := fMemo.Perform(EM_LINEFROMCHAR, fMemo.SelStart, 0);
+  if (lCaretLineResult >= 0) and (lCaretLineResult < lLineCount) then
+  begin
+    lCaretLine := Integer(lCaretLineResult);
+    if (lCaretLine < lFirstVisibleLine) or (lCaretLine > lLastVisibleLine) then
+    begin
+      if lMetricsEnabled then
+      begin
+        Inc(lLineProbeCount);
+        lExistingProvider := LineProvider(lCaretLine);
+        EnsureLineProvider(lCaretLine);
+        if (lExistingProvider = nil) and (LineProvider(lCaretLine) <> nil) then
+        begin
+          Inc(lCreatedCount);
+        end;
+      end else begin
+        EnsureLineProvider(lCaretLine);
+      end;
     end;
   end;
 

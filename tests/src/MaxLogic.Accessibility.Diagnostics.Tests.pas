@@ -438,10 +438,13 @@ begin
     lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
     Assert.IsTrue(lMetrics.Enabled);
     Assert.AreEqual(1, lMetrics.MemoPrepareChildrenCount);
-    Assert.IsTrue(lMetrics.MemoLineProbeCount >= 40,
-      Format('Memo line probe count was %d; expected at least the 40 populated fixture lines.',
+    Assert.IsTrue(lMetrics.MemoLineProbeCount <= 12,
+      Format('Memo line probe count was %d; expected preparation to stay within visible lines plus focus line.',
       [lMetrics.MemoLineProbeCount]));
     Assert.IsTrue(lMetrics.MemoLineProviderCreatedCount > 0, 'Memo line provider creation was not captured.');
+    Assert.IsTrue(lMetrics.MemoLineProviderCreatedCount <= 12,
+      Format('Memo line provider creation was %d; expected bounded visible-line preparation.',
+      [lMetrics.MemoLineProviderCreatedCount]));
     Assert.IsTrue(lMetrics.MemoPrepareChildrenLastElapsedTicks > 0,
       'Memo preparation elapsed ticks were not captured.');
   finally

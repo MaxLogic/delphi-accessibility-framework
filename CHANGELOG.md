@@ -4,6 +4,9 @@
 ### Added
 - Added provider hotspot diagnostics for memo line preparation, VCL `TStringGrid` refresh, TMS `TAdvStringGrid` refresh, and listbox `GetSelection` so performance work can be driven by measured provider-query costs.
 
+### Fixed
+- Memo provider navigation now prepares only visible logical lines plus an out-of-view caret line instead of creating providers for every memo line.
+
 ## 2026-06-29
 ### Fixed
 - `TListBox` and `TCheckListBox` focus changes no longer queue an extra UIA notification for the same focused item, reducing duplicate screen-reader speech.

@@ -1415,16 +1415,127 @@ begin
   end;
 end;
 
+function LegacyUiaRectContainsPoint(const aRect: UiaRect; aX: Double; aY: Double): Boolean;
+begin
+  Result := (aX >= aRect.Left) and (aY >= aRect.Top) and (aX < aRect.Left + aRect.Width) and
+    (aY < aRect.Top + aRect.Height);
+end;
+
+function LegacyTryFindTabHeaderProviderFromPoint(const aFragment: IRawElementProviderFragment; aX: Double; aY: Double;
+  out aProvider: IRawElementProviderFragment): Boolean;
+var
+  lChild: IRawElementProviderFragment;
+  lControl: TControl;
+  lInfo: IAccessibilityVclControlProviderInfo;
+  lNextChild: IRawElementProviderFragment;
+begin
+  aProvider := nil;
+  Result := False;
+  if aFragment = nil then
+  begin
+    Exit;
+  end;
+
+  if Supports(aFragment, IAccessibilityVclControlProviderInfo, lInfo) then
+  begin
+    lControl := lInfo.Control;
+    if lControl is TTabSheet then
+    begin
+      Exit;
+    end;
+  end;
+
+  if aFragment.Navigate(NavigateDirection_FirstChild, lChild) <> S_OK then
+  begin
+    Exit;
+  end;
+
+  while lChild <> nil do
+  begin
+    if LegacyTryFindTabHeaderProviderFromPoint(lChild, aX, aY, aProvider) then
+    begin
+      Exit(True);
+    end;
+
+    lNextChild := nil;
+    if lChild.Navigate(NavigateDirection_NextSibling, lNextChild) <> S_OK then
+    begin
+      Exit;
+    end;
+    lChild := lNextChild;
+  end;
+end;
+
+function LegacyTryFindVisibleControlProviderFromPoint(const aFragment: IRawElementProviderFragment; aX: Double;
+  aY: Double; out aProvider: IRawElementProviderFragment): Boolean;
+var
+  lBounds: UiaRect;
+  lChild: IRawElementProviderFragment;
+  lInfo: IAccessibilityVclControlProviderInfo;
+  lNextChild: IRawElementProviderFragment;
+begin
+  aProvider := nil;
+  Result := False;
+  if aFragment = nil then
+  begin
+    Exit;
+  end;
+
+  if aFragment.Navigate(NavigateDirection_FirstChild, lChild) = S_OK then
+  begin
+    while lChild <> nil do
+    begin
+      if LegacyTryFindVisibleControlProviderFromPoint(lChild, aX, aY, aProvider) then
+      begin
+        Exit(True);
+      end;
+
+      lNextChild := nil;
+      if lChild.Navigate(NavigateDirection_NextSibling, lNextChild) <> S_OK then
+      begin
+        Break;
+      end;
+      lChild := lNextChild;
+    end;
+  end;
+
+  if Supports(aFragment, IAccessibilityVclControlProviderInfo, lInfo) and
+    (aFragment.Get_BoundingRectangle(lBounds) = S_OK) and LegacyUiaRectContainsPoint(lBounds, aX, aY) then
+  begin
+    aProvider := aFragment;
+    Exit(True);
+  end;
+end;
+
+function LegacyElementProviderFromPoint(const aFragment: IRawElementProviderFragment; aX: Double; aY: Double;
+  out aProvider: IRawElementProviderFragment): HResult;
+begin
+  aProvider := nil;
+  if LegacyTryFindTabHeaderProviderFromPoint(aFragment, aX, aY, aProvider) then
+  begin
+    Exit(S_OK);
+  end;
+
+  if LegacyTryFindVisibleControlProviderFromPoint(aFragment, aX, aY, aProvider) then
+  begin
+    Exit(S_OK);
+  end;
+
+  Result := S_FALSE;
+end;
+
 procedure TAccessibilityVclAdaptersTests.RootHitTestingAvoidsRepeatedProviderTreeWalks;
 const
   cControlCount = 700;
   cIterations = 100;
-  cMaxElapsedTicks = 220000;
+  cMaxOptimizedPercent = 85;
 var
   i: Integer;
   lForm: TForm;
   lHit: IRawElementProviderFragment;
   lLabel: TLabel;
+  lLegacyTicks: Int64;
+  lOptimizedTicks: Int64;
   lPoint: TPoint;
   lProvider: IAccessibilityProviderNode;
   lRoot: IRawElementProviderFragmentRoot;
@@ -1454,14 +1565,25 @@ begin
     for i := 1 to cIterations do
     begin
       lHit := nil;
+      Assert.AreEqual(S_OK, LegacyElementProviderFromPoint(lProvider.FragmentProvider, lPoint.X, lPoint.Y, lHit));
+      Assert.IsNotNull(lHit);
+    end;
+    lStopwatch.Stop;
+    lLegacyTicks := lStopwatch.ElapsedTicks;
+
+    lStopwatch := TStopwatch.StartNew;
+    for i := 1 to cIterations do
+    begin
+      lHit := nil;
       Assert.AreEqual(S_OK, lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit));
       Assert.IsNotNull(lHit);
     end;
     lStopwatch.Stop;
+    lOptimizedTicks := lStopwatch.ElapsedTicks;
 
-    Assert.IsTrue(lStopwatch.ElapsedTicks <= cMaxElapsedTicks,
-      Format('Root hit testing should avoid repeated full tree walks; elapsed=%d ticks for %d controls and %d calls.',
-      [lStopwatch.ElapsedTicks, cControlCount, cIterations]));
+    Assert.IsTrue(lOptimizedTicks * 100 <= lLegacyTicks * cMaxOptimizedPercent,
+      Format('Root hit testing should avoid repeated full tree walks; legacy=%d optimized=%d ticks for %d controls and %d calls.',
+      [lLegacyTicks, lOptimizedTicks, cControlCount, cIterations]));
   finally
     lForm.Free;
   end;

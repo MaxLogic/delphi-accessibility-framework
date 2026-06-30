@@ -200,6 +200,14 @@ begin
   end;
 end;
 
+function SignedDWordHex(aValue: Int64): string;
+var
+  lRawValue: Int64;
+begin
+  lRawValue := aValue and $00000000FFFFFFFF;
+  Result := IntToHex(lRawValue, 8);
+end;
+
 function UiaRectContainsPoint(const aRect: UiaRect; aX: Double; aY: Double): Boolean;
 begin
   Result := (aRect.Width > 0) and (aRect.Height > 0) and (aX >= aRect.Left) and (aY >= aRect.Top) and
@@ -858,8 +866,8 @@ begin
   end;
 
   Result := DoElementProviderFromPoint(aX, aY, aRetVal);
-  TAccessibilityDiagnostics.Log(Format('UIA ElementProviderFromPoint x=%.0f y=%.0f hresult=$%.8x %s',
-    [aX, aY, Cardinal(Result), ProviderHitTestDescription(aRetVal)]));
+  TAccessibilityDiagnostics.Log(Format('UIA ElementProviderFromPoint x=%.0f y=%.0f hresult=$%s %s',
+    [aX, aY, SignedDWordHex(Result), ProviderHitTestDescription(aRetVal)]));
 end;
 
 function TAccessibilityProviderRoot.GetFocus(out aRetVal: IRawElementProviderFragment): HResult;
@@ -985,8 +993,8 @@ begin
 
   lApi := ResolveApi(aApi);
   aResult := lApi.ReturnRawElementProvider(aHwnd, aWParam, aLParam, aProvider);
-  TAccessibilityDiagnostics.Log(Format('WM_GETOBJECT returned framework provider hwnd=%d wParam=%d lParam=%d lResult=$%.8x',
-    [aHwnd, aWParam, aLParam, Cardinal(aResult)]));
+  TAccessibilityDiagnostics.Log(Format('WM_GETOBJECT returned framework provider hwnd=%d wParam=%d lParam=%d lResult=$%s',
+    [aHwnd, aWParam, aLParam, SignedDWordHex(aResult)]));
   Result := True;
 end;
 

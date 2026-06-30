@@ -270,13 +270,19 @@ begin
 end;
 
 function MouseLParamLowWord(aValue: LPARAM): Word;
+var
+  lRawValue: Int64;
 begin
-  Result := Word(NativeUInt(aValue) and $FFFF);
+  lRawValue := Int64(aValue) and $00000000FFFFFFFF;
+  Result := Word(lRawValue and $FFFF);
 end;
 
 function MouseLParamHighWord(aValue: LPARAM): Word;
+var
+  lRawValue: Int64;
 begin
-  Result := Word((NativeUInt(aValue) shr 16) and $FFFF);
+  lRawValue := Int64(aValue) and $00000000FFFFFFFF;
+  Result := Word((lRawValue shr 16) and $FFFF);
 end;
 
 function PointToMouseLParam(const aPoint: TPoint): LPARAM;

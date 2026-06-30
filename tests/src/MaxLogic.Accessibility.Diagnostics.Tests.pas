@@ -200,10 +200,11 @@ begin
     lMemo.HandleNeeded;
     lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
 
-    Assert.AreEqual(S_OK, lProvider.FragmentProvider.Navigate(NavigateDirection_FirstChild, lMemoFragment));
+    lNavigateResult := lProvider.FragmentProvider.Navigate(NavigateDirection_FirstChild, lMemoFragment);
+    Assert.IsTrue(lNavigateResult = S_OK, 'Memo provider root navigation failed.');
     Assert.IsNotNull(lMemoFragment, 'Memo provider was not reachable from the form root.');
     lNavigateResult := lMemoFragment.Navigate(NavigateDirection_FirstChild, lLine);
-    Assert.AreEqual(S_OK, lNavigateResult);
+    Assert.IsTrue(lNavigateResult = S_OK, 'Memo provider line navigation failed.');
   finally
     lForm.Free;
   end;
@@ -295,6 +296,7 @@ var
   lListBoxFragment: IRawElementProviderFragment;
   lPattern: IUnknown;
   lProvider: IAccessibilityProviderNode;
+  lResult: HResult;
   lSelection: ISelectionProvider;
   lSelectionArray: PSafeArray;
 begin
@@ -312,12 +314,15 @@ begin
     lListBox.HandleNeeded;
 
     lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
-    Assert.AreEqual(S_OK, lProvider.FragmentProvider.Navigate(NavigateDirection_FirstChild, lListBoxFragment));
+    lResult := lProvider.FragmentProvider.Navigate(NavigateDirection_FirstChild, lListBoxFragment);
+    Assert.IsTrue(lResult = S_OK, 'Listbox provider root navigation failed.');
     Assert.IsNotNull(lListBoxFragment, 'Listbox provider was not reachable from the form root.');
-    Assert.AreEqual(S_OK, SimpleProvider(lListBoxFragment).GetPatternProvider(UIA_SelectionPatternId, lPattern));
+    lResult := SimpleProvider(lListBoxFragment).GetPatternProvider(UIA_SelectionPatternId, lPattern);
+    Assert.IsTrue(lResult = S_OK, 'Listbox selection pattern lookup failed.');
     Assert.IsTrue(Supports(lPattern, ISelectionProvider, lSelection));
     lSelectionArray := nil;
-    Assert.AreEqual(S_OK, lSelection.GetSelection(lSelectionArray));
+    lResult := lSelection.GetSelection(lSelectionArray);
+    Assert.IsTrue(lResult = S_OK, 'Listbox selection query failed.');
     if lSelectionArray <> nil then
     begin
       SafeArrayDestroy(lSelectionArray);
@@ -330,12 +335,15 @@ end;
 procedure NavigateListBoxFirstChild(const aRoot: IRawElementProviderFragment; out aItem: IRawElementProviderFragment);
 var
   lListBox: IRawElementProviderFragment;
+  lResult: HResult;
 begin
   aItem := nil;
   lListBox := nil;
-  Assert.AreEqual(S_OK, aRoot.Navigate(NavigateDirection_FirstChild, lListBox));
+  lResult := aRoot.Navigate(NavigateDirection_FirstChild, lListBox);
+  Assert.IsTrue(lResult = S_OK, 'Listbox root navigation failed.');
   Assert.IsNotNull(lListBox, 'Listbox provider was not reachable from the form root.');
-  Assert.AreEqual(S_OK, lListBox.Navigate(NavigateDirection_FirstChild, aItem));
+  lResult := lListBox.Navigate(NavigateDirection_FirstChild, aItem);
+  Assert.IsTrue(lResult = S_OK, 'Listbox first item navigation failed.');
   Assert.IsNotNull(aItem, 'Listbox item provider was not reachable from the listbox provider.');
 end;
 
@@ -403,7 +411,10 @@ begin
     Assert.Contains(lLogText, 'T');
   finally
     TAccessibilityDiagnostics.Disable;
-    TFile.Delete(lLogFile);
+    if TFile.Exists(lLogFile) then
+    begin
+      TFile.Delete(lLogFile);
+    end;
   end;
 end;
 
@@ -524,7 +535,9 @@ begin
     lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
     Assert.IsTrue(lMetrics.Enabled);
     Assert.AreEqual(1, lMetrics.TmsAdvStringGridRefreshCount);
-    Assert.AreEqual(960, lMetrics.TmsAdvStringGridCellProbeCount);
+    Assert.IsTrue(lMetrics.TmsAdvStringGridCellProbeCount <= 24,
+      Format('TMS AdvStringGrid cell probe count was %d; expected visible-range refresh instead of full 12x80 scan.',
+      [lMetrics.TmsAdvStringGridCellProbeCount]));
     Assert.IsTrue(lMetrics.TmsAdvStringGridCellProviderCreatedCount > 0,
       'TMS AdvStringGrid cell provider creation was not captured.');
     Assert.IsTrue(lMetrics.TmsAdvStringGridRefreshLastElapsedTicks > 0,

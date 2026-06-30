@@ -104,8 +104,11 @@ begin
 end;
 
 function FirstChildFragment(const aProvider: IAccessibilityProviderNode): IRawElementProviderFragment;
+var
+  lResult: HResult;
 begin
-  Assert.AreEqual(S_OK, aProvider.FragmentProvider.Navigate(NavigateDirection_FirstChild, Result));
+  lResult := aProvider.FragmentProvider.Navigate(NavigateDirection_FirstChild, Result);
+  Assert.IsTrue(lResult = S_OK, 'First child navigation failed.');
   Assert.IsNotNull(Result);
 end;
 
@@ -116,14 +119,20 @@ begin
 end;
 
 function NextSiblingFragment(const aFragment: IRawElementProviderFragment): IRawElementProviderFragment;
+var
+  lResult: HResult;
 begin
-  Assert.AreEqual(S_OK, aFragment.Navigate(NavigateDirection_NextSibling, Result));
+  lResult := aFragment.Navigate(NavigateDirection_NextSibling, Result);
+  Assert.IsTrue(lResult = S_OK, 'Next sibling navigation failed.');
   Assert.IsNotNull(Result);
 end;
 
 function NextSiblingFragmentOrNil(const aFragment: IRawElementProviderFragment): IRawElementProviderFragment;
+var
+  lResult: HResult;
 begin
-  Assert.AreEqual(S_OK, aFragment.Navigate(NavigateDirection_NextSibling, Result));
+  lResult := aFragment.Navigate(NavigateDirection_NextSibling, Result);
+  Assert.IsTrue(lResult = S_OK, 'Next sibling navigation failed.');
 end;
 
 function SimpleProvider(const aFragment: IRawElementProviderFragment): IRawElementProviderSimple;
@@ -183,6 +192,7 @@ var
   lChild: IRawElementProviderFragment;
   lCurrent: IRawElementProviderFragment;
   lNext: IRawElementProviderFragment;
+  lResult: HResult;
 begin
   Result := nil;
   if aFragment = nil then
@@ -195,7 +205,8 @@ begin
     Exit(aFragment);
   end;
 
-  Assert.AreEqual(S_OK, aFragment.Navigate(NavigateDirection_FirstChild, lChild));
+  lResult := aFragment.Navigate(NavigateDirection_FirstChild, lChild);
+  Assert.IsTrue(lResult = S_OK, 'First child navigation failed.');
   lCurrent := lChild;
   while lCurrent <> nil do
   begin
@@ -206,7 +217,8 @@ begin
     end;
 
     lNext := nil;
-    Assert.AreEqual(S_OK, lCurrent.Navigate(NavigateDirection_NextSibling, lNext));
+    lResult := lCurrent.Navigate(NavigateDirection_NextSibling, lNext);
+    Assert.IsTrue(lResult = S_OK, 'Next sibling navigation failed.');
     lCurrent := lNext;
   end;
 end;
@@ -258,11 +270,13 @@ end;
 
 function PointFromMessageResult(aValue: LRESULT): TPoint;
 var
-  lRawValue: Cardinal;
+  lRawValue: Int64;
+  lSignedValue: Int64;
   lX: Integer;
   lY: Integer;
 begin
-  lRawValue := Cardinal(aValue);
+  lSignedValue := Int64(aValue);
+  lRawValue := lSignedValue and $00000000FFFFFFFF;
   lX := Integer(lRawValue and $FFFF);
   if lX > High(Smallint) then
   begin
@@ -484,6 +498,7 @@ var
   lPanel: TPanel;
   lPoint: TPoint;
   lProvider: IAccessibilityProviderNode;
+  lResult: HResult;
   lRoot: IRawElementProviderFragmentRoot;
 begin
   lForm := TForm.Create(nil);
@@ -505,7 +520,8 @@ begin
     lRoot := FragmentRoot(lProvider);
     lPoint := ControlScreenCenter(lLabel);
 
-    Assert.AreEqual(S_OK, lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit));
+    lResult := lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit);
+    Assert.IsTrue(lResult = S_OK, 'Label hit testing failed.');
     Assert.IsNotNull(lHit);
     Assert.AreEqual('Command title', ProviderStringProperty(lHit, UIA_NamePropertyId));
   finally
@@ -639,6 +655,7 @@ var
   lMemo: TMemo;
   lPoint: TPoint;
   lProvider: IAccessibilityProviderNode;
+  lResult: HResult;
   lRoot: IRawElementProviderFragmentRoot;
 begin
   lForm := TForm.Create(nil);
@@ -660,13 +677,15 @@ begin
     lLinePoint := PointFromMessageResult(lMemo.Perform(EM_POSFROMCHAR, lCharIndex, 0));
     lPoint := lMemo.ClientToScreen(Point(lLinePoint.X + 4, lLinePoint.Y + 2));
 
-    Assert.AreEqual(S_OK, lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit));
+    lResult := lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit);
+    Assert.IsTrue(lResult = S_OK, 'Memo hit testing failed.');
     Assert.IsNotNull(lHit);
     Assert.AreEqual('Second memo line', ProviderStringProperty(lHit, UIA_NamePropertyId));
     Assert.AreEqual(UIA_TextControlTypeId, ProviderIntProperty(lHit, UIA_ControlTypePropertyId));
 
     lForm.ActiveControl := lMemo;
-    Assert.AreEqual(S_OK, lRoot.GetFocus(lFocus));
+    lResult := lRoot.GetFocus(lFocus);
+    Assert.IsTrue(lResult = S_OK, 'Memo focus query failed.');
     Assert.IsNull(lFocus, 'memo framework focus should stay out of native caret-line speech');
   finally
     lForm.Free;

@@ -15,6 +15,8 @@ type
     [Test]
     procedure OptInProviderExposesDataGridPatternsAndCellText;
     [Test]
+    procedure OptInProviderGridPatternGetItemReturnsValidOffscreenCells;
+    [Test]
     procedure OptInProviderColumnSpanCountsOnlyVisibleMergedColumns;
     [Test]
     procedure OptInProviderRowSpanCountsOnlyVisibleMergedRows;
@@ -639,6 +641,35 @@ begin
     Assert.IsTrue(ChildNameExists(lGridFragment, 'After hidden TMS column'));
     Assert.IsFalse(ChildNameExists(lGridFragment, 'Hidden TMS row'));
     Assert.IsTrue(ChildNameExists(lGridFragment, 'After hidden TMS row'));
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAdvStringGridAccessibilityTests.OptInProviderGridPatternGetItemReturnsValidOffscreenCells;
+var
+  lCellFragment: IRawElementProviderFragment;
+  lCellSimple: IRawElementProviderSimple;
+  lForm: TForm;
+  lGrid: TAdvStringGrid;
+  lGridFragment: IRawElementProviderFragment;
+  lGridPattern: IGridProvider;
+  lPattern: IUnknown;
+  lProvider: IAccessibilityProviderNode;
+begin
+  CreateScrollableAdvGridFixture(lForm, lGrid);
+  try
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm, TmsRegistry);
+    lGridFragment := FirstChildFragment(lProvider.FragmentProvider);
+    lPattern := ProviderPattern(lGridFragment, UIA_GridPatternId);
+    Assert.IsTrue(Supports(lPattern, IGridProvider, lGridPattern));
+
+    Assert.AreEqual(S_OK, lGridPattern.GetItem(6, 6, lCellSimple));
+    Assert.IsNotNull(lCellSimple);
+    lCellFragment := FragmentFromSimple(lCellSimple);
+    Assert.AreEqual('Scrolled TMS cell', ProviderStringProperty(lCellFragment, UIA_NamePropertyId));
+    Assert.AreEqual(UIA_DataItemControlTypeId, ProviderIntProperty(lCellFragment, UIA_ControlTypePropertyId));
+    Assert.AreEqual(VisibleAdvCellCount(lGrid), ChildFragmentCount(lGridFragment));
   finally
     lForm.Free;
   end;

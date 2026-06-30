@@ -357,11 +357,13 @@ function ControlIsInActiveVisibleTree(aControl: TControl): Boolean; forward;
 
 function PointFromMessageResult(aValue: LRESULT): TPoint;
 var
-  lRawValue: Cardinal;
+  lRawValue: Int64;
+  lSignedValue: Int64;
   lX: Integer;
   lY: Integer;
 begin
-  lRawValue := Cardinal(aValue);
+  lSignedValue := Int64(aValue);
+  lRawValue := lSignedValue and $00000000FFFFFFFF;
   lX := Integer(lRawValue and $FFFF);
   if lX > High(Smallint) then
   begin
@@ -443,7 +445,8 @@ function MemoLineIndexAtPoint(aMemo: TCustomMemo; const aClientPoint: TPoint): I
 var
   lCharIndex: LRESULT;
   lCharIndexParam: WPARAM;
-  lRawCharIndex: UInt64;
+  lRawCharIndex: Int64;
+  lSignedCharIndex: Int64;
   lLineCount: LRESULT;
 begin
   Result := -1;
@@ -458,7 +461,8 @@ begin
     Exit;
   end;
 
-  lRawCharIndex := UInt64(lCharIndex);
+  lSignedCharIndex := Int64(lCharIndex);
+  lRawCharIndex := lSignedCharIndex and $00000000FFFFFFFF;
   lCharIndexParam := WPARAM(lRawCharIndex and $FFFF);
   Result := aMemo.Perform(EM_LINEFROMCHAR, lCharIndexParam, 0);
   lLineCount := aMemo.Perform(EM_GETLINECOUNT, 0, 0);

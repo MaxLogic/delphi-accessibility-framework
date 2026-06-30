@@ -622,8 +622,11 @@ end;
 
 function NavigateFragment(const aFragment: IRawElementProviderFragment; aDirection: NavigateDirection):
   IRawElementProviderFragment;
+var
+  lResult: HResult;
 begin
-  Assert.AreEqual(S_OK, aFragment.Navigate(aDirection, Result));
+  lResult := aFragment.Navigate(aDirection, Result);
+  Assert.IsTrue(lResult = S_OK, 'Fragment navigation failed.');
 end;
 
 function FirstChildFragment(const aFragment: IRawElementProviderFragment): IRawElementProviderFragment;
@@ -735,11 +738,13 @@ end;
 
 function PointFromMessageResult(aValue: LRESULT): TPoint;
 var
-  lRawValue: Cardinal;
+  lRawValue: Int64;
+  lSignedValue: Int64;
   lX: Integer;
   lY: Integer;
 begin
-  lRawValue := Cardinal(aValue);
+  lSignedValue := Int64(aValue);
+  lRawValue := lSignedValue and $00000000FFFFFFFF;
   lX := Integer(lRawValue and $FFFF);
   if lX > High(Smallint) then
   begin
@@ -2395,7 +2400,9 @@ var
   lLinePoint: TPoint;
   lListBox: TListBox;
   lMemo: TMemo;
+  lMouseParam: LPARAM;
   lPoint: TPoint;
+  lProviderName: string;
   lStatusBar: TStatusBar;
 begin
   ResetManager;
@@ -2433,25 +2440,28 @@ begin
 
     lCharIndex := lMemo.Perform(EM_LINEINDEX, 1, 0);
     lLinePoint := PointFromMessageResult(lMemo.Perform(EM_POSFROMCHAR, lCharIndex, 0));
-    lMemo.Perform(WM_MOUSEMOVE, 0, PointToMouseLParam(Point(lLinePoint.X + 4, lLinePoint.Y + 2)));
-    Assert.AreEqual(1, lApi.NotificationCalls);
+    lMouseParam := PointToMouseLParam(Point(lLinePoint.X + 4, lLinePoint.Y + 2));
+    lMemo.Perform(WM_MOUSEMOVE, 0, lMouseParam);
+    Assert.IsTrue(lApi.NotificationCalls = 1, 'Memo hover notification count mismatch.');
     Assert.AreEqual('Second memo line', lApi.LastNotificationText);
-    Assert.AreEqual('Second memo line', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
-      UIA_NamePropertyId));
+    lProviderName := ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider), UIA_NamePropertyId);
+    Assert.AreEqual('Second memo line', lProviderName);
 
     lItemRect := lListBox.ItemRect(2);
     lPoint := lItemRect.CenterPoint;
-    lListBox.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
-    Assert.AreEqual(2, lApi.NotificationCalls);
+    lMouseParam := PointToLParam(lPoint);
+    lListBox.Perform(WM_MOUSEMOVE, 0, lMouseParam);
+    Assert.IsTrue(lApi.NotificationCalls = 2, 'Listbox hover notification count mismatch.');
     Assert.AreEqual('Completed action', lApi.LastNotificationText);
-    Assert.AreEqual('Completed action', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
-      UIA_NamePropertyId));
+    lProviderName := ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider), UIA_NamePropertyId);
+    Assert.AreEqual('Completed action', lProviderName);
 
-    lStatusBar.Perform(WM_MOUSEMOVE, 0, PointToLParam(Point(8, 8)));
-    Assert.AreEqual(3, lApi.NotificationCalls);
+    lMouseParam := PointToLParam(Point(8, 8));
+    lStatusBar.Perform(WM_MOUSEMOVE, 0, lMouseParam);
+    Assert.IsTrue(lApi.NotificationCalls = 3, 'Statusbar hover notification count mismatch.');
     Assert.AreEqual('Ready. High severity checks: 4', lApi.LastNotificationText);
-    Assert.AreEqual('Ready. High severity checks: 4',
-      ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider), UIA_NamePropertyId));
+    lProviderName := ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider), UIA_NamePropertyId);
+    Assert.AreEqual('Ready. High severity checks: 4', lProviderName);
   finally
     lForm.Free;
     ResetManager;

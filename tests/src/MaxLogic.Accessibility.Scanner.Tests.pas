@@ -19,6 +19,8 @@ type
     [Test]
     procedure LaterWindowProcHookCanCallPriorAfterObserverRelease;
     [Test]
+    procedure ScanTreeFindNodeUsesIndexedLookupForRepeatedQueries;
+    [Test]
     procedure ScannerWalksVclTreeInStableOrder;
     [Test]
     procedure TextExtractionUsesFallbackPriorityAndSuppressesIconGlyphs;
@@ -29,8 +31,8 @@ type
 implementation
 
 uses
-  System.Actions, System.SysUtils, Winapi.Messages, Vcl.ActnList, Vcl.Controls, Vcl.ExtCtrls, Vcl.Forms,
-  Vcl.StdCtrls, MaxLogic.Accessibility.Scanner;
+  System.Actions, System.Diagnostics, System.SysUtils, Winapi.Messages, Vcl.ActnList, Vcl.Controls, Vcl.ExtCtrls,
+  Vcl.Forms, Vcl.StdCtrls, MaxLogic.Accessibility.Scanner;
 
 type
   TAccessibleLabel = class(TLabel)
@@ -109,6 +111,25 @@ begin
   begin
     Result[i] := lNodes[i].Name;
   end;
+end;
+
+function MeasureFindNodeTicks(const aTree: IAccessibilityScanTree; aControl: TControl; aIterations: Integer): Int64;
+var
+  i: Integer;
+  lNode: IAccessibilityScanNode;
+  lStopwatch: TStopwatch;
+begin
+  lStopwatch := TStopwatch.StartNew;
+  for i := 1 to aIterations do
+  begin
+    lNode := aTree.FindNode(aControl);
+    if lNode = nil then
+    begin
+      raise EAssertionFailed.Create('FindNode returned nil during measurement.');
+    end;
+  end;
+  lStopwatch.Stop;
+  Result := lStopwatch.ElapsedTicks;
 end;
 
 procedure TAccessibilityScannerTests.AdapterRegistryResolvesNearestRegisteredClass;
@@ -219,6 +240,53 @@ begin
     finally
       lProbe.Free;
     end;
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityScannerTests.ScanTreeFindNodeUsesIndexedLookupForRepeatedQueries;
+const
+  cControlCount = 800;
+  cIterations = 2000;
+  cMaxTickRatio = 8;
+var
+  i: Integer;
+  lFirstLabel: TLabel;
+  lFirstTicks: Int64;
+  lForm: TForm;
+  lLabel: TLabel;
+  lLastLabel: TLabel;
+  lLastTicks: Int64;
+  lTree: IAccessibilityScanTree;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lFirstLabel := nil;
+
+    for i := 1 to cControlCount do
+    begin
+      lLabel := TLabel.Create(lForm);
+      lLabel.Caption := Format('Node %d', [i]);
+      lLabel.Parent := lForm;
+
+      if lFirstLabel = nil then
+      begin
+        lFirstLabel := lLabel;
+      end;
+      lLastLabel := lLabel;
+    end;
+
+    lTree := TAccessibilityScanner.ScanForm(lForm);
+
+    Assert.AreEqual('Node 1', lTree.FindNode(lFirstLabel).Name);
+    Assert.AreEqual(Format('Node %d', [cControlCount]), lTree.FindNode(lLastLabel).Name);
+
+    lFirstTicks := MeasureFindNodeTicks(lTree, lFirstLabel, cIterations);
+    lLastTicks := MeasureFindNodeTicks(lTree, lLastLabel, cIterations);
+
+    Assert.IsTrue(lLastTicks <= lFirstTicks * cMaxTickRatio,
+      Format('FindNode should use an indexed lookup; first=%d ticks last=%d ticks.', [lFirstTicks, lLastTicks]));
   finally
     lForm.Free;
   end;

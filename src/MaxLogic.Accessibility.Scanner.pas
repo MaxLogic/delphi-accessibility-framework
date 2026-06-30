@@ -106,12 +106,14 @@ type
 
   TAccessibilityScanTree = class(TInterfacedObject, IAccessibilityScanTree)
   private
+    fNodesByControl: TDictionary<TControl, IAccessibilityScanNode>;
     fRevision: Integer;
     fRoot: IAccessibilityScanNode;
     procedure AddFlattenedChildren(const aNode: IAccessibilityScanNode; var aNodes: TArray<IAccessibilityScanNode>);
-    function FindNodeIn(const aNode: IAccessibilityScanNode; aControl: TControl): IAccessibilityScanNode;
+    procedure IndexNode(const aNode: IAccessibilityScanNode);
   public
     constructor Create(const aRoot: IAccessibilityScanNode; aRevision: Integer);
+    destructor Destroy; override;
     function FindNode(aControl: TControl): IAccessibilityScanNode;
     function FlattenedNodes: TArray<IAccessibilityScanNode>;
     function Revision: Integer;
@@ -574,8 +576,16 @@ end;
 constructor TAccessibilityScanTree.Create(const aRoot: IAccessibilityScanNode; aRevision: Integer);
 begin
   inherited Create;
+  fNodesByControl := TDictionary<TControl, IAccessibilityScanNode>.Create;
   fRoot := aRoot;
   fRevision := aRevision;
+  IndexNode(fRoot);
+end;
+
+destructor TAccessibilityScanTree.Destroy;
+begin
+  fNodesByControl.Free;
+  inherited Destroy;
 end;
 
 procedure TAccessibilityScanTree.AddFlattenedChildren(const aNode: IAccessibilityScanNode;
@@ -595,32 +605,34 @@ end;
 
 function TAccessibilityScanTree.FindNode(aControl: TControl): IAccessibilityScanNode;
 begin
-  Result := FindNodeIn(fRoot, aControl);
+  if aControl = nil then
+  begin
+    Exit(nil);
+  end;
+
+  if not fNodesByControl.TryGetValue(aControl, Result) then
+  begin
+    Result := nil;
+  end;
 end;
 
-function TAccessibilityScanTree.FindNodeIn(const aNode: IAccessibilityScanNode;
-  aControl: TControl): IAccessibilityScanNode;
+procedure TAccessibilityScanTree.IndexNode(const aNode: IAccessibilityScanNode);
 var
   i: Integer;
 begin
-  Result := nil;
   if aNode = nil then
   begin
     Exit;
   end;
 
-  if aNode.Control = aControl then
+  if (aNode.Control <> nil) and not fNodesByControl.ContainsKey(aNode.Control) then
   begin
-    Exit(aNode);
+    fNodesByControl.Add(aNode.Control, aNode);
   end;
 
   for i := 0 to Pred(aNode.ChildCount) do
   begin
-    Result := FindNodeIn(aNode.Child(i), aControl);
-    if Result <> nil then
-    begin
-      Exit;
-    end;
+    IndexNode(aNode.Child(i));
   end;
 end;
 

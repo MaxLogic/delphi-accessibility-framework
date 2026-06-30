@@ -36,9 +36,10 @@ type
 implementation
 
 uses
-  System.Actions, System.Classes, System.Generics.Collections, System.Math, System.SysUtils, System.Types, System.TypInfo,
-  Winapi.ActiveX, Winapi.Messages, Winapi.Windows, Vcl.Buttons, Vcl.ComCtrls, Vcl.ExtCtrls, Vcl.Grids, Vcl.StdCtrls,
-  MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.Text, MaxLogic.Accessibility.UIAutomationCore;
+  System.Actions, System.Classes, System.Diagnostics, System.Generics.Collections, System.Math, System.SysUtils,
+  System.Types, System.TypInfo, Winapi.ActiveX, Winapi.Messages, Winapi.Windows, Vcl.Buttons, Vcl.ComCtrls,
+  Vcl.ExtCtrls, Vcl.Grids, Vcl.StdCtrls, MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.Text,
+  MaxLogic.Accessibility.UIAutomationCore;
 
 type
   IAccessibilityVclRootProvider = interface
@@ -1946,8 +1947,13 @@ end;
 
 procedure TAccessibilityMemoProvider.PrepareChildrenForNavigation;
 var
+  lCreatedCount: Integer;
+  lExistingProvider: IAccessibilityProviderNode;
   lLine: Integer;
   lLineCount: LRESULT;
+  lLineProbeCount: Integer;
+  lMetricsEnabled: Boolean;
+  lStopwatch: TStopwatch;
 begin
   inherited PrepareChildrenForNavigation;
   if (fMemo = nil) or not ControlIsInActiveVisibleTree(fMemo) then
@@ -1955,10 +1961,34 @@ begin
     Exit;
   end;
 
+  lCreatedCount := 0;
+  lLineProbeCount := 0;
+  lMetricsEnabled := TAccessibilityDiagnostics.ProviderHotspotMetricsEnabled;
+  if lMetricsEnabled then
+  begin
+    lStopwatch := TStopwatch.StartNew;
+  end;
+
   lLineCount := fMemo.Perform(EM_GETLINECOUNT, 0, 0);
   for lLine := 0 to Pred(Integer(lLineCount)) do
   begin
-    EnsureLineProvider(lLine);
+    if lMetricsEnabled then
+    begin
+      Inc(lLineProbeCount);
+      lExistingProvider := LineProvider(lLine);
+      EnsureLineProvider(lLine);
+      if (lExistingProvider = nil) and (LineProvider(lLine) <> nil) then
+      begin
+        Inc(lCreatedCount);
+      end;
+    end else begin
+      EnsureLineProvider(lLine);
+    end;
+  end;
+
+  if lMetricsEnabled then
+  begin
+    TAccessibilityDiagnostics.RecordMemoPrepareChildren(lLineProbeCount, lCreatedCount, lStopwatch.ElapsedTicks);
   end;
 end;
 
@@ -2301,8 +2331,12 @@ end;
 function TAccessibilityListBoxProvider.GetSelection(out aRetVal: PSafeArray): HResult;
 var
   i: Integer;
+  lItemProbeCount: Integer;
   lItem: IAccessibilityProviderNode;
+  lMetricsEnabled: Boolean;
+  lProviderCount: Integer;
   lSelectedProviders: TList<IRawElementProviderSimple>;
+  lStopwatch: TStopwatch;
 begin
   aRetVal := nil;
   if IsDisconnected or (fListBox = nil) then
@@ -2311,32 +2345,64 @@ begin
   end;
 
   TAccessibilityDiagnostics.RecordListBoxGetSelection;
+  lItemProbeCount := 0;
+  lProviderCount := 0;
+  lMetricsEnabled := TAccessibilityDiagnostics.ProviderHotspotMetricsEnabled;
+  if lMetricsEnabled then
+  begin
+    lStopwatch := TStopwatch.StartNew;
+  end;
+
   lSelectedProviders := TList<IRawElementProviderSimple>.Create;
   try
     if fListBox.MultiSelect then
     begin
       for i := 0 to Pred(fListBox.Items.Count) do
       begin
+        if lMetricsEnabled then
+        begin
+          Inc(lItemProbeCount);
+        end;
+
         if fListBox.Selected[i] then
         begin
           lItem := EnsureItemProvider(i);
           if lItem <> nil then
           begin
             lSelectedProviders.Add(lItem.RawElementProvider);
+            if lMetricsEnabled then
+            begin
+              Inc(lProviderCount);
+            end;
           end;
         end;
       end;
     end else begin
+      if lMetricsEnabled then
+      begin
+        Inc(lItemProbeCount);
+      end;
+
       lItem := EnsureItemProvider(fListBox.ItemIndex);
       if lItem <> nil then
       begin
         lSelectedProviders.Add(lItem.RawElementProvider);
+        if lMetricsEnabled then
+        begin
+          Inc(lProviderCount);
+        end;
       end;
     end;
 
     aRetVal := CreateSelectionArray(lSelectedProviders.ToArray);
   finally
     lSelectedProviders.Free;
+  end;
+
+  if lMetricsEnabled then
+  begin
+    TAccessibilityDiagnostics.RecordProviderHotspotListBoxGetSelection(lItemProbeCount, lProviderCount,
+      lStopwatch.ElapsedTicks);
   end;
 
   if aRetVal = nil then
@@ -2951,15 +3017,27 @@ end;
 procedure TAccessibilityStringGridProvider.RefreshVisibleCells;
 var
   lCell: IAccessibilityProviderNode;
+  lCellProbeCount: Integer;
   lCol: Integer;
+  lCreatedCount: Integer;
   lKey: Int64;
   lKeysToRemove: TList<Int64>;
+  lMetricsEnabled: Boolean;
   lPair: TPair<Int64, IAccessibilityProviderNode>;
   lRow: Integer;
+  lStopwatch: TStopwatch;
 begin
   if (fGrid = nil) or IsDisconnected or not ControlIsInActiveVisibleTree(fGrid) then
   begin
     Exit;
+  end;
+
+  lCellProbeCount := 0;
+  lCreatedCount := 0;
+  lMetricsEnabled := TAccessibilityDiagnostics.ProviderHotspotMetricsEnabled;
+  if lMetricsEnabled then
+  begin
+    lStopwatch := TStopwatch.StartNew;
   end;
 
   lKeysToRemove := TList<Int64>.Create;
@@ -2988,14 +3066,28 @@ begin
   begin
     for lCol := 0 to Pred(fGrid.ColCount) do
     begin
+      if lMetricsEnabled then
+      begin
+        Inc(lCellProbeCount);
+      end;
+
       if IsVisibleCell(lCol, lRow) and (CellProvider(lCol, lRow) = nil) then
       begin
         lCell := TAccessibilityStringGridCellProvider.Create(Self, fGrid, lCol, lRow,
           [fRuntimeId, lRow, lCol], fUiaApi) as IAccessibilityProviderNode;
         AddChild(lCell);
         fCells.Add(CellKey(lCol, lRow), lCell);
+        if lMetricsEnabled then
+        begin
+          Inc(lCreatedCount);
+        end;
       end;
     end;
+  end;
+
+  if lMetricsEnabled then
+  begin
+    TAccessibilityDiagnostics.RecordStringGridRefresh(lCellProbeCount, lCreatedCount, lStopwatch.ElapsedTicks);
   end;
 end;
 

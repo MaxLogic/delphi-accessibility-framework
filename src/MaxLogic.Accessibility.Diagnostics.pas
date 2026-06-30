@@ -22,16 +22,46 @@ type
     function ToJson(const aScenario: string; const aSource: string): string;
   end;
 
+  TAccessibilityProviderHotspotMetrics = record
+  public
+    Enabled: Boolean;
+    MemoPrepareChildrenCount: Integer;
+    MemoLineProbeCount: Integer;
+    MemoLineProviderCreatedCount: Integer;
+    MemoPrepareChildrenLastElapsedTicks: Int64;
+    MemoPrepareChildrenTotalElapsedTicks: Int64;
+    StringGridRefreshCount: Integer;
+    StringGridCellProbeCount: Integer;
+    StringGridCellProviderCreatedCount: Integer;
+    StringGridRefreshLastElapsedTicks: Int64;
+    StringGridRefreshTotalElapsedTicks: Int64;
+    TmsAdvStringGridRefreshCount: Integer;
+    TmsAdvStringGridCellProbeCount: Integer;
+    TmsAdvStringGridCellProviderCreatedCount: Integer;
+    TmsAdvStringGridRefreshLastElapsedTicks: Int64;
+    TmsAdvStringGridRefreshTotalElapsedTicks: Int64;
+    ListBoxGetSelectionCount: Integer;
+    ListBoxSelectionItemProbeCount: Integer;
+    ListBoxSelectionProviderCount: Integer;
+    ListBoxGetSelectionLastElapsedTicks: Int64;
+    ListBoxGetSelectionTotalElapsedTicks: Int64;
+    function ToJson(const aScenario: string; const aSource: string): string;
+  end;
+
   TAccessibilityDiagnostics = record
   public
     class procedure Configure(const aLogFile: string); static;
     class procedure Disable; static;
     class procedure DisableListBoxFocusMetrics; static;
+    class procedure DisableProviderHotspotMetrics; static;
     class function Enabled: Boolean; static;
     class procedure EnableListBoxFocusMetrics; static;
+    class procedure EnableProviderHotspotMetrics; static;
     class function ListBoxFocusMetrics: TAccessibilityListBoxFocusMetrics; static;
     class function ListBoxFocusMetricsEnabled: Boolean; static;
     class procedure Log(const aMessage: string); static;
+    class function ProviderHotspotMetrics: TAccessibilityProviderHotspotMetrics; static;
+    class function ProviderHotspotMetricsEnabled: Boolean; static;
     class procedure RecordListBoxAutomationEvent(aEventId: Integer); static;
     class procedure RecordListBoxEnsureItemProvider(aCreated: Boolean); static;
     class procedure RecordListBoxFocusMovement(aElapsedTicks: Int64); static;
@@ -41,7 +71,16 @@ type
     class procedure RecordListBoxNotification(aDisplayStringLength: Integer); static;
     class procedure RecordListBoxPrepareChildren; static;
     class procedure RecordListBoxVisibleItemProbe; static;
+    class procedure RecordMemoPrepareChildren(aLineProbeCount: Integer; aProviderCreatedCount: Integer;
+      aElapsedTicks: Int64); static;
+    class procedure RecordProviderHotspotListBoxGetSelection(aItemProbeCount: Integer; aProviderCount: Integer;
+      aElapsedTicks: Int64); static;
+    class procedure RecordStringGridRefresh(aCellProbeCount: Integer; aProviderCreatedCount: Integer;
+      aElapsedTicks: Int64); static;
+    class procedure RecordTmsAdvStringGridRefresh(aCellProbeCount: Integer; aProviderCreatedCount: Integer;
+      aElapsedTicks: Int64); static;
     class procedure ResetListBoxFocusMetrics; static;
+    class procedure ResetProviderHotspotMetrics; static;
   end;
 
 implementation
@@ -54,6 +93,8 @@ var
   gListBoxFocusMetrics: TAccessibilityListBoxFocusMetrics;
   gListBoxFocusMetricsEnabled: Boolean;
   gLogFile: string;
+  gProviderHotspotMetrics: TAccessibilityProviderHotspotMetrics;
+  gProviderHotspotMetricsEnabled: Boolean;
 
 function JsonBoolean(aValue: Boolean): string;
 begin
@@ -114,6 +155,30 @@ begin
     '}';
 end;
 
+function TAccessibilityProviderHotspotMetrics.ToJson(const aScenario: string; const aSource: string): string;
+begin
+  Result := '{"scenario":"' + JsonEscape(aScenario) + '","source":"' + JsonEscape(aSource) + '","enabled":' +
+    JsonBoolean(Enabled) + ',"memoPrepareChildrenCount":' + IntToStr(MemoPrepareChildrenCount) +
+    ',"memoLineProbeCount":' + IntToStr(MemoLineProbeCount) + ',"memoLineProviderCreatedCount":' +
+    IntToStr(MemoLineProviderCreatedCount) + ',"memoPrepareChildrenLastElapsedTicks":' +
+    IntToStr(MemoPrepareChildrenLastElapsedTicks) + ',"memoPrepareChildrenTotalElapsedTicks":' +
+    IntToStr(MemoPrepareChildrenTotalElapsedTicks) + ',"stringGridRefreshCount":' +
+    IntToStr(StringGridRefreshCount) + ',"stringGridCellProbeCount":' + IntToStr(StringGridCellProbeCount) +
+    ',"stringGridCellProviderCreatedCount":' + IntToStr(StringGridCellProviderCreatedCount) +
+    ',"stringGridRefreshLastElapsedTicks":' + IntToStr(StringGridRefreshLastElapsedTicks) +
+    ',"stringGridRefreshTotalElapsedTicks":' + IntToStr(StringGridRefreshTotalElapsedTicks) +
+    ',"tmsAdvStringGridRefreshCount":' + IntToStr(TmsAdvStringGridRefreshCount) +
+    ',"tmsAdvStringGridCellProbeCount":' + IntToStr(TmsAdvStringGridCellProbeCount) +
+    ',"tmsAdvStringGridCellProviderCreatedCount":' + IntToStr(TmsAdvStringGridCellProviderCreatedCount) +
+    ',"tmsAdvStringGridRefreshLastElapsedTicks":' + IntToStr(TmsAdvStringGridRefreshLastElapsedTicks) +
+    ',"tmsAdvStringGridRefreshTotalElapsedTicks":' + IntToStr(TmsAdvStringGridRefreshTotalElapsedTicks) +
+    ',"listBoxGetSelectionCount":' + IntToStr(ListBoxGetSelectionCount) + ',"listBoxSelectionItemProbeCount":' +
+    IntToStr(ListBoxSelectionItemProbeCount) + ',"listBoxSelectionProviderCount":' +
+    IntToStr(ListBoxSelectionProviderCount) + ',"listBoxGetSelectionLastElapsedTicks":' +
+    IntToStr(ListBoxGetSelectionLastElapsedTicks) + ',"listBoxGetSelectionTotalElapsedTicks":' +
+    IntToStr(ListBoxGetSelectionTotalElapsedTicks) + '}';
+end;
+
 class procedure TAccessibilityDiagnostics.Configure(const aLogFile: string);
 begin
   TMonitor.Enter(gDiagnosticsLock);
@@ -145,6 +210,17 @@ begin
   end;
 end;
 
+class procedure TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+begin
+  TMonitor.Enter(gDiagnosticsLock);
+  try
+    gProviderHotspotMetricsEnabled := False;
+    gProviderHotspotMetrics := Default(TAccessibilityProviderHotspotMetrics);
+  finally
+    TMonitor.Exit(gDiagnosticsLock);
+  end;
+end;
+
 class function TAccessibilityDiagnostics.Enabled: Boolean;
 begin
   TMonitor.Enter(gDiagnosticsLock);
@@ -166,6 +242,17 @@ begin
   end;
 end;
 
+class procedure TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+begin
+  TMonitor.Enter(gDiagnosticsLock);
+  try
+    gProviderHotspotMetricsEnabled := True;
+    gProviderHotspotMetrics.Enabled := True;
+  finally
+    TMonitor.Exit(gDiagnosticsLock);
+  end;
+end;
+
 class function TAccessibilityDiagnostics.ListBoxFocusMetrics: TAccessibilityListBoxFocusMetrics;
 begin
   TMonitor.Enter(gDiagnosticsLock);
@@ -175,6 +262,22 @@ begin
   finally
     TMonitor.Exit(gDiagnosticsLock);
   end;
+end;
+
+class function TAccessibilityDiagnostics.ProviderHotspotMetrics: TAccessibilityProviderHotspotMetrics;
+begin
+  TMonitor.Enter(gDiagnosticsLock);
+  try
+    Result := gProviderHotspotMetrics;
+    Result.Enabled := gProviderHotspotMetricsEnabled;
+  finally
+    TMonitor.Exit(gDiagnosticsLock);
+  end;
+end;
+
+class function TAccessibilityDiagnostics.ProviderHotspotMetricsEnabled: Boolean;
+begin
+  Result := gProviderHotspotMetricsEnabled;
 end;
 
 class function TAccessibilityDiagnostics.ListBoxFocusMetricsEnabled: Boolean;
@@ -204,6 +307,98 @@ begin
       [FormatDateTime('yyyy-mm-dd"T"hh:nn:ss.zzz', Now), GetCurrentProcessId, GetCurrentThreadId, aMessage,
       sLineBreak]);
     TFile.AppendAllText(gLogFile, lLine, TEncoding.UTF8);
+  finally
+    TMonitor.Exit(gDiagnosticsLock);
+  end;
+end;
+
+class procedure TAccessibilityDiagnostics.RecordMemoPrepareChildren(aLineProbeCount: Integer; aProviderCreatedCount:
+  Integer; aElapsedTicks: Int64);
+begin
+  if not gProviderHotspotMetricsEnabled then
+  begin
+    Exit;
+  end;
+
+  TMonitor.Enter(gDiagnosticsLock);
+  try
+    if gProviderHotspotMetricsEnabled then
+    begin
+      Inc(gProviderHotspotMetrics.MemoPrepareChildrenCount);
+      Inc(gProviderHotspotMetrics.MemoLineProbeCount, aLineProbeCount);
+      Inc(gProviderHotspotMetrics.MemoLineProviderCreatedCount, aProviderCreatedCount);
+      gProviderHotspotMetrics.MemoPrepareChildrenLastElapsedTicks := aElapsedTicks;
+      Inc(gProviderHotspotMetrics.MemoPrepareChildrenTotalElapsedTicks, aElapsedTicks);
+    end;
+  finally
+    TMonitor.Exit(gDiagnosticsLock);
+  end;
+end;
+
+class procedure TAccessibilityDiagnostics.RecordProviderHotspotListBoxGetSelection(aItemProbeCount: Integer;
+  aProviderCount: Integer; aElapsedTicks: Int64);
+begin
+  if not gProviderHotspotMetricsEnabled then
+  begin
+    Exit;
+  end;
+
+  TMonitor.Enter(gDiagnosticsLock);
+  try
+    if gProviderHotspotMetricsEnabled then
+    begin
+      Inc(gProviderHotspotMetrics.ListBoxGetSelectionCount);
+      Inc(gProviderHotspotMetrics.ListBoxSelectionItemProbeCount, aItemProbeCount);
+      Inc(gProviderHotspotMetrics.ListBoxSelectionProviderCount, aProviderCount);
+      gProviderHotspotMetrics.ListBoxGetSelectionLastElapsedTicks := aElapsedTicks;
+      Inc(gProviderHotspotMetrics.ListBoxGetSelectionTotalElapsedTicks, aElapsedTicks);
+    end;
+  finally
+    TMonitor.Exit(gDiagnosticsLock);
+  end;
+end;
+
+class procedure TAccessibilityDiagnostics.RecordStringGridRefresh(aCellProbeCount: Integer; aProviderCreatedCount:
+  Integer; aElapsedTicks: Int64);
+begin
+  if not gProviderHotspotMetricsEnabled then
+  begin
+    Exit;
+  end;
+
+  TMonitor.Enter(gDiagnosticsLock);
+  try
+    if gProviderHotspotMetricsEnabled then
+    begin
+      Inc(gProviderHotspotMetrics.StringGridRefreshCount);
+      Inc(gProviderHotspotMetrics.StringGridCellProbeCount, aCellProbeCount);
+      Inc(gProviderHotspotMetrics.StringGridCellProviderCreatedCount, aProviderCreatedCount);
+      gProviderHotspotMetrics.StringGridRefreshLastElapsedTicks := aElapsedTicks;
+      Inc(gProviderHotspotMetrics.StringGridRefreshTotalElapsedTicks, aElapsedTicks);
+    end;
+  finally
+    TMonitor.Exit(gDiagnosticsLock);
+  end;
+end;
+
+class procedure TAccessibilityDiagnostics.RecordTmsAdvStringGridRefresh(aCellProbeCount: Integer;
+  aProviderCreatedCount: Integer; aElapsedTicks: Int64);
+begin
+  if not gProviderHotspotMetricsEnabled then
+  begin
+    Exit;
+  end;
+
+  TMonitor.Enter(gDiagnosticsLock);
+  try
+    if gProviderHotspotMetricsEnabled then
+    begin
+      Inc(gProviderHotspotMetrics.TmsAdvStringGridRefreshCount);
+      Inc(gProviderHotspotMetrics.TmsAdvStringGridCellProbeCount, aCellProbeCount);
+      Inc(gProviderHotspotMetrics.TmsAdvStringGridCellProviderCreatedCount, aProviderCreatedCount);
+      gProviderHotspotMetrics.TmsAdvStringGridRefreshLastElapsedTicks := aElapsedTicks;
+      Inc(gProviderHotspotMetrics.TmsAdvStringGridRefreshTotalElapsedTicks, aElapsedTicks);
+    end;
   finally
     TMonitor.Exit(gDiagnosticsLock);
   end;
@@ -396,6 +591,20 @@ begin
     lEnabled := gListBoxFocusMetricsEnabled;
     gListBoxFocusMetrics := Default(TAccessibilityListBoxFocusMetrics);
     gListBoxFocusMetrics.Enabled := lEnabled;
+  finally
+    TMonitor.Exit(gDiagnosticsLock);
+  end;
+end;
+
+class procedure TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+var
+  lEnabled: Boolean;
+begin
+  TMonitor.Enter(gDiagnosticsLock);
+  try
+    lEnabled := gProviderHotspotMetricsEnabled;
+    gProviderHotspotMetrics := Default(TAccessibilityProviderHotspotMetrics);
+    gProviderHotspotMetrics.Enabled := lEnabled;
   finally
     TMonitor.Exit(gDiagnosticsLock);
   end;

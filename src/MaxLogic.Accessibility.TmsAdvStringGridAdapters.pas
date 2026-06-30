@@ -15,9 +15,9 @@ type
 implementation
 
 uses
-  System.Generics.Collections, System.SysUtils, System.Types, System.Variants, Winapi.ActiveX, Winapi.Windows,
-  Vcl.ComCtrls, Vcl.Controls, Vcl.Forms, AdvGrid, MaxLogic.Accessibility.ProviderCore,
-  MaxLogic.Accessibility.UIAutomationCore, MaxLogic.Accessibility.VclAdapters;
+  System.Diagnostics, System.Generics.Collections, System.SysUtils, System.Types, System.Variants, Winapi.ActiveX,
+  Winapi.Windows, Vcl.ComCtrls, Vcl.Controls, Vcl.Forms, AdvGrid, MaxLogic.Accessibility.Diagnostics,
+  MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.UIAutomationCore, MaxLogic.Accessibility.VclAdapters;
 
 type
   TAdvStringGridAdapter = class(TInterfacedObject, IAccessibilityControlAdapter, IAccessibilityVclProviderAdapter)
@@ -918,15 +918,27 @@ end;
 procedure TAccessibilityAdvStringGridProvider.RefreshVisibleCells;
 var
   lCell: IAccessibilityProviderNode;
+  lCellProbeCount: Integer;
   lCol: Integer;
+  lCreatedCount: Integer;
   lKey: Int64;
   lKeysToRemove: TList<Int64>;
+  lMetricsEnabled: Boolean;
   lPair: TPair<Int64, IAccessibilityProviderNode>;
   lRow: Integer;
+  lStopwatch: TStopwatch;
 begin
   if (fGrid = nil) or IsDisconnected then
   begin
     Exit;
+  end;
+
+  lCellProbeCount := 0;
+  lCreatedCount := 0;
+  lMetricsEnabled := TAccessibilityDiagnostics.ProviderHotspotMetricsEnabled;
+  if lMetricsEnabled then
+  begin
+    lStopwatch := TStopwatch.StartNew;
   end;
 
   lKeysToRemove := TList<Int64>.Create;
@@ -955,14 +967,29 @@ begin
   begin
     for lCol := 0 to Pred(fGrid.ColCount) do
     begin
+      if lMetricsEnabled then
+      begin
+        Inc(lCellProbeCount);
+      end;
+
       if IsVisibleCell(lCol, lRow) and (CellProvider(lCol, lRow) = nil) then
       begin
         lCell := TAccessibilityAdvStringGridCellProvider.Create(Self, fGrid, lCol, lRow,
           [fRuntimeId, lRow, lCol], fUiaApi) as IAccessibilityProviderNode;
         AddChild(lCell);
         fCells.Add(CellKey(lCol, lRow), lCell);
+        if lMetricsEnabled then
+        begin
+          Inc(lCreatedCount);
+        end;
       end;
     end;
+  end;
+
+  if lMetricsEnabled then
+  begin
+    TAccessibilityDiagnostics.RecordTmsAdvStringGridRefresh(lCellProbeCount, lCreatedCount,
+      lStopwatch.ElapsedTicks);
   end;
 end;
 

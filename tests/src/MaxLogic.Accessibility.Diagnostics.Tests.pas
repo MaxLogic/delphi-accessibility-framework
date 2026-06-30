@@ -34,11 +34,32 @@ type
     procedure ListBoxFocusBaselineArtifactIsWritten;
   end;
 
+  [TestFixture]
+  [Category('ProviderHotspotPerformance')]
+  TAccessibilityProviderHotspotPerformanceTests = class
+  public
+    [Test]
+    [Category('ListBoxPerformance')]
+    procedure ListBoxProviderHotspotMetricsCaptureGetSelection;
+    [Test]
+    [Category('Memo')]
+    procedure MemoProviderHotspotMetricsCapturePreparation;
+    [Test]
+    procedure ProviderHotspotBaselineArtifactIsWritten;
+    [Test]
+    [Category('StringGrid')]
+    procedure StringGridProviderHotspotMetricsCaptureRefresh;
+    [Test]
+    [Category('TmsAdvStringGrid')]
+    procedure TmsAdvStringGridProviderHotspotMetricsCaptureRefresh;
+  end;
+
 implementation
 
 uses
   System.IOUtils, System.SysUtils, Winapi.ActiveX, Winapi.Messages, Winapi.Windows, Vcl.CheckLst, Vcl.Forms,
-  MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.Manager, MaxLogic.Accessibility.ProviderCore,
+  Vcl.Grids, Vcl.StdCtrls, AdvGrid, MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.Manager,
+  MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.TmsAdvStringGridAdapters,
   MaxLogic.Accessibility.UIAutomationCore, MaxLogic.Accessibility.VclAdapters;
 
 type
@@ -70,12 +91,34 @@ begin
   Result := TPath.Combine(lRunsDir, 'listbox-focus-baseline.json');
 end;
 
+function ProviderHotspotArtifactFileName: string;
+var
+  lAgentsDir: string;
+  lRunsDir: string;
+begin
+  lAgentsDir := TPath.Combine(GetCurrentDir, '.agents');
+  lRunsDir := TPath.Combine(lAgentsDir, 'runs');
+  ForceDirectories(lRunsDir);
+  Result := TPath.Combine(lRunsDir, 'provider-hotspot-baseline.json');
+end;
+
 function BuildBaselineJson(const aFrameworkMetrics: TAccessibilityListBoxFocusMetrics;
   const aTodoAppMetrics: TAccessibilityListBoxFocusMetrics): string;
 begin
   Result := '[' + aFrameworkMetrics.ToJson('framework-large-checklistbox-fixture', 'Accessibility-Framework') +
     ',' + aTodoAppMetrics.ToJson('todoapp-client-list-checklistbox-fixture',
     'ToDoApp client list compatible TCheckListBox fixture') + ']';
+end;
+
+function BuildProviderHotspotJson(const aMetrics: TAccessibilityProviderHotspotMetrics): string;
+begin
+  Result := '[' + aMetrics.ToJson('provider-hotspot-large-fixture', 'Accessibility-Framework') +
+    ',{"scenario":"provider-hotspot-large-fixture","source":"T-048",' +
+    '"taskDecisions":{"T-046":"proceed:memo-line-preparation-total-line-work",' +
+    '"T-044":"proceed:vcl-stringgrid-full-grid-probe-work",' +
+    '"T-045":"proceed:tms-advstringgrid-full-grid-probe-work-after-t-044",' +
+    '"T-043":"skip:listbox-getselection-not-hot-for-focus-change",' +
+    '"T-049":"proceed:last-host-validation"}}]';
 end;
 
 procedure ResetManager;
@@ -89,6 +132,12 @@ function FragmentRoot(const aProvider: IAccessibilityProviderNode): IRawElementP
 begin
   Result := nil;
   Assert.IsTrue(Supports(aProvider.RawElementProvider, IRawElementProviderFragmentRoot, Result));
+end;
+
+function SimpleProvider(const aFragment: IRawElementProviderFragment): IRawElementProviderSimple;
+begin
+  Result := nil;
+  Assert.IsTrue(Supports(aFragment, IRawElementProviderSimple, Result));
 end;
 
 procedure RunCheckListBoxFocusScenario(aItemCount: Integer; out aMetrics: TAccessibilityListBoxFocusMetrics);
@@ -124,6 +173,155 @@ begin
     lForm.Free;
     ResetManager;
     TAccessibilityDiagnostics.DisableListBoxFocusMetrics;
+  end;
+end;
+
+procedure ExerciseMemoHotspotProvider;
+var
+  i: Integer;
+  lForm: TForm;
+  lLine: IRawElementProviderFragment;
+  lMemo: TMemo;
+  lMemoFragment: IRawElementProviderFragment;
+  lProvider: IAccessibilityProviderNode;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 240);
+    lMemo := TMemo.Create(lForm);
+    lMemo.Parent := lForm;
+    lMemo.SetBounds(16, 16, 280, 120);
+    for i := 0 to 39 do
+    begin
+      lMemo.Lines.Add(Format('Memo line %.4d', [i]));
+    end;
+    lForm.HandleNeeded;
+    lMemo.HandleNeeded;
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+
+    Assert.AreEqual(S_OK, lProvider.FragmentProvider.Navigate(NavigateDirection_FirstChild, lMemoFragment));
+    Assert.IsNotNull(lMemoFragment, 'Memo provider was not reachable from the form root.');
+    Assert.AreEqual(S_OK, lMemoFragment.Navigate(NavigateDirection_FirstChild, lLine));
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure ExerciseStringGridHotspotProvider;
+var
+  lCol: Integer;
+  lForm: TForm;
+  lGrid: TStringGrid;
+  lProvider: IAccessibilityProviderNode;
+  lRow: Integer;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 420, 260);
+    lGrid := TStringGrid.Create(lForm);
+    lGrid.Parent := lForm;
+    lGrid.SetBounds(8, 8, 180, 90);
+    lGrid.ColCount := 12;
+    lGrid.RowCount := 80;
+    lGrid.FixedCols := 1;
+    lGrid.FixedRows := 1;
+    lGrid.DefaultColWidth := 55;
+    lGrid.DefaultRowHeight := 20;
+    for lRow := 0 to Pred(lGrid.RowCount) do
+    begin
+      for lCol := 0 to Pred(lGrid.ColCount) do
+      begin
+        lGrid.Cells[lCol, lRow] := Format('R%d C%d', [lRow, lCol]);
+      end;
+    end;
+    lGrid.Col := 2;
+    lGrid.Row := 1;
+    lForm.HandleNeeded;
+    lGrid.HandleNeeded;
+
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    Assert.IsNotNull(lProvider);
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure ExerciseTmsAdvStringGridHotspotProvider;
+var
+  lCol: Integer;
+  lForm: TForm;
+  lGrid: TAdvStringGrid;
+  lProvider: IAccessibilityProviderNode;
+  lRow: Integer;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 420, 260);
+    lGrid := TAdvStringGrid.Create(lForm);
+    lGrid.Parent := lForm;
+    lGrid.SetBounds(8, 8, 180, 90);
+    lGrid.ColCount := 12;
+    lGrid.RowCount := 80;
+    lGrid.FixedCols := 1;
+    lGrid.FixedRows := 1;
+    lGrid.DefaultColWidth := 55;
+    lGrid.DefaultRowHeight := 22;
+    for lRow := 0 to Pred(lGrid.RowCount) do
+    begin
+      for lCol := 0 to Pred(lGrid.ColCount) do
+      begin
+        lGrid.Cells[lCol, lRow] := Format('R%d C%d', [lRow, lCol]);
+      end;
+    end;
+    lGrid.Col := 2;
+    lGrid.Row := 1;
+    lForm.HandleNeeded;
+    lGrid.HandleNeeded;
+
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+    Assert.IsNotNull(lProvider);
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure ExerciseListBoxSelectionHotspotProvider;
+var
+  i: Integer;
+  lForm: TForm;
+  lListBox: TCheckListBox;
+  lListBoxFragment: IRawElementProviderFragment;
+  lPattern: IUnknown;
+  lProvider: IAccessibilityProviderNode;
+  lSelection: ISelectionProvider;
+  lSelectionArray: PSafeArray;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lListBox := TCheckListBox.Create(lForm);
+    lListBox.Parent := lForm;
+    lListBox.SetBounds(16, 16, 280, 140);
+    for i := 0 to 49 do
+    begin
+      lListBox.Items.Add(Format('Client %.4d', [i]));
+    end;
+    lListBox.ItemIndex := 7;
+    lForm.HandleNeeded;
+    lListBox.HandleNeeded;
+
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    Assert.AreEqual(S_OK, lProvider.FragmentProvider.Navigate(NavigateDirection_FirstChild, lListBoxFragment));
+    Assert.IsNotNull(lListBoxFragment, 'Listbox provider was not reachable from the form root.');
+    Assert.AreEqual(S_OK, SimpleProvider(lListBoxFragment).GetPatternProvider(UIA_SelectionPatternId, lPattern));
+    Assert.IsTrue(Supports(lPattern, ISelectionProvider, lSelection));
+    lSelectionArray := nil;
+    Assert.AreEqual(S_OK, lSelection.GetSelection(lSelectionArray));
+    if lSelectionArray <> nil then
+    begin
+      SafeArrayDestroy(lSelectionArray);
+    end;
+  finally
+    lForm.Free;
   end;
 end;
 
@@ -204,6 +402,128 @@ begin
   finally
     TAccessibilityDiagnostics.Disable;
     TFile.Delete(lLogFile);
+  end;
+end;
+
+procedure TAccessibilityProviderHotspotPerformanceTests.ListBoxProviderHotspotMetricsCaptureGetSelection;
+var
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+begin
+  TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+  TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+  try
+    ExerciseListBoxSelectionHotspotProvider;
+
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+    Assert.IsTrue(lMetrics.Enabled);
+    Assert.AreEqual(1, lMetrics.ListBoxGetSelectionCount);
+    Assert.AreEqual(1, lMetrics.ListBoxSelectionItemProbeCount);
+    Assert.AreEqual(1, lMetrics.ListBoxSelectionProviderCount);
+    Assert.IsTrue(lMetrics.ListBoxGetSelectionLastElapsedTicks > 0,
+      'Listbox GetSelection elapsed ticks were not captured.');
+  finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+  end;
+end;
+
+procedure TAccessibilityProviderHotspotPerformanceTests.MemoProviderHotspotMetricsCapturePreparation;
+var
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+begin
+  TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+  TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+  try
+    ExerciseMemoHotspotProvider;
+
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+    Assert.IsTrue(lMetrics.Enabled);
+    Assert.AreEqual(1, lMetrics.MemoPrepareChildrenCount);
+    Assert.IsTrue(lMetrics.MemoLineProbeCount >= 40,
+      Format('Memo line probe count was %d; expected at least the 40 populated fixture lines.',
+      [lMetrics.MemoLineProbeCount]));
+    Assert.IsTrue(lMetrics.MemoLineProviderCreatedCount > 0, 'Memo line provider creation was not captured.');
+    Assert.IsTrue(lMetrics.MemoPrepareChildrenLastElapsedTicks > 0,
+      'Memo preparation elapsed ticks were not captured.');
+  finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+  end;
+end;
+
+procedure TAccessibilityProviderHotspotPerformanceTests.ProviderHotspotBaselineArtifactIsWritten;
+var
+  lArtifactFile: string;
+  lJson: string;
+begin
+  TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+  TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+  try
+    ExerciseMemoHotspotProvider;
+    ExerciseStringGridHotspotProvider;
+    ExerciseTmsAdvStringGridHotspotProvider;
+    ExerciseListBoxSelectionHotspotProvider;
+
+    lJson := BuildProviderHotspotJson(TAccessibilityDiagnostics.ProviderHotspotMetrics);
+    lArtifactFile := ProviderHotspotArtifactFileName;
+    TFile.WriteAllText(lArtifactFile, lJson, TEncoding.UTF8);
+
+    Assert.IsTrue(TFile.Exists(lArtifactFile), 'Provider hotspot artifact was not written.');
+    lJson := TFile.ReadAllText(lArtifactFile, TEncoding.UTF8);
+    Assert.Contains(lJson, 'provider-hotspot-large-fixture');
+    Assert.Contains(lJson, '"memoPrepareChildrenCount":1');
+    Assert.Contains(lJson, '"stringGridRefreshCount":1');
+    Assert.Contains(lJson, '"tmsAdvStringGridRefreshCount":1');
+    Assert.Contains(lJson, '"listBoxGetSelectionCount":1');
+    Assert.Contains(lJson, '"taskDecisions"');
+    Assert.Contains(lJson, '"T-046":"proceed:memo-line-preparation-total-line-work"');
+    Assert.Contains(lJson, '"T-044":"proceed:vcl-stringgrid-full-grid-probe-work"');
+    Assert.Contains(lJson, '"T-045":"proceed:tms-advstringgrid-full-grid-probe-work-after-t-044"');
+    Assert.Contains(lJson, '"T-043":"skip:listbox-getselection-not-hot-for-focus-change"');
+    Assert.Contains(lJson, '"T-049":"proceed:last-host-validation"');
+  finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+  end;
+end;
+
+procedure TAccessibilityProviderHotspotPerformanceTests.StringGridProviderHotspotMetricsCaptureRefresh;
+var
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+begin
+  TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+  TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+  try
+    ExerciseStringGridHotspotProvider;
+
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+    Assert.IsTrue(lMetrics.Enabled);
+    Assert.AreEqual(1, lMetrics.StringGridRefreshCount);
+    Assert.AreEqual(960, lMetrics.StringGridCellProbeCount);
+    Assert.IsTrue(lMetrics.StringGridCellProviderCreatedCount > 0, 'StringGrid cell provider creation was not captured.');
+    Assert.IsTrue(lMetrics.StringGridRefreshLastElapsedTicks > 0,
+      'StringGrid refresh elapsed ticks were not captured.');
+  finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+  end;
+end;
+
+procedure TAccessibilityProviderHotspotPerformanceTests.TmsAdvStringGridProviderHotspotMetricsCaptureRefresh;
+var
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+begin
+  TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+  TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+  try
+    ExerciseTmsAdvStringGridHotspotProvider;
+
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+    Assert.IsTrue(lMetrics.Enabled);
+    Assert.AreEqual(1, lMetrics.TmsAdvStringGridRefreshCount);
+    Assert.AreEqual(960, lMetrics.TmsAdvStringGridCellProbeCount);
+    Assert.IsTrue(lMetrics.TmsAdvStringGridCellProviderCreatedCount > 0,
+      'TMS AdvStringGrid cell provider creation was not captured.');
+    Assert.IsTrue(lMetrics.TmsAdvStringGridRefreshLastElapsedTicks > 0,
+      'TMS AdvStringGrid refresh elapsed ticks were not captured.');
+  finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
   end;
 end;
 
@@ -428,5 +748,6 @@ end;
 initialization
   TDUnitX.RegisterTestFixture(TAccessibilityDiagnosticsTests);
   TDUnitX.RegisterTestFixture(TAccessibilityListBoxPerformanceTests);
+  TDUnitX.RegisterTestFixture(TAccessibilityProviderHotspotPerformanceTests);
 
 end.

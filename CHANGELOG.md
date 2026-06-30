@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-06-30
+### Added
+- Added provider hotspot diagnostics for memo line preparation, VCL `TStringGrid` refresh, TMS `TAdvStringGrid` refresh, and listbox `GetSelection` so performance work can be driven by measured provider-query costs.
+
 ## 2026-06-29
 ### Fixed
 - `TListBox` and `TCheckListBox` focus changes no longer queue an extra UIA notification for the same focused item, reducing duplicate screen-reader speech.

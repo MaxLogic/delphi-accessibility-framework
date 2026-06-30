@@ -383,6 +383,7 @@ function TextLineHeight(aControl: TCustomMemo): Integer;
 var
   lDc: HDC;
   lFont: HFONT;
+  lFontResult: LRESULT;
   lMetrics: TTextMetric;
   lOldFont: HGDIOBJ;
 begin
@@ -395,7 +396,8 @@ begin
   lDc := GetDC(aControl.Handle);
   lOldFont := 0;
   try
-    lFont := SendMessage(aControl.Handle, WM_GETFONT, 0, 0);
+    lFontResult := SendMessage(aControl.Handle, WM_GETFONT, 0, 0);
+    lFont := HFONT(lFontResult);
     if lFont <> 0 then
     begin
       lOldFont := SelectObject(lDc, lFont);

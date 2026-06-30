@@ -183,6 +183,7 @@ var
   lLine: IRawElementProviderFragment;
   lMemo: TMemo;
   lMemoFragment: IRawElementProviderFragment;
+  lNavigateResult: HResult;
   lProvider: IAccessibilityProviderNode;
 begin
   lForm := TForm.Create(nil);
@@ -201,7 +202,8 @@ begin
 
     Assert.AreEqual(S_OK, lProvider.FragmentProvider.Navigate(NavigateDirection_FirstChild, lMemoFragment));
     Assert.IsNotNull(lMemoFragment, 'Memo provider was not reachable from the form root.');
-    Assert.AreEqual(S_OK, lMemoFragment.Navigate(NavigateDirection_FirstChild, lLine));
+    lNavigateResult := lMemoFragment.Navigate(NavigateDirection_FirstChild, lLine);
+    Assert.AreEqual(S_OK, lNavigateResult);
   finally
     lForm.Free;
   end;
@@ -499,7 +501,9 @@ begin
     lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
     Assert.IsTrue(lMetrics.Enabled);
     Assert.AreEqual(1, lMetrics.StringGridRefreshCount);
-    Assert.AreEqual(960, lMetrics.StringGridCellProbeCount);
+    Assert.IsTrue(lMetrics.StringGridCellProbeCount <= 24,
+      Format('StringGrid cell probe count was %d; expected visible-range refresh instead of full 12x80 scan.',
+      [lMetrics.StringGridCellProbeCount]));
     Assert.IsTrue(lMetrics.StringGridCellProviderCreatedCount > 0, 'StringGrid cell provider creation was not captured.');
     Assert.IsTrue(lMetrics.StringGridRefreshLastElapsedTicks > 0,
       'StringGrid refresh elapsed ticks were not captured.');

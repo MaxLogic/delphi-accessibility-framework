@@ -13,6 +13,8 @@ type
     [Test]
     procedure GridProviderExposesDataGridPatternsAndVisibleCells;
     [Test]
+    procedure GridPatternGetItemReturnsValidOffscreenCells;
+    [Test]
     procedure GridProviderHitTestingReturnsTheCellUnderThePointer;
     [Test]
     procedure GridProviderHitTestingIgnoresPointsOutsideTheGrid;
@@ -286,6 +288,34 @@ begin
     Assert.AreEqual(VisibleCellCount(lGrid), ChildFragmentCount(lGridFragment));
     Assert.IsTrue(ChildNameExists(lGridFragment, 'Running'));
     Assert.IsFalse(ChildNameExists(lGridFragment, 'Hidden far cell'));
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TStringGridAccessibilityTests.GridPatternGetItemReturnsValidOffscreenCells;
+var
+  lCellFragment: IRawElementProviderFragment;
+  lCellSimple: IRawElementProviderSimple;
+  lForm: TForm;
+  lGrid: TStringGrid;
+  lGridFragment: IRawElementProviderFragment;
+  lGridPattern: IGridProvider;
+  lPattern: IUnknown;
+  lProvider: IAccessibilityProviderNode;
+begin
+  CreateScrollableGridFixture(lForm, lGrid);
+  try
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lGridFragment := FirstChildFragment(lProvider.FragmentProvider);
+    lPattern := ProviderPattern(lGridFragment, UIA_GridPatternId);
+    Assert.IsTrue(Supports(lPattern, IGridProvider, lGridPattern));
+
+    Assert.AreEqual(S_OK, lGridPattern.GetItem(6, 6, lCellSimple));
+    Assert.IsNotNull(lCellSimple);
+    lCellFragment := FragmentFromSimple(lCellSimple);
+    Assert.AreEqual('Scrolled cell', ProviderStringProperty(lCellFragment, UIA_NamePropertyId));
+    Assert.AreEqual(UIA_DataItemControlTypeId, ProviderIntProperty(lCellFragment, UIA_ControlTypePropertyId));
   finally
     lForm.Free;
   end;

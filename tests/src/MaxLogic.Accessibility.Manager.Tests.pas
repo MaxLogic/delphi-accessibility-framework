@@ -734,8 +734,25 @@ begin
 end;
 
 function PointFromMessageResult(aValue: LRESULT): TPoint;
+var
+  lRawValue: Cardinal;
+  lX: Integer;
+  lY: Integer;
 begin
-  Result := Point(Smallint(Word(aValue and $FFFF)), Smallint(Word((aValue shr 16) and $FFFF)));
+  lRawValue := Cardinal(aValue);
+  lX := Integer(lRawValue and $FFFF);
+  if lX > High(Smallint) then
+  begin
+    Dec(lX, $10000);
+  end;
+
+  lY := Integer((lRawValue shr 16) and $FFFF);
+  if lY > High(Smallint) then
+  begin
+    Dec(lY, $10000);
+  end;
+
+  Result := Point(lX, lY);
 end;
 
 procedure AssertManagerGridCellName(const aApi: IManagerTestUiaApi; aForm: TCustomForm;
@@ -2416,7 +2433,7 @@ begin
 
     lCharIndex := lMemo.Perform(EM_LINEINDEX, 1, 0);
     lLinePoint := PointFromMessageResult(lMemo.Perform(EM_POSFROMCHAR, lCharIndex, 0));
-    lMemo.Perform(WM_MOUSEMOVE, 0, PointToLParam(Point(lLinePoint.X + 4, lLinePoint.Y + 2)));
+    lMemo.Perform(WM_MOUSEMOVE, 0, PointToMouseLParam(Point(lLinePoint.X + 4, lLinePoint.Y + 2)));
     Assert.AreEqual(1, lApi.NotificationCalls);
     Assert.AreEqual('Second memo line', lApi.LastNotificationText);
     Assert.AreEqual('Second memo line', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),

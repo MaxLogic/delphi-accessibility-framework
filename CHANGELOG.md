@@ -6,6 +6,8 @@
 
 ### Fixed
 - Memo provider navigation now prepares only visible logical lines plus an out-of-view caret line instead of creating providers for every memo line.
+- VCL `TStringGrid` provider refresh now scans fixed and visible rows/columns instead of the full grid, reducing provider-query work for large grids.
+- Memo hit-test coordinate decoding now avoids Delphi range-check errors when Windows returns signed coordinate values.
 
 ## 2026-06-29
 ### Fixed

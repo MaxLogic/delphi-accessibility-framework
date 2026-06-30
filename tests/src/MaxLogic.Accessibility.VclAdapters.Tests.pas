@@ -257,8 +257,25 @@ begin
 end;
 
 function PointFromMessageResult(aValue: LRESULT): TPoint;
+var
+  lRawValue: Cardinal;
+  lX: Integer;
+  lY: Integer;
 begin
-  Result := Point(Smallint(Word(aValue and $FFFF)), Smallint(Word((aValue shr 16) and $FFFF)));
+  lRawValue := Cardinal(aValue);
+  lX := Integer(lRawValue and $FFFF);
+  if lX > High(Smallint) then
+  begin
+    Dec(lX, $10000);
+  end;
+
+  lY := Integer((lRawValue shr 16) and $FFFF);
+  if lY > High(Smallint) then
+  begin
+    Dec(lY, $10000);
+  end;
+
+  Result := Point(lX, lY);
 end;
 
 function ControlScreenCenter(aControl: TControl): TPoint;

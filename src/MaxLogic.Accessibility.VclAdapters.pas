@@ -356,8 +356,25 @@ end;
 function ControlIsInActiveVisibleTree(aControl: TControl): Boolean; forward;
 
 function PointFromMessageResult(aValue: LRESULT): TPoint;
+var
+  lRawValue: Cardinal;
+  lX: Integer;
+  lY: Integer;
 begin
-  Result := Point(Smallint(Word(aValue and $FFFF)), Smallint(Word((aValue shr 16) and $FFFF)));
+  lRawValue := Cardinal(aValue);
+  lX := Integer(lRawValue and $FFFF);
+  if lX > High(Smallint) then
+  begin
+    Dec(lX, $10000);
+  end;
+
+  lY := Integer((lRawValue shr 16) and $FFFF);
+  if lY > High(Smallint) then
+  begin
+    Dec(lY, $10000);
+  end;
+
+  Result := Point(lX, lY);
 end;
 
 function TextLineHeight(aControl: TCustomMemo): Integer;
@@ -425,6 +442,8 @@ end;
 function MemoLineIndexAtPoint(aMemo: TCustomMemo; const aClientPoint: TPoint): Integer;
 var
   lCharIndex: LRESULT;
+  lCharIndexParam: WPARAM;
+  lRawCharIndex: UInt64;
   lLineCount: LRESULT;
 begin
   Result := -1;
@@ -439,7 +458,9 @@ begin
     Exit;
   end;
 
-  Result := aMemo.Perform(EM_LINEFROMCHAR, WPARAM(lCharIndex and $FFFF), 0);
+  lRawCharIndex := UInt64(lCharIndex);
+  lCharIndexParam := WPARAM(lRawCharIndex and $FFFF);
+  Result := aMemo.Perform(EM_LINEFROMCHAR, lCharIndexParam, 0);
   lLineCount := aMemo.Perform(EM_GETLINECOUNT, 0, 0);
   if (Result < 0) or (Result >= lLineCount) then
   begin
@@ -1952,12 +1973,15 @@ var
   lCreatedCount: Integer;
   lExistingProvider: IAccessibilityProviderNode;
   lFirstVisibleLine: Integer;
+  lFirstVisibleLineResult: LRESULT;
   lLine: Integer;
   lLineCount: LRESULT;
+  lLineCountInt: Integer;
   lLineProbeCount: Integer;
   lLastVisibleLine: Integer;
   lLineHeight: Integer;
   lMetricsEnabled: Boolean;
+  lSelStart: Integer;
   lStopwatch: TStopwatch;
 begin
   inherited PrepareChildrenForNavigation;
@@ -1979,11 +2003,21 @@ begin
   begin
     Exit;
   end;
+  lLineCountInt := lLineCount;
 
   lLineHeight := TextLineHeight(fMemo);
-  lFirstVisibleLine := Integer(fMemo.Perform(EM_GETFIRSTVISIBLELINE, 0, 0));
-  lFirstVisibleLine := EnsureRange(lFirstVisibleLine, 0, Pred(Integer(lLineCount)));
-  lLastVisibleLine := Min(Pred(Integer(lLineCount)), lFirstVisibleLine + Max(1, fMemo.ClientHeight div lLineHeight) + 1);
+  lFirstVisibleLineResult := SendMessage(fMemo.Handle, EM_GETFIRSTVISIBLELINE, 0, 0);
+  if lFirstVisibleLineResult <= 0 then
+  begin
+    lFirstVisibleLine := 0;
+  end else if lFirstVisibleLineResult >= lLineCountInt then
+  begin
+    lFirstVisibleLine := Pred(lLineCountInt);
+  end else begin
+    lFirstVisibleLine := Integer(lFirstVisibleLineResult);
+  end;
+  lLastVisibleLine := Min(Pred(lLineCountInt), lFirstVisibleLine + Max(1, fMemo.ClientHeight div lLineHeight) + 1);
+
   for lLine := lFirstVisibleLine to lLastVisibleLine do
   begin
     if lMetricsEnabled then
@@ -2000,23 +2034,27 @@ begin
     end;
   end;
 
-  lCaretLineResult := fMemo.Perform(EM_LINEFROMCHAR, fMemo.SelStart, 0);
-  if (lCaretLineResult >= 0) and (lCaretLineResult < lLineCount) then
+  lSelStart := fMemo.SelStart;
+  if lSelStart >= 0 then
   begin
-    lCaretLine := Integer(lCaretLineResult);
-    if (lCaretLine < lFirstVisibleLine) or (lCaretLine > lLastVisibleLine) then
+    lCaretLineResult := fMemo.Perform(EM_LINEFROMCHAR, WPARAM(lSelStart), 0);
+    if (lCaretLineResult >= 0) and (lCaretLineResult < lLineCount) then
     begin
-      if lMetricsEnabled then
+      lCaretLine := Integer(lCaretLineResult);
+      if (lCaretLine < lFirstVisibleLine) or (lCaretLine > lLastVisibleLine) then
       begin
-        Inc(lLineProbeCount);
-        lExistingProvider := LineProvider(lCaretLine);
-        EnsureLineProvider(lCaretLine);
-        if (lExistingProvider = nil) and (LineProvider(lCaretLine) <> nil) then
+        if lMetricsEnabled then
         begin
-          Inc(lCreatedCount);
+          Inc(lLineProbeCount);
+          lExistingProvider := LineProvider(lCaretLine);
+          EnsureLineProvider(lCaretLine);
+          if (lExistingProvider = nil) and (LineProvider(lCaretLine) <> nil) then
+          begin
+            Inc(lCreatedCount);
+          end;
+        end else begin
+          EnsureLineProvider(lCaretLine);
         end;
-      end else begin
-        EnsureLineProvider(lCaretLine);
       end;
     end;
   end;
@@ -3041,6 +3079,14 @@ function TAccessibilityStringGridProvider.EnsureCellProvider(aCol: Integer; aRow
 begin
   RefreshVisibleCells;
   Result := CellProvider(aCol, aRow);
+  if (Result = nil) and (fGrid <> nil) and (aCol >= 0) and (aCol < fGrid.ColCount) and
+    (aRow >= 0) and (aRow < fGrid.RowCount) then
+  begin
+    Result := TAccessibilityStringGridCellProvider.Create(Self, fGrid, aCol, aRow, [fRuntimeId, aRow, aCol], fUiaApi) as
+      IAccessibilityProviderNode;
+    AddChild(Result);
+    fCells.Add(CellKey(aCol, aRow), Result);
+  end;
 end;
 
 function TAccessibilityStringGridProvider.EnsureRowProvider(aRow: Integer): IAccessibilityProviderNode;
@@ -3054,12 +3100,18 @@ var
   lCell: IAccessibilityProviderNode;
   lCellProbeCount: Integer;
   lCol: Integer;
+  lCols: TList<Integer>;
   lCreatedCount: Integer;
+  lFirstScrollableCol: Integer;
+  lFirstScrollableRow: Integer;
   lKey: Int64;
   lKeysToRemove: TList<Int64>;
+  lLastScrollableCol: Integer;
+  lLastScrollableRow: Integer;
   lMetricsEnabled: Boolean;
   lPair: TPair<Int64, IAccessibilityProviderNode>;
   lRow: Integer;
+  lRows: TList<Integer>;
   lStopwatch: TStopwatch;
 begin
   if (fGrid = nil) or IsDisconnected or not ControlIsInActiveVisibleTree(fGrid) then
@@ -3097,27 +3149,64 @@ begin
     lKeysToRemove.Free;
   end;
 
-  for lRow := 0 to Pred(fGrid.RowCount) do
-  begin
-    for lCol := 0 to Pred(fGrid.ColCount) do
+  lCols := TList<Integer>.Create;
+  lRows := TList<Integer>.Create;
+  try
+    for lCol := 0 to Pred(Min(fGrid.FixedCols, fGrid.ColCount)) do
     begin
-      if lMetricsEnabled then
-      begin
-        Inc(lCellProbeCount);
-      end;
+      lCols.Add(lCol);
+    end;
 
-      if IsVisibleCell(lCol, lRow) and (CellProvider(lCol, lRow) = nil) then
+    lFirstScrollableCol := EnsureRange(fGrid.LeftCol, 0, Pred(fGrid.ColCount));
+    lLastScrollableCol := Min(Pred(fGrid.ColCount), lFirstScrollableCol + Max(0, fGrid.VisibleColCount) + 1);
+    for lCol := lFirstScrollableCol to lLastScrollableCol do
+    begin
+      if not lCols.Contains(lCol) then
       begin
-        lCell := TAccessibilityStringGridCellProvider.Create(Self, fGrid, lCol, lRow,
-          [fRuntimeId, lRow, lCol], fUiaApi) as IAccessibilityProviderNode;
-        AddChild(lCell);
-        fCells.Add(CellKey(lCol, lRow), lCell);
+        lCols.Add(lCol);
+      end;
+    end;
+
+    for lRow := 0 to Pred(Min(fGrid.FixedRows, fGrid.RowCount)) do
+    begin
+      lRows.Add(lRow);
+    end;
+
+    lFirstScrollableRow := EnsureRange(fGrid.TopRow, 0, Pred(fGrid.RowCount));
+    lLastScrollableRow := Min(Pred(fGrid.RowCount), lFirstScrollableRow + Max(0, fGrid.VisibleRowCount) + 1);
+    for lRow := lFirstScrollableRow to lLastScrollableRow do
+    begin
+      if not lRows.Contains(lRow) then
+      begin
+        lRows.Add(lRow);
+      end;
+    end;
+
+    for lRow in lRows do
+    begin
+      for lCol in lCols do
+      begin
         if lMetricsEnabled then
         begin
-          Inc(lCreatedCount);
+          Inc(lCellProbeCount);
+        end;
+
+        if IsVisibleCell(lCol, lRow) and (CellProvider(lCol, lRow) = nil) then
+        begin
+          lCell := TAccessibilityStringGridCellProvider.Create(Self, fGrid, lCol, lRow,
+            [fRuntimeId, lRow, lCol], fUiaApi) as IAccessibilityProviderNode;
+          AddChild(lCell);
+          fCells.Add(CellKey(lCol, lRow), lCell);
+          if lMetricsEnabled then
+          begin
+            Inc(lCreatedCount);
+          end;
         end;
       end;
     end;
+  finally
+    lRows.Free;
+    lCols.Free;
   end;
 
   if lMetricsEnabled then

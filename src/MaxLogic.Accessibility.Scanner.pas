@@ -151,8 +151,10 @@ type
     fForm: TCustomForm;
     fHooks: TObjectDictionary<TWinControl, TAccessibilityControlHook>;
     fRegistry: IAccessibilityAdapterRegistry;
+    fRefreshPending: Boolean;
     fRevision: Integer;
     fTree: IAccessibilityScanTree;
+    procedure EnsureFresh;
     procedure HookWinControls(aControl: TWinControl);
     procedure Rebuild;
   public
@@ -821,7 +823,15 @@ end;
 
 procedure TAccessibilityObservedFormScan.ControlChanged;
 begin
-  Refresh;
+  fRefreshPending := True;
+end;
+
+procedure TAccessibilityObservedFormScan.EnsureFresh;
+begin
+  if fRefreshPending then
+  begin
+    Refresh;
+  end;
 end;
 
 procedure TAccessibilityObservedFormScan.HookWinControls(aControl: TWinControl);
@@ -859,17 +869,20 @@ end;
 
 procedure TAccessibilityObservedFormScan.Refresh;
 begin
+  fRefreshPending := False;
   HookWinControls(fForm);
   Rebuild;
 end;
 
 function TAccessibilityObservedFormScan.Revision: Integer;
 begin
+  EnsureFresh;
   Result := fRevision;
 end;
 
 function TAccessibilityObservedFormScan.Tree: IAccessibilityScanTree;
 begin
+  EnsureFresh;
   Result := fTree;
 end;
 

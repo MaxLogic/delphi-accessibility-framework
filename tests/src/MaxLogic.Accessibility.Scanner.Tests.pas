@@ -15,6 +15,8 @@ type
     [Test]
     procedure RuntimeControlChangesRefreshObservedTree;
     [Test]
+    procedure RuntimeControlChangesCoalesceUntilObservedTreeIsRead;
+    [Test]
     procedure DestroyedWinControlIsUnhookedBeforeObserverRelease;
     [Test]
     procedure LaterWindowProcHookCanCallPriorAfterObserverRelease;
@@ -228,6 +230,36 @@ begin
 
     Assert.AreEqual(3, lScan.Revision);
     Assert.IsNull(lScan.Tree.FindNode(lLabel));
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityScannerTests.RuntimeControlChangesCoalesceUntilObservedTreeIsRead;
+const
+  cControlCount = 25;
+var
+  i: Integer;
+  lForm: TForm;
+  lLabel: TLabel;
+  lLastLabel: TLabel;
+  lScan: IAccessibilityObservedFormScan;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lScan := TAccessibilityScanner.ObserveForm(lForm);
+    Assert.AreEqual(1, lScan.Revision);
+
+    for i := 1 to cControlCount do
+    begin
+      lLabel := TLabel.Create(lForm);
+      lLabel.Caption := Format('Added %d', [i]);
+      lLabel.Parent := lForm;
+      lLastLabel := lLabel;
+    end;
+
+    Assert.AreEqual(2, lScan.Revision);
+    Assert.AreEqual(Format('Added %d', [cControlCount]), lScan.Tree.FindNode(lLastLabel).Name);
   finally
     lForm.Free;
   end;

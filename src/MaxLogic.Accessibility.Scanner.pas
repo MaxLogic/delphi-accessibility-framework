@@ -83,10 +83,16 @@ type
 implementation
 
 uses
-  System.Actions, System.Classes, System.SysUtils, System.Types, System.TypInfo, Winapi.Messages, Vcl.StdCtrls,
-  MaxLogic.Accessibility.Text;
+  System.Actions, System.Classes, System.Generics.Defaults, System.SysUtils, System.Types, System.TypInfo,
+  Winapi.Messages, Vcl.StdCtrls, MaxLogic.Accessibility.Text;
 
 type
+  TSortedChildEntry = record
+    Control: TControl;
+    OriginalIndex: Integer;
+    SortKey: Integer;
+  end;
+
   TAccessibilityScanNode = class(TInterfacedObject, IAccessibilityScanNode)
   private
     fChildren: TList<IAccessibilityScanNode>;
@@ -324,29 +330,50 @@ begin
   end;
 end;
 
+function CompareSortedChildEntry(const aLeft: TSortedChildEntry; const aRight: TSortedChildEntry): Integer;
+begin
+  if aLeft.SortKey < aRight.SortKey then
+  begin
+    Exit(-1);
+  end;
+
+  if aLeft.SortKey > aRight.SortKey then
+  begin
+    Exit(1);
+  end;
+
+  if aLeft.OriginalIndex < aRight.OriginalIndex then
+  begin
+    Exit(-1);
+  end;
+
+  if aLeft.OriginalIndex > aRight.OriginalIndex then
+  begin
+    Exit(1);
+  end;
+
+  Result := 0;
+end;
+
 function SortedChildren(aParent: TWinControl): TArray<TControl>;
 var
   i: Integer;
-  j: Integer;
-  lTemp: TControl;
+  lEntries: TArray<TSortedChildEntry>;
 begin
+  SetLength(lEntries, aParent.ControlCount);
   SetLength(Result, aParent.ControlCount);
   for i := 0 to Pred(aParent.ControlCount) do
   begin
-    Result[i] := aParent.Controls[i];
+    lEntries[i].Control := aParent.Controls[i];
+    lEntries[i].OriginalIndex := i;
+    lEntries[i].SortKey := ControlSortKey(lEntries[i].Control, i);
   end;
 
-  for i := 1 to High(Result) do
+  TArray.Sort<TSortedChildEntry>(lEntries, TComparer<TSortedChildEntry>.Construct(CompareSortedChildEntry));
+
+  for i := 0 to High(lEntries) do
   begin
-    j := i;
-    while (j > 0) and
-      (ControlSortKey(Result[j - 1], j - 1) > ControlSortKey(Result[j], j)) do
-    begin
-      lTemp := Result[j - 1];
-      Result[j - 1] := Result[j];
-      Result[j] := lTemp;
-      Dec(j);
-    end;
+    Result[i] := lEntries[i].Control;
   end;
 end;
 

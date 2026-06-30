@@ -21,6 +21,8 @@ type
     [Test]
     procedure ScanTreeFindNodeUsesIndexedLookupForRepeatedQueries;
     [Test]
+    procedure ScanFormSortsLargeReorderedControlTreesWithoutQuadraticCost;
+    [Test]
     procedure ScannerWalksVclTreeInStableOrder;
     [Test]
     procedure TextExtractionUsesFallbackPriorityAndSuppressesIconGlyphs;
@@ -130,6 +132,44 @@ begin
   end;
   lStopwatch.Stop;
   Result := lStopwatch.ElapsedTicks;
+end;
+
+function BuildReorderedLabelForm(aControlCount: Integer): TForm;
+var
+  i: Integer;
+  lLabel: TLabel;
+begin
+  Result := TForm.Create(nil);
+  for i := 1 to aControlCount do
+  begin
+    lLabel := TLabel.Create(Result);
+    lLabel.Caption := Format('Sorted node %d', [i]);
+    lLabel.Parent := Result;
+    lLabel.SendToBack;
+  end;
+end;
+
+function MeasureScanFormTicks(aControlCount: Integer): Int64;
+var
+  lForm: TForm;
+  lStopwatch: TStopwatch;
+  lTree: IAccessibilityScanTree;
+begin
+  lForm := BuildReorderedLabelForm(aControlCount);
+  try
+    lStopwatch := TStopwatch.StartNew;
+    lTree := TAccessibilityScanner.ScanForm(lForm);
+    lStopwatch.Stop;
+
+    if Length(lTree.FlattenedNodes) <> aControlCount then
+    begin
+      raise EAssertionFailed.Create('ScanForm returned an unexpected node count during measurement.');
+    end;
+
+    Result := lStopwatch.ElapsedTicks;
+  finally
+    lForm.Free;
+  end;
 end;
 
 procedure TAccessibilityScannerTests.AdapterRegistryResolvesNearestRegisteredClass;
@@ -290,6 +330,23 @@ begin
   finally
     lForm.Free;
   end;
+end;
+
+procedure TAccessibilityScannerTests.ScanFormSortsLargeReorderedControlTreesWithoutQuadraticCost;
+const
+  cSmallControlCount = 200;
+  cLargeControlCount = 800;
+  cMaxTickGrowth = 10;
+var
+  lLargeTicks: Int64;
+  lSmallTicks: Int64;
+begin
+  lSmallTicks := MeasureScanFormTicks(cSmallControlCount);
+  lLargeTicks := MeasureScanFormTicks(cLargeControlCount);
+
+  Assert.IsTrue(lLargeTicks <= lSmallTicks * cMaxTickGrowth,
+    Format('Reordered ScanForm should avoid quadratic child sorting; %d controls=%d ticks, %d controls=%d ticks.',
+    [cSmallControlCount, lSmallTicks, cLargeControlCount, lLargeTicks]));
 end;
 
 procedure TAccessibilityScannerTests.ScannerWalksVclTreeInStableOrder;

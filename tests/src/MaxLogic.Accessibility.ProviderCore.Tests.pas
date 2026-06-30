@@ -13,6 +13,8 @@ type
     [Test]
     procedure FragmentNavigationIsDeterministic;
     [Test]
+    procedure FragmentNextSiblingEnumerationScalesLinearly;
+    [Test]
     procedure FragmentOwnerDestroyDisconnectsFragmentProvider;
     [Test]
     procedure NestedSubtreeOwnerDestroyDisconnectsEveryProvider;
@@ -39,7 +41,7 @@ type
 implementation
 
 uses
-  System.Classes, System.SysUtils, Winapi.ActiveX, Winapi.Windows,
+  System.Classes, System.Diagnostics, System.SysUtils, Winapi.ActiveX, Winapi.Windows,
   MaxLogic.Accessibility.ProviderCore,
   MaxLogic.Accessibility.UIAutomationCore;
 
@@ -128,6 +130,37 @@ begin
     begin
       SafeArrayDestroy(lArray);
     end;
+  end;
+end;
+
+function MeasureNextSiblingEnumerationTicks(aChildCount: Integer): Int64;
+var
+  i: Integer;
+  lCurrent: IRawElementProviderFragment;
+  lNext: IRawElementProviderFragment;
+  lRoot: IAccessibilityProviderNode;
+  lStopwatch: TStopwatch;
+begin
+  lRoot := TAccessibilityProviderFactory.CreateRoot([100], 0);
+  for i := 1 to aChildCount do
+  begin
+    lRoot.AddChild(TAccessibilityProviderFactory.CreateFragment([1000 + i]));
+  end;
+
+  Assert.AreEqual(S_OK, lRoot.FragmentProvider.Navigate(NavigateDirection_FirstChild, lCurrent));
+  lStopwatch := TStopwatch.StartNew;
+  for i := 2 to aChildCount do
+  begin
+    Assert.AreEqual(S_OK, lCurrent.Navigate(NavigateDirection_NextSibling, lNext));
+    Assert.IsNotNull(lNext);
+    lCurrent := lNext;
+  end;
+  lStopwatch.Stop;
+
+  Result := lStopwatch.ElapsedTicks;
+  if Result < 1 then
+  begin
+    Result := 1;
   end;
 end;
 
@@ -389,6 +422,23 @@ begin
   Assert.AreEqual(201, RuntimeIdValue(lFirst, 1));
   Assert.AreEqual(S_OK, lSecond.Navigate(NavigateDirection_Parent, lFirst));
   Assert.AreEqual(100, RuntimeIdValue(lFirst, 1));
+end;
+
+procedure TProviderCoreTests.FragmentNextSiblingEnumerationScalesLinearly;
+const
+  cGrowthFactor = 4;
+  cMaxTickGrowth = 8;
+  cSmallChildCount = 512;
+var
+  lLargeTicks: Int64;
+  lSmallTicks: Int64;
+begin
+  lSmallTicks := MeasureNextSiblingEnumerationTicks(cSmallChildCount);
+  lLargeTicks := MeasureNextSiblingEnumerationTicks(cSmallChildCount * cGrowthFactor);
+
+  Assert.IsTrue(lLargeTicks <= lSmallTicks * cMaxTickGrowth,
+    Format('NextSibling enumeration grew from %d to %d ticks for %dx children.', [lSmallTicks, lLargeTicks,
+    cGrowthFactor]));
 end;
 
 procedure TProviderCoreTests.NestedSubtreeOwnerDestroyDisconnectsEveryProvider;

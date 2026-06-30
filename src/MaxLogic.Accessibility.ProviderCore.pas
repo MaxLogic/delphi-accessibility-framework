@@ -51,6 +51,7 @@ type
     fHwnd: HWND;
     fOwnerLink: TComponent;
     fParent: TAccessibilityProviderNode;
+    fParentIndex: Integer;
     fProperties: TDictionary<PROPERTYID, OleVariant>;
     fRuntimeId: TArray<Integer>;
     class function FromNode(const aNode: IAccessibilityProviderNode): TAccessibilityProviderNode; static;
@@ -58,6 +59,7 @@ type
     function CreateRuntimeIdSafeArray: PSafeArray;
     procedure DetachChildrenFromParentDestruction;
     procedure DetachFromParentDestruction;
+    procedure RefreshChildIndexesFrom(aStartIndex: Integer);
     function RootNode: TAccessibilityProviderNode;
     procedure SetOwnerLink(aOwnerLink: TComponent);
   protected
@@ -356,6 +358,7 @@ begin
 
   fApi := aApi;
   fHwnd := aHwnd;
+  fParentIndex := -1;
   fChildren := TList<IAccessibilityProviderNode>.Create;
   fProperties := TDictionary<PROPERTYID, OleVariant>.Create;
   SetLength(fRuntimeId, Length(aRuntimeId));
@@ -390,6 +393,7 @@ begin
   end;
 
   lChild.fParent := Self;
+  lChild.fParentIndex := fChildren.Count;
   lChild.AssignApiRecursive(fApi);
   fChildren.Add(aChild);
 end;
@@ -415,14 +419,22 @@ function TAccessibilityProviderNode.ChildIndex(aChild: TAccessibilityProviderNod
 var
   i: Integer;
 begin
+  Result := aChild.fParentIndex;
+  if (Result >= 0) and (Result < fChildren.Count) and (FromNode(fChildren[Result]) = aChild) then
+  begin
+    Exit;
+  end;
+
   for i := 0 to Pred(fChildren.Count) do
   begin
     if FromNode(fChildren[i]) = aChild then
     begin
+      aChild.fParentIndex := i;
       Exit(i);
     end;
   end;
 
+  aChild.fParentIndex := -1;
   Result := -1;
 end;
 
@@ -471,6 +483,7 @@ end;
 procedure TAccessibilityProviderNode.DetachFromParentDestruction;
 begin
   fParent := nil;
+  fParentIndex := -1;
   fDisconnected := True;
   DetachChildrenFromParentDestruction;
 end;
@@ -797,11 +810,23 @@ begin
 
   fChildren.Delete(lIndex);
   lChild.fParent := nil;
+  lChild.fParentIndex := -1;
+  RefreshChildIndexesFrom(lIndex);
   if aDisconnect then
   begin
     aChild.Disconnect;
   end else begin
     lChild.DetachFromParentDestruction;
+  end;
+end;
+
+procedure TAccessibilityProviderNode.RefreshChildIndexesFrom(aStartIndex: Integer);
+var
+  i: Integer;
+begin
+  for i := aStartIndex to Pred(fChildren.Count) do
+  begin
+    FromNode(fChildren[i]).fParentIndex := i;
   end;
 end;
 

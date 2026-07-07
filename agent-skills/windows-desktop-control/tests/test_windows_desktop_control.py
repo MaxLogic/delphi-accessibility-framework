@@ -51,6 +51,15 @@ class WindowsDesktopControlTests(unittest.TestCase):
 
         self.assertEqual(expected_size, ctypes.sizeof(helper.INPUT))
 
+    def test_arrow_keys_use_extended_key_flag(self) -> None:
+        helper = load_helper_module()
+
+        self.assertEqual(helper.KEYEVENTF_EXTENDEDKEY, helper.key_flags_for_vk(helper.VK_CODES["down"], False))
+        self.assertEqual(
+            helper.KEYEVENTF_EXTENDEDKEY | helper.KEYEVENTF_KEYUP,
+            helper.key_flags_for_vk(helper.VK_CODES["down"], True),
+        )
+
     def test_screenshot_window_command_is_documented_in_help(self) -> None:
         result = self.run_helper("--help")
 

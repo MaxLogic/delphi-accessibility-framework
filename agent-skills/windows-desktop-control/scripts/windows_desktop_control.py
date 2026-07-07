@@ -28,6 +28,7 @@ ANNOUNCEMENTS = {
 }
 
 KEYEVENTF_KEYUP = 0x0002
+KEYEVENTF_EXTENDEDKEY = 0x0001
 KEYEVENTF_UNICODE = 0x0004
 MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
@@ -47,6 +48,7 @@ VK_CODES = {
     "down": 0x28,
     "shift": 0x10,
 }
+EXTENDED_VK_CODES = {VK_CODES["left"], VK_CODES["up"], VK_CODES["right"], VK_CODES["down"]}
 
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
@@ -562,8 +564,15 @@ def command_click(args: argparse.Namespace) -> int:
     return 0
 
 
+def key_flags_for_vk(vk: int, key_up: bool = False) -> int:
+    flags = KEYEVENTF_EXTENDEDKEY if vk in EXTENDED_VK_CODES else 0
+    if key_up:
+        flags |= KEYEVENTF_KEYUP
+    return flags
+
+
 def send_key_input(vk: int, key_up: bool = False) -> None:
-    flags = KEYEVENTF_KEYUP if key_up else 0
+    flags = key_flags_for_vk(vk, key_up)
     item = INPUT(type=1, union=INPUTUNION(ki=KEYBDINPUT(vk, 0, flags, 0, 0)))
     sent = user32.SendInput(1, ctypes.byref(item), ctypes.sizeof(item))
     if sent != 1:

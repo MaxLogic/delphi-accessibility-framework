@@ -110,6 +110,7 @@ type
     fHasLastGridCell: Boolean;
     fHasLastListBoxIndex: Boolean;
     fHasLastRaisedProviderState: Boolean;
+    fLastFocusAnnouncement: string;
     fLastGridCol: Integer;
     fLastGridRow: Integer;
     fLastHoverAnnouncement: string;
@@ -120,6 +121,7 @@ type
     fPreserveNativeWindowAccessibility: Boolean;
     fProvider: IRawElementProviderSimple;
     fProviderStateMessageDepth: Integer;
+    fRootProvider: IRawElementProviderSimple;
     procedure Detach;
     function GridCellChanged: Boolean;
     procedure InitializeGridCellTracking;
@@ -128,17 +130,21 @@ type
     procedure MaybeRaiseGridFocusChanged;
     procedure MaybeRaiseListBoxFocusChanged;
     procedure MaybeRaiseProviderHover(aLParam: LPARAM);
+    procedure MaybeRaiseRadioNavigationChanged(aPreviousRadio: TRadioButton);
     function Passivate: Boolean;
     procedure RaiseFocusChanged;
     procedure NotifyFocusHint;
     procedure RaiseGridFocusChanged;
     procedure RaiseListBoxFocusChanged;
+    procedure RaiseRadioNavigationChanged(aSelectedRadio: TRadioButton);
+    function TryCurrentSelectedGroupedRadio(out aRadio: TRadioButton): Boolean;
   protected
     procedure Notification(aComponent: TComponent; aOperation: TOperation); override;
   public
     class procedure ReleaseRetainedHooks; static;
     constructor Create(aControl: TWinControl; const aProvider: IRawElementProviderSimple;
-      const aApi: IAccessibilityUiaApi; aPreserveNativeWindowAccessibility: Boolean); reintroduce;
+      const aApi: IAccessibilityUiaApi; const aRootProvider: IRawElementProviderSimple;
+      aPreserveNativeWindowAccessibility: Boolean); reintroduce;
     destructor Destroy; override;
     procedure WindowProc(var aMessage: TMessage);
   end;
@@ -235,7 +241,8 @@ end;
 
 function ShouldPreserveNativeWindowAccessibility(aControl: TWinControl): Boolean;
 begin
-  Result := (aControl is TCustomCheckBox) or ((aControl is TRadioButton) and not (aControl.Parent is TRadioGroup));
+  Result := (aControl is TCustomCheckBox) or ((aControl is TRadioButton) and
+    not ((aControl.Parent is TRadioGroup) or (aControl.Parent is TCustomGroupBox)));
 end;
 
 procedure EnsureRadioGroupButtonHandles(aControl: TControl);
@@ -514,6 +521,21 @@ begin
   Result := ProviderFocusAnnouncementText(aProvider);
 end;
 
+procedure RaiseProviderAnnouncement(const aProvider: IRawElementProviderSimple; const aActivityId: string;
+  const aApi: IAccessibilityUiaApi);
+var
+  lAnnouncementText: string;
+begin
+  lAnnouncementText := ProviderFocusAnnouncementText(aProvider);
+  if lAnnouncementText = '' then
+  begin
+    Exit;
+  end;
+
+  TAccessibilityProviderEvents.RaiseNotification(aProvider, NotificationKind_Other,
+    NotificationProcessing_MostRecent, lAnnouncementText, aActivityId, aApi);
+end;
+
 function ProviderUsesPlatformStateEvents(const aProvider: IRawElementProviderSimple): Boolean;
 var
   lControlType: Integer;
@@ -540,6 +562,76 @@ begin
 
   lControl := lInfo.Control;
   Result := (lControl is TRadioButton) and (lControl.Parent is TRadioGroup);
+end;
+
+function ProviderWrapsGroupBoxRadioButton(const aProvider: IRawElementProviderSimple): Boolean;
+var
+  lControl: TControl;
+  lInfo: IAccessibilityVclControlProviderInfo;
+begin
+  Result := False;
+  if not Supports(aProvider, IAccessibilityVclControlProviderInfo, lInfo) then
+  begin
+    Exit;
+  end;
+
+  lControl := lInfo.Control;
+  Result := (lControl is TRadioButton) and (lControl.Parent is TCustomGroupBox);
+end;
+
+function ProviderNeedsSupplementalRadioAnnouncements(const aProvider: IRawElementProviderSimple): Boolean;
+begin
+  Result := ProviderWrapsRadioGroupButton(aProvider) or ProviderWrapsGroupBoxRadioButton(aProvider);
+end;
+
+function TryFindProviderForControl(const aProvider: IRawElementProviderSimple; aControl: TControl;
+  out aControlProvider: IRawElementProviderSimple): Boolean;
+var
+  lChild: IRawElementProviderFragment;
+  lChildProvider: IRawElementProviderSimple;
+  lFragment: IRawElementProviderFragment;
+  lInfo: IAccessibilityVclControlProviderInfo;
+  lNextChild: IRawElementProviderFragment;
+begin
+  aControlProvider := nil;
+  Result := False;
+  if (aProvider = nil) or (aControl = nil) or ProviderIsGrid(aProvider) then
+  begin
+    Exit;
+  end;
+
+  if Supports(aProvider, IAccessibilityVclControlProviderInfo, lInfo) and (lInfo.Control = aControl) then
+  begin
+    aControlProvider := aProvider;
+    Exit(True);
+  end;
+
+  if not Supports(aProvider, IRawElementProviderFragment, lFragment) then
+  begin
+    Exit;
+  end;
+
+  if lFragment.Navigate(NavigateDirection_FirstChild, lChild) <> S_OK then
+  begin
+    Exit;
+  end;
+
+  while lChild <> nil do
+  begin
+    lChildProvider := nil;
+    if Supports(lChild, IRawElementProviderSimple, lChildProvider) and
+      TryFindProviderForControl(lChildProvider, aControl, aControlProvider) then
+    begin
+      Exit(True);
+    end;
+
+    lNextChild := nil;
+    if lChild.Navigate(NavigateDirection_NextSibling, lNextChild) <> S_OK then
+    begin
+      Exit;
+    end;
+    lChild := lNextChild;
+  end;
 end;
 
 function TryCaptureProviderState(const aProvider: IRawElementProviderSimple; out aState: TProviderStateSnapshot):
@@ -599,6 +691,21 @@ begin
       end;
   else
     Result := False;
+  end;
+end;
+
+function RadioNavigationMessageMayChangeSelection(aControl: TWinControl; const aMessage: TMessage): Boolean;
+begin
+  Result := False;
+  if not ((aControl is TRadioButton) and ((TRadioButton(aControl).Parent is TRadioGroup) or
+    (TRadioButton(aControl).Parent is TCustomGroupBox)) and (aMessage.Msg = WM_KEYDOWN)) then
+  begin
+    Exit;
+  end;
+
+  case aMessage.WParam of
+    VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN:
+      Result := True;
   end;
 end;
 
@@ -676,7 +783,7 @@ begin
     begin
       NotifyAccessibilityWinEvent(EVENT_OBJECT_FOCUS, lHwnd, cMsaaObjIdClient, CHILDID_SELF);
       NotifyAccessibilityWinEvent(EVENT_OBJECT_STATECHANGE, lHwnd, cMsaaObjIdClient, CHILDID_SELF);
-      if not ProviderWrapsRadioGroupButton(aProvider) then
+      if not ProviderNeedsSupplementalRadioAnnouncements(aProvider) then
       begin
         Exit;
       end;
@@ -970,12 +1077,12 @@ end;
 procedure TAccessibilityFormWindowHook.HookControlWindow(aControl: TWinControl;
   const aProvider: IRawElementProviderSimple; aPreserveNativeWindowAccessibility: Boolean);
 begin
-  if (aControl = nil) or (aControl = fForm) or ControlIsHooked(aControl) then
+  if (aControl = nil) or (aControl = fForm) or (fProvider = nil) or ControlIsHooked(aControl) then
   begin
     Exit;
   end;
 
-  fChildHooks.Add(TAccessibilityControlWindowHook.Create(aControl, aProvider, fApi,
+  fChildHooks.Add(TAccessibilityControlWindowHook.Create(aControl, aProvider, fApi, fProvider.RawElementProvider,
     aPreserveNativeWindowAccessibility));
 end;
 
@@ -1038,7 +1145,8 @@ begin
       lPreserveNativeAccessibility := ShouldPreserveNativeWindowAccessibility(TWinControl(lControl));
       lWindowProvider := aProvider;
       if (not lPreserveNativeAccessibility) and not ProviderIsGrid(aProvider) and ProviderHasChildren(aProvider) and
-        (fProvider <> nil) and ((lControl is TPageControl) or not TWinControl(lControl).TabStop) then
+        not (lControl is TCustomGroupBox) and (fProvider <> nil) and
+        ((lControl is TPageControl) or not TWinControl(lControl).TabStop) then
       begin
         lWindowProvider := fProvider.RawElementProvider;
       end;
@@ -1079,12 +1187,9 @@ procedure TAccessibilityFormWindowHook.HookRadioGroupButtonWindows(aRadioGroup: 
 var
   i: Integer;
   lButton: TRadioButton;
-  lButtonCenter: TPoint;
-  lHit: IRawElementProviderFragment;
-  lHitProvider: IRawElementProviderSimple;
-  lRoot: IRawElementProviderFragmentRoot;
+  lButtonProvider: IRawElementProviderSimple;
 begin
-  if (aRadioGroup = nil) or not Supports(aProvider, IRawElementProviderFragmentRoot, lRoot) then
+  if (aRadioGroup = nil) or (aProvider = nil) then
   begin
     Exit;
   end;
@@ -1093,12 +1198,9 @@ begin
   begin
     lButton := aRadioGroup.Buttons[i];
     lButton.HandleNeeded;
-    lButtonCenter := lButton.ClientToScreen(Point(lButton.Width div 2, lButton.Height div 2));
-    lHit := nil;
-    if (lRoot.ElementProviderFromPoint(lButtonCenter.X, lButtonCenter.Y, lHit) = S_OK) and
-      Supports(lHit, IRawElementProviderSimple, lHitProvider) then
+    if TryFindProviderForControl(aProvider, lButton, lButtonProvider) then
     begin
-      HookControlWindow(lButton, lHitProvider, False);
+      HookControlWindow(lButton, lButtonProvider, False);
     end;
   end;
 end;
@@ -1242,6 +1344,7 @@ end;
 
 constructor TAccessibilityControlWindowHook.Create(aControl: TWinControl;
   const aProvider: IRawElementProviderSimple; const aApi: IAccessibilityUiaApi;
+  const aRootProvider: IRawElementProviderSimple;
   aPreserveNativeWindowAccessibility: Boolean);
 begin
   inherited Create(nil);
@@ -1253,6 +1356,7 @@ begin
   fApi := aApi;
   fControl := aControl;
   fProvider := aProvider;
+  fRootProvider := aRootProvider;
   fPreserveNativeWindowAccessibility := aPreserveNativeWindowAccessibility;
   fOriginalWindowProc := aControl.WindowProc;
   InitializeGridCellTracking;
@@ -1387,8 +1491,86 @@ begin
       TAccessibilityProviderEvents.RaiseAutomationEvent(lHitProvider, UIA_AutomationFocusChangedEventId, fApi);
     end;
     NotifyProviderNativeFocusAndState(lHitProvider, fControl.Handle);
+    if ProviderNeedsSupplementalRadioAnnouncements(lHitProvider) then
+    begin
+      RaiseProviderAnnouncement(lHitProvider, 'vcl-hover', fApi);
+    end;
   end else begin
     RaiseProviderHover(lHitProvider, lName, fApi);
+  end;
+end;
+
+procedure TAccessibilityControlWindowHook.MaybeRaiseRadioNavigationChanged(aPreviousRadio: TRadioButton);
+var
+  lSelectedRadio: TRadioButton;
+begin
+  if not TryCurrentSelectedGroupedRadio(lSelectedRadio) or (lSelectedRadio = aPreviousRadio) then
+  begin
+    Exit;
+  end;
+
+  RaiseRadioNavigationChanged(lSelectedRadio);
+end;
+
+procedure TAccessibilityControlWindowHook.RaiseRadioNavigationChanged(aSelectedRadio: TRadioButton);
+var
+  lProvider: IRawElementProviderSimple;
+begin
+  if (aSelectedRadio = nil) or (fRootProvider = nil) or
+    not TryFindProviderForControl(fRootProvider, aSelectedRadio, lProvider) or
+    not ProviderNeedsSupplementalRadioAnnouncements(lProvider) then
+  begin
+    Exit;
+  end;
+
+  TAccessibilityProviderEvents.RaiseAutomationPropertyChanged(lProvider, UIA_SelectionItemIsSelectedPropertyId,
+    False, True, fApi);
+  TAccessibilityProviderEvents.RaiseAutomationEvent(lProvider, UIA_SelectionItem_ElementSelectedEventId, fApi);
+  TAccessibilityProviderEvents.RaiseAutomationEvent(lProvider, UIA_AutomationFocusChangedEventId, fApi);
+  NotifyAccessibilityWinEvent(EVENT_OBJECT_FOCUS, aSelectedRadio.Handle, cMsaaObjIdClient, CHILDID_SELF);
+  NotifyAccessibilityWinEvent(EVENT_OBJECT_STATECHANGE, aSelectedRadio.Handle, cMsaaObjIdClient, CHILDID_SELF);
+  RaiseProviderAnnouncement(lProvider, 'vcl-radio-navigation', fApi);
+end;
+
+function TAccessibilityControlWindowHook.TryCurrentSelectedGroupedRadio(out aRadio: TRadioButton): Boolean;
+var
+  i: Integer;
+  lChild: TControl;
+  lParent: TWinControl;
+  lRadioGroup: TRadioGroup;
+begin
+  aRadio := nil;
+  Result := False;
+  if not (fControl is TRadioButton) then
+  begin
+    Exit;
+  end;
+
+  lParent := TRadioButton(fControl).Parent;
+  if lParent is TRadioGroup then
+  begin
+    lRadioGroup := TRadioGroup(lParent);
+    if (lRadioGroup.ItemIndex >= 0) and (lRadioGroup.ItemIndex < lRadioGroup.Items.Count) then
+    begin
+      aRadio := lRadioGroup.Buttons[lRadioGroup.ItemIndex];
+      Result := aRadio <> nil;
+    end;
+    Exit;
+  end;
+
+  if not (lParent is TCustomGroupBox) then
+  begin
+    Exit;
+  end;
+
+  for i := 0 to Pred(lParent.ControlCount) do
+  begin
+    lChild := lParent.Controls[i];
+    if (lChild is TRadioButton) and TRadioButton(lChild).Checked then
+    begin
+      aRadio := TRadioButton(lChild);
+      Exit(True);
+    end;
   end;
 end;
 
@@ -1404,6 +1586,7 @@ begin
 
     fControl := nil;
     fProvider := nil;
+    fRootProvider := nil;
   end;
 end;
 
@@ -1412,6 +1595,7 @@ begin
   Result := False;
   fApi := nil;
   fProvider := nil;
+  fRootProvider := nil;
   if fControl = nil then
   begin
     Exit;
@@ -1444,17 +1628,18 @@ begin
     Exit;
   end;
 
-  if ProviderUsesPlatformStateEvents(fProvider) then
+  if ProviderUsesPlatformStateEvents(fProvider) and not ProviderNeedsSupplementalRadioAnnouncements(fProvider) then
   begin
     Exit;
   end;
 
   lAnnouncementText := ProviderFocusAnnouncementText(fProvider);
-  if lAnnouncementText = '' then
+  if (lAnnouncementText = '') or SameText(fLastFocusAnnouncement, lAnnouncementText) then
   begin
     Exit;
   end;
 
+  fLastFocusAnnouncement := lAnnouncementText;
   TAccessibilityProviderEvents.RaiseNotification(fProvider, NotificationKind_Other,
     NotificationProcessing_MostRecent, lAnnouncementText, 'vcl-focus-hint', fApi);
 end;
@@ -1471,6 +1656,10 @@ begin
   if fPreserveNativeWindowAccessibility then
   begin
     NotifyProviderNativeFocusAndState(fProvider, fControl.Handle);
+    if ProviderNeedsSupplementalRadioAnnouncements(fProvider) then
+    begin
+      TAccessibilityProviderEvents.RaiseAutomationEvent(fProvider, UIA_AutomationFocusChangedEventId, fApi);
+    end;
     Exit;
   end;
 
@@ -1586,14 +1775,17 @@ end;
 procedure TAccessibilityControlWindowHook.WindowProc(var aMessage: TMessage);
 var
   lHasOldProviderState: Boolean;
+  lIsBlurMessage: Boolean;
   lIsFocusMessage: Boolean;
   lIsGridNavigationMessage: Boolean;
   lIsListBoxSelectionMessage: Boolean;
   lIsMouseMoveMessage: Boolean;
   lIsOuterProviderStateMessage: Boolean;
   lIsProviderStateMessage: Boolean;
+  lIsRadioNavigationMessage: Boolean;
   lNewProviderState: TProviderStateSnapshot;
   lOldProviderState: TProviderStateSnapshot;
+  lOldSelectedRadio: TRadioButton;
   lResult: Winapi.Windows.LRESULT;
 begin
   if (not fPreserveNativeWindowAccessibility) and (not fPassive) and (fControl <> nil) and (fProvider <> nil) and
@@ -1617,6 +1809,7 @@ begin
     Exit;
   end;
 
+  lIsBlurMessage := aMessage.Msg = CM_EXIT;
   lIsFocusMessage := (aMessage.Msg = CM_ENTER) or (aMessage.Msg = WM_SETFOCUS);
   lIsGridNavigationMessage := (aMessage.Msg = WM_KEYDOWN) and IsGridNavigationKey(aMessage.WParam);
   lIsListBoxSelectionMessage := (fControl is TCustomListBox) and
@@ -1626,6 +1819,11 @@ begin
   lIsProviderStateMessage := (not fPreserveNativeWindowAccessibility) and ProviderStateMessageMayChangeState(aMessage);
   lIsOuterProviderStateMessage := lIsProviderStateMessage and (fProviderStateMessageDepth = 0);
   lHasOldProviderState := lIsOuterProviderStateMessage and TryCaptureProviderState(fProvider, lOldProviderState);
+  lIsRadioNavigationMessage := RadioNavigationMessageMayChangeSelection(fControl, aMessage);
+  if not lIsRadioNavigationMessage or not TryCurrentSelectedGroupedRadio(lOldSelectedRadio) then
+  begin
+    lOldSelectedRadio := nil;
+  end;
   if lIsProviderStateMessage then
   begin
     Inc(fProviderStateMessageDepth);
@@ -1654,6 +1852,11 @@ begin
       MaybeRaiseProviderHover(MouseMoveClientLParam(fControl, aMessage));
     end;
 
+    if lIsBlurMessage then
+    begin
+      fLastFocusAnnouncement := '';
+    end;
+
     if lIsFocusMessage then
     begin
       RaiseFocusChanged;
@@ -1668,6 +1871,11 @@ begin
     if lIsListBoxSelectionMessage then
     begin
       MaybeRaiseListBoxFocusChanged;
+    end;
+
+    if lIsRadioNavigationMessage then
+    begin
+      MaybeRaiseRadioNavigationChanged(lOldSelectedRadio);
     end;
   end;
 end;

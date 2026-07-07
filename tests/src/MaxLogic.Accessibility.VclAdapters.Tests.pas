@@ -35,6 +35,8 @@ type
     [Test]
     procedure DemoStandardControlsExposeIntentionalRoles;
     [Test]
+    procedure DemoRadioGroupItemHitTestingReturnsItemProvider;
+    [Test]
     procedure TextInputsExposeAssociatedLabelsAndValues;
     [Test]
     procedure MemoProviderHitTestingReturnsLineUnderPointer;
@@ -62,7 +64,7 @@ uses
   System.Diagnostics, System.SysUtils, System.Types, System.Variants, Winapi.ActiveX, Winapi.Messages, Winapi.Windows,
   Vcl.Buttons, Vcl.Controls, Vcl.ComCtrls, Vcl.ExtCtrls, Vcl.Forms, Vcl.Grids, Vcl.StdCtrls, DUnitX.Assert,
   MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.Scanner, MaxLogic.Accessibility.UIAutomationCore,
-  MaxLogic.Accessibility.VclAdapters;
+  MaxLogic.Accessibility.VclAdapters, AccessibilityDemoMainForm;
 
 type
   TCaptionGraphicControl = class(TGraphicControl)
@@ -1411,6 +1413,33 @@ begin
     AssertNamedControlType(lProvider.FragmentProvider, 'OrdersGrid', UIA_DataGridControlTypeId);
   finally
     lRecorder.Free;
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityVclAdaptersTests.DemoRadioGroupItemHitTestingReturnsItemProvider;
+var
+  lButton: TRadioButton;
+  lForm: TAccessibilityDemoMainForm;
+  lHit: IRawElementProviderFragment;
+  lProvider: IAccessibilityProviderNode;
+  lRoot: IRawElementProviderFragmentRoot;
+  lScreenPoint: TPoint;
+begin
+  lForm := TAccessibilityDemoMainForm.Create(nil);
+  try
+    lForm.HandleNeeded;
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lButton := lForm.radioGroupDensity.Buttons[0];
+
+    Assert.IsTrue(Supports(lProvider.FragmentProvider, IRawElementProviderFragmentRoot, lRoot));
+    lScreenPoint := lButton.ClientToScreen(Point(lButton.Width div 2, lButton.Height div 2));
+    Assert.AreEqual(S_OK, lRoot.ElementProviderFromPoint(lScreenPoint.X, lScreenPoint.Y, lHit));
+    Assert.IsNotNull(lHit);
+    Assert.AreEqual('Comfortable', ProviderStringProperty(lHit, UIA_NamePropertyId));
+    Assert.AreEqual(UIA_RadioButtonControlTypeId, ProviderIntProperty(lHit, UIA_ControlTypePropertyId));
+    Assert.AreEqual(Integer(lButton.Handle), Integer(ProviderNativeWindowHandle(lHit)));
+  finally
     lForm.Free;
   end;
 end;

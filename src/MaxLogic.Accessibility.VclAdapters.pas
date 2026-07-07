@@ -952,6 +952,32 @@ begin
   end;
 end;
 
+procedure EnsureRadioGroupButtonControls(aControl: TControl);
+var
+  i: Integer;
+  lParent: TWinControl;
+  lRadioGroup: TRadioGroup;
+begin
+  if aControl is TRadioGroup then
+  begin
+    lRadioGroup := TRadioGroup(aControl);
+    lRadioGroup.HandleNeeded;
+    for i := 0 to Pred(lRadioGroup.Items.Count) do
+    begin
+      lRadioGroup.Buttons[i].HandleNeeded;
+    end;
+  end;
+
+  if aControl is TWinControl then
+  begin
+    lParent := TWinControl(aControl);
+    for i := 0 to Pred(lParent.ControlCount) do
+    begin
+      EnsureRadioGroupButtonControls(lParent.Controls[i]);
+    end;
+  end;
+end;
+
 function ControlTypeFor(aControl: TControl): Integer;
 begin
   if aControl is TRadioButton then
@@ -3650,6 +3676,7 @@ begin
     lRegistry := TAccessibilityVclAdapters.CreateDefaultRegistry;
   end;
 
+  EnsureRadioGroupButtonControls(aForm);
   lTree := TAccessibilityScanner.ScanForm(aForm, lRegistry);
   Result := TAccessibilityVclFormProviderRoot.Create(aForm, aApi) as IAccessibilityProviderNode;
   Result.SetProperty(UIA_NamePropertyId, lTree.Root.Name);

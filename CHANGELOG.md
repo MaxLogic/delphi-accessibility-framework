@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-07
+### Fixed
+- `TRadioGroup` item providers are now present from initial provider-tree construction and child HWND hooks bind by wrapped VCL control identity, so mouse hover resolves item-level UIA `RadioButton` providers with selected state instead of the parent group provider.
+- `TGroupBox` and `TRadioGroup` windows now return their own UIA group providers, so mouse tracking over blank group areas resolves the group caption instead of the form title.
+- `TRadioButton` controls inside a `TGroupBox` now use the framework radio-button provider with selection semantics and focus notifications; standalone radio buttons still preserve their native HWND accessibility path.
+- Keyboard focus and arrow-key navigation on `TRadioGroup` items and grouped `TRadioButton` controls now raise supplemental framework UIA notifications so screen readers receive the focused or newly selected radio caption.
+
 ## 2026-06-30
 ### Added
 - Added provider hotspot diagnostics for memo line preparation, VCL `TStringGrid` refresh, TMS `TAdvStringGrid` refresh, and listbox `GetSelection` so performance work can be driven by measured provider-query costs.

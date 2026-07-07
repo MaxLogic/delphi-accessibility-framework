@@ -95,13 +95,37 @@ type
     [Test]
     procedure FormInstallRaisesGroupBoxHoverAndRadioGroupItemHoverProviders;
     [Test]
+    procedure DemoFormInstallRaisesViewModeGroupHoverFromGroupWindow;
+    [Test]
+    procedure DemoFormInstallRaisesDensityGroupHoverFromGroupWindow;
+    [Test]
+    procedure DemoFormInstallReturnsGroupProvidersFromGroupWindows;
+    [Test]
     procedure FormInstallRaisesGroupBoxHoverFromNonClientMouseMove;
     [Test]
     procedure FormInstallIgnoresFormNonClientHoverWithoutRangeCheck;
     [Test]
     procedure FormInstallRaisesRadioGroupItemHoverFromButtonWindow;
     [Test]
+    procedure FormInstallRaisesRadioGroupItemFocusNotificationFromButtonWindow;
+    [Test]
+    procedure FormInstallRaisesGroupedRadioButtonFocusNotificationWithFrameworkProvider;
+    [Test]
+    procedure FormInstallRaisesGroupedRadioButtonSelectionNotificationWithFrameworkProvider;
+    [Test]
+    procedure FormInstallRaisesGroupedRadioButtonArrowNavigationNotificationWithFrameworkProvider;
+    [Test]
+    procedure FormInstallRaisesRadioGroupItemArrowNavigationNotificationFromButtonWindow;
+    [Test]
+    procedure FormInstallReturnsGroupedRadioButtonProviderFromGroupBoxRadioWindow;
+    [Test]
+    procedure FormInstallBindsRadioGroupButtonWindowByControlIdentity;
+    [Test]
+    procedure FormInstallReturnsRadioGroupItemProviderFromButtonWindow;
+    [Test]
     procedure DemoFormInstallRaisesRadioGroupItemHoverFromButtonWindow;
+    [Test]
+    procedure DemoFormInstallReturnsRadioGroupItemProviderFromButtonWindow;
     [Test]
     procedure FormInstallRaisesLazyRadioGroupItemHoverFromButtonWindow;
     [Test]
@@ -147,9 +171,9 @@ implementation
 uses
   System.Classes, System.Generics.Collections, System.SysUtils, System.Types, System.Variants, Winapi.ActiveX,
   Winapi.Messages, Winapi.oleacc, Winapi.Windows, Vcl.Buttons, Vcl.ComCtrls, Vcl.Controls, Vcl.ExtCtrls, Vcl.Forms,
-  Vcl.Grids, Vcl.StdCtrls, AdvGrid, MaxLogic.Accessibility.Manager, MaxLogic.Accessibility.ProviderCore,
-  MaxLogic.Accessibility.Scanner, MaxLogic.Accessibility.TmsAdvStringGridAdapters, MaxLogic.Accessibility.UIAutomationCore,
-  AccessibilityDemoMainForm;
+  Vcl.Grids, Vcl.StdCtrls, AdvGrid, AccessibilityDemoMainForm, MaxLogic.Accessibility.Manager,
+  MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.Scanner, MaxLogic.Accessibility.TmsAdvStringGridAdapters,
+  MaxLogic.Accessibility.UIAutomationCore, MaxLogic.Accessibility.VclAdapters;
 
 type
   IFormInstallRecorder = interface(IAccessibilityFormInstaller)
@@ -229,6 +253,15 @@ type
     function ReturnRawElementProvider(aHwnd: HWND; aWParam: WPARAM; aLParam: LPARAM;
       const aProvider: IRawElementProviderSimple): LRESULT;
     procedure SetClientsAreListening(aValue: Boolean);
+  end;
+
+  TRadioNavigationTestHandler = class
+  public
+    TargetItemIndex: Integer;
+    TargetRadio: TRadioButton;
+    TargetRadioGroup: TRadioGroup;
+    procedure SelectTargetRadio(aSender: TObject; var aKey: Word; aShift: TShiftState);
+    procedure SelectTargetRadioGroupItem(aSender: TObject; var aKey: Word; aShift: TShiftState);
   end;
 
   TFormInstallRecorder = class(TInterfacedObject, IFormInstallRecorder)
@@ -312,6 +345,34 @@ type
     procedure WndProc(var aMessage: TMessage); override;
   public
     property GetObjectCalls: Integer read fGetObjectCalls;
+  end;
+
+  TLyingRadioGroupAdapter = class(TInterfacedObject, IAccessibilityControlAdapter, IAccessibilityVclProviderAdapter)
+  public
+    function CreateInfo(aControl: TControl; const aFallback: TAccessibilityTextInfo): TAccessibilityControlInfo;
+    function CreateProvider(aControl: TControl; aRuntimeId: Integer; const aName: string; const aHelpText: string;
+      const aApi: IAccessibilityUiaApi): IAccessibilityProviderNode;
+  end;
+
+  TLyingRadioGroupProvider = class(TAccessibilityProviderRoot, IAccessibilityVclControlProviderInfo)
+  private
+    fControl: TRadioGroup;
+  protected
+    function DoElementProviderFromPoint(aX: Double; aY: Double; out aProvider: IRawElementProviderFragment):
+      HResult; override;
+  public
+    constructor Create(aRadioGroup: TRadioGroup; aRuntimeId: Integer; const aName: string; const aHelpText: string;
+      const aApi: IAccessibilityUiaApi);
+    function Control: TControl;
+  end;
+
+  TTestVclControlProvider = class(TAccessibilityProviderNode, IAccessibilityVclControlProviderInfo)
+  private
+    fControl: TControl;
+  public
+    constructor Create(aControl: TControl; aRuntimeId: Integer; aControlTypeId: Integer; const aName: string;
+      const aHelpText: string; const aApi: IAccessibilityUiaApi);
+    function Control: TControl;
   end;
 
   TNoActiveForm = class(TForm);
@@ -424,6 +485,94 @@ begin
   end;
 
   inherited WndProc(aMessage);
+end;
+
+function TestProviderWindowHandle(aControl: TControl): HWND;
+begin
+  Result := 0;
+  if aControl is TWinControl then
+  begin
+    Result := TWinControl(aControl).Handle;
+  end;
+end;
+
+function TLyingRadioGroupAdapter.CreateInfo(aControl: TControl; const aFallback: TAccessibilityTextInfo):
+  TAccessibilityControlInfo;
+begin
+  if aControl is TRadioGroup then
+  begin
+    Result := TAccessibilityControlInfo.Include(aControl, aFallback.Name, aFallback.HelpText);
+  end else begin
+    Result := TAccessibilityControlInfo.Omit;
+  end;
+end;
+
+function TLyingRadioGroupAdapter.CreateProvider(aControl: TControl; aRuntimeId: Integer; const aName: string;
+  const aHelpText: string; const aApi: IAccessibilityUiaApi): IAccessibilityProviderNode;
+begin
+  Result := TLyingRadioGroupProvider.Create(TRadioGroup(aControl), aRuntimeId, aName, aHelpText, aApi) as
+    IAccessibilityProviderNode;
+end;
+
+function TLyingRadioGroupProvider.Control: TControl;
+begin
+  Result := fControl;
+end;
+
+constructor TLyingRadioGroupProvider.Create(aRadioGroup: TRadioGroup; aRuntimeId: Integer; const aName: string;
+  const aHelpText: string; const aApi: IAccessibilityUiaApi);
+var
+  i: Integer;
+  lButton: TRadioButton;
+  lProvider: IAccessibilityProviderNode;
+begin
+  aRadioGroup.HandleNeeded;
+  inherited CreateNode([aRuntimeId], aRadioGroup.Handle, aApi, aRadioGroup);
+  fControl := aRadioGroup;
+  SetProperty(UIA_NamePropertyId, aName);
+  SetProperty(UIA_ControlTypePropertyId, UIA_GroupControlTypeId);
+  SetProperty(UIA_ClassNamePropertyId, aRadioGroup.ClassName);
+  SetProperty(UIA_HelpTextPropertyId, aHelpText);
+  SetProperty(UIA_NativeWindowHandlePropertyId, Integer(aRadioGroup.Handle));
+
+  for i := 0 to Pred(aRadioGroup.Items.Count) do
+  begin
+    lButton := aRadioGroup.Buttons[i];
+    lButton.HandleNeeded;
+    lProvider := TTestVclControlProvider.Create(lButton, (aRuntimeId * 100) + i + 1,
+      UIA_RadioButtonControlTypeId, aRadioGroup.Items[i], '', aApi) as IAccessibilityProviderNode;
+    AddChild(lProvider);
+  end;
+end;
+
+function TLyingRadioGroupProvider.DoElementProviderFromPoint(aX: Double; aY: Double;
+  out aProvider: IRawElementProviderFragment): HResult;
+begin
+  aProvider := Self as IRawElementProviderFragment;
+  Result := S_OK;
+end;
+
+function TTestVclControlProvider.Control: TControl;
+begin
+  Result := fControl;
+end;
+
+constructor TTestVclControlProvider.Create(aControl: TControl; aRuntimeId: Integer; aControlTypeId: Integer;
+  const aName: string; const aHelpText: string; const aApi: IAccessibilityUiaApi);
+var
+  lHwnd: HWND;
+begin
+  lHwnd := TestProviderWindowHandle(aControl);
+  inherited CreateNode([aRuntimeId], lHwnd, aApi, aControl);
+  fControl := aControl;
+  SetProperty(UIA_NamePropertyId, aName);
+  SetProperty(UIA_ControlTypePropertyId, aControlTypeId);
+  SetProperty(UIA_ClassNamePropertyId, aControl.ClassName);
+  SetProperty(UIA_HelpTextPropertyId, aHelpText);
+  if lHwnd <> 0 then
+  begin
+    SetProperty(UIA_NativeWindowHandlePropertyId, Integer(lHwnd));
+  end;
 end;
 
 procedure ResetManager;
@@ -580,6 +729,23 @@ end;
 procedure TManagerTestUiaApi.SetClientsAreListening(aValue: Boolean);
 begin
   fClientsAreListening := aValue;
+end;
+
+procedure TRadioNavigationTestHandler.SelectTargetRadio(aSender: TObject; var aKey: Word; aShift: TShiftState);
+begin
+  if (aKey = VK_DOWN) and (TargetRadio <> nil) then
+  begin
+    TargetRadio.Checked := True;
+  end;
+end;
+
+procedure TRadioNavigationTestHandler.SelectTargetRadioGroupItem(aSender: TObject; var aKey: Word;
+  aShift: TShiftState);
+begin
+  if (aKey = VK_DOWN) and (TargetRadioGroup <> nil) then
+  begin
+    TargetRadioGroup.ItemIndex := TargetItemIndex;
+  end;
 end;
 
 function ScaleValue(aValue: Integer): Integer;
@@ -2579,17 +2745,131 @@ begin
     Assert.AreEqual('View mode', ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider),
       UIA_NamePropertyId));
 
-    lPoint := lRadioGroup.Buttons[0].BoundsRect.CenterPoint;
+    lPoint := Point(8, 8);
     lRadioGroup.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
 
     Assert.AreEqual(2, lApi.NotificationCalls);
-    Assert.AreEqual('Comfortable', lApi.LastNotificationText);
-    Assert.AreEqual('Comfortable', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
+    Assert.AreEqual('Density. TRadioGroup sample for role comparison', lApi.LastNotificationText);
+    Assert.AreEqual('Density', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
       UIA_NamePropertyId));
     Assert.AreEqual(2, lApi.EventCalls);
     Assert.AreEqual(UIA_AutomationFocusChangedEventId, lApi.LastEventId);
-    Assert.AreEqual('Comfortable', ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider),
+    Assert.AreEqual('Density', ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider),
       UIA_NamePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.DemoFormInstallRaisesViewModeGroupHoverFromGroupWindow;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TAccessibilityDemoMainForm;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TAccessibilityDemoMainForm.Create(nil);
+  try
+    lForm.HandleNeeded;
+    lForm.grpViewMode.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+
+    lForm.grpViewMode.Perform(WM_MOUSEMOVE, 0, PointToLParam(Point(8, 8)));
+
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('View mode. Choose how the demo presents detail density', lApi.LastNotificationText);
+    Assert.AreEqual('View mode', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
+      UIA_NamePropertyId));
+    Assert.AreEqual(1, lApi.EventCalls);
+    Assert.AreEqual(UIA_AutomationFocusChangedEventId, lApi.LastEventId);
+    Assert.AreEqual('View mode', ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider),
+      UIA_NamePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.DemoFormInstallRaisesDensityGroupHoverFromGroupWindow;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TAccessibilityDemoMainForm;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TAccessibilityDemoMainForm.Create(nil);
+  try
+    lForm.HandleNeeded;
+    lForm.radioGroupDensity.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+
+    lForm.radioGroupDensity.Perform(WM_MOUSEMOVE, 0, PointToLParam(Point(8, 8)));
+
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('Density. TRadioGroup sample for role comparison', lApi.LastNotificationText);
+    Assert.AreEqual('Density', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
+      UIA_NamePropertyId));
+    Assert.AreEqual(1, lApi.EventCalls);
+    Assert.AreEqual(UIA_AutomationFocusChangedEventId, lApi.LastEventId);
+    Assert.AreEqual('Density', ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider),
+      UIA_NamePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.DemoFormInstallReturnsGroupProvidersFromGroupWindows;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TAccessibilityDemoMainForm;
+  lMessage: TMessage;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TAccessibilityDemoMainForm.Create(nil);
+  try
+    lForm.HandleNeeded;
+    lForm.grpViewMode.HandleNeeded;
+    lForm.radioGroupDensity.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.WParam := 7;
+    lMessage.LParam := UiaRootObjectId;
+    lForm.grpViewMode.WindowProc(lMessage);
+
+    Assert.AreEqual(2468, lMessage.Result);
+    Assert.AreEqual(1, lApi.ReturnCalls);
+    Assert.AreEqual(lForm.grpViewMode.Handle, lApi.LastHwnd);
+    Assert.AreEqual('View mode', ProviderStringProperty(FragmentFromSimple(lApi.ReturnedProvider),
+      UIA_NamePropertyId));
+    Assert.AreEqual(UIA_GroupControlTypeId, ProviderIntProperty(FragmentFromSimple(lApi.ReturnedProvider),
+      UIA_ControlTypePropertyId));
+
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.WParam := 8;
+    lMessage.LParam := UiaRootObjectId;
+    lForm.radioGroupDensity.WindowProc(lMessage);
+
+    Assert.AreEqual(2468, lMessage.Result);
+    Assert.AreEqual(2, lApi.ReturnCalls);
+    Assert.AreEqual(lForm.radioGroupDensity.Handle, lApi.LastHwnd);
+    Assert.AreEqual('Density', ProviderStringProperty(FragmentFromSimple(lApi.ReturnedProvider),
+      UIA_NamePropertyId));
+    Assert.AreEqual(UIA_GroupControlTypeId, ProviderIntProperty(FragmentFromSimple(lApi.ReturnedProvider),
+      UIA_ControlTypePropertyId));
   finally
     lForm.Free;
     ResetManager;
@@ -2710,6 +2990,431 @@ begin
   end;
 end;
 
+procedure TAccessibilityManagerTests.FormInstallRaisesRadioGroupItemFocusNotificationFromButtonWindow;
+var
+  lApi: IManagerTestUiaApi;
+  lButton: TRadioButton;
+  lForm: TForm;
+  lRadioGroup: TRadioGroup;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 180);
+
+    lRadioGroup := TRadioGroup.Create(lForm);
+    lRadioGroup.Parent := lForm;
+    lRadioGroup.Caption := 'Density';
+    lRadioGroup.Hint := 'TRadioGroup sample for role comparison';
+    lRadioGroup.Items.Add('Comfortable');
+    lRadioGroup.Items.Add('Compact density');
+    lRadioGroup.ItemIndex := 0;
+    lRadioGroup.SetBounds(24, 24, 220, 82);
+    lRadioGroup.HandleNeeded;
+    lRadioGroup.Buttons[0].HandleNeeded;
+    lButton := lRadioGroup.Buttons[0];
+
+    TAccessibilityManager.Install(lForm);
+
+    lButton.Perform(CM_ENTER, 0, 0);
+
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('Comfortable', lApi.LastNotificationText);
+    Assert.AreEqual('Comfortable', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
+      UIA_NamePropertyId));
+    Assert.AreEqual(1, lApi.EventCalls);
+    Assert.AreEqual(UIA_AutomationFocusChangedEventId, lApi.LastEventId);
+    Assert.AreEqual('Comfortable', ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider),
+      UIA_NamePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallRaisesGroupedRadioButtonFocusNotificationWithFrameworkProvider;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lGroupBox: TGroupBox;
+  lRadioButton: TRadioButton;
+  lWinEvents: TWinEventRecorder;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  lWinEvents := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 180);
+
+    lGroupBox := TGroupBox.Create(lForm);
+    lGroupBox.Parent := lForm;
+    lGroupBox.Caption := 'View mode';
+    lGroupBox.SetBounds(24, 24, 220, 86);
+    lGroupBox.HandleNeeded;
+
+    lRadioButton := TRadioButton.Create(lForm);
+    lRadioButton.Parent := lGroupBox;
+    lRadioButton.Caption := 'Compact';
+    lRadioButton.Hint := 'Use the compact view mode';
+    lRadioButton.Checked := True;
+    lRadioButton.SetBounds(12, 28, 120, 22);
+    lRadioButton.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+
+    lRadioButton.Perform(CM_ENTER, 0, 0);
+
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('Compact. Use the compact view mode', lApi.LastNotificationText);
+    Assert.AreEqual('Compact', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
+      UIA_NamePropertyId));
+    Assert.AreEqual(1, lApi.EventCalls);
+    Assert.AreEqual(UIA_AutomationFocusChangedEventId, lApi.LastEventId);
+    Assert.AreEqual('Compact', ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider),
+      UIA_NamePropertyId));
+    Assert.AreEqual(2, lWinEvents.Calls);
+    Assert.AreEqual(EVENT_OBJECT_STATECHANGE, lWinEvents.LastEvent);
+    Assert.AreEqual(lRadioButton.Handle, lWinEvents.LastHwnd);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallRaisesGroupedRadioButtonSelectionNotificationWithFrameworkProvider;
+var
+  lApi: IManagerTestUiaApi;
+  lFirstRadio: TRadioButton;
+  lForm: TForm;
+  lGroupBox: TGroupBox;
+  lSecondRadio: TRadioButton;
+  lWinEvents: TWinEventRecorder;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  lWinEvents := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 180);
+
+    lGroupBox := TGroupBox.Create(lForm);
+    lGroupBox.Parent := lForm;
+    lGroupBox.Caption := 'View mode';
+    lGroupBox.SetBounds(24, 24, 220, 86);
+    lGroupBox.HandleNeeded;
+
+    lFirstRadio := TRadioButton.Create(lForm);
+    lFirstRadio.Parent := lGroupBox;
+    lFirstRadio.Caption := 'Compact';
+    lFirstRadio.Checked := True;
+    lFirstRadio.SetBounds(12, 28, 120, 22);
+    lFirstRadio.HandleNeeded;
+
+    lSecondRadio := TRadioButton.Create(lForm);
+    lSecondRadio.Parent := lGroupBox;
+    lSecondRadio.Caption := 'Detailed';
+    lSecondRadio.Hint := 'Use the detailed view mode';
+    lSecondRadio.SetBounds(12, 54, 120, 22);
+    lSecondRadio.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+
+    lFirstRadio.Perform(CM_ENTER, 0, 0);
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('Compact', lApi.LastNotificationText);
+
+    lSecondRadio.Checked := True;
+    lSecondRadio.Perform(CM_ENTER, 0, 0);
+
+    Assert.IsTrue(lSecondRadio.Checked);
+    Assert.AreEqual(2, lApi.NotificationCalls);
+    Assert.AreEqual('Detailed. Use the detailed view mode', lApi.LastNotificationText);
+    Assert.AreEqual('Detailed', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
+      UIA_NamePropertyId));
+    Assert.IsTrue(lApi.EventCalls >= 2);
+    Assert.AreEqual(UIA_AutomationFocusChangedEventId, lApi.LastEventId);
+    Assert.AreEqual('Detailed', ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider),
+      UIA_NamePropertyId));
+    Assert.IsTrue(lWinEvents.Calls > 0);
+    Assert.AreEqual(lSecondRadio.Handle, lWinEvents.LastHwnd);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallRaisesGroupedRadioButtonArrowNavigationNotificationWithFrameworkProvider;
+var
+  lApi: IManagerTestUiaApi;
+  lFirstRadio: TRadioButton;
+  lForm: TForm;
+  lGroupBox: TGroupBox;
+  lHandler: TRadioNavigationTestHandler;
+  lSecondRadio: TRadioButton;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lHandler := nil;
+  lForm := TForm.Create(nil);
+  try
+    lHandler := TRadioNavigationTestHandler.Create;
+
+    lForm.SetBounds(100, 100, 360, 180);
+
+    lGroupBox := TGroupBox.Create(lForm);
+    lGroupBox.Parent := lForm;
+    lGroupBox.Caption := 'View mode';
+    lGroupBox.SetBounds(24, 24, 220, 86);
+
+    lFirstRadio := TRadioButton.Create(lForm);
+    lFirstRadio.Parent := lGroupBox;
+    lFirstRadio.Caption := 'Compact';
+    lFirstRadio.Checked := True;
+    lFirstRadio.SetBounds(12, 28, 120, 22);
+
+    lSecondRadio := TRadioButton.Create(lForm);
+    lSecondRadio.Parent := lGroupBox;
+    lSecondRadio.Caption := 'Detailed';
+    lSecondRadio.Hint := 'Use the detailed view mode';
+    lSecondRadio.SetBounds(12, 54, 120, 22);
+
+    lHandler.TargetRadio := lSecondRadio;
+    lFirstRadio.OnKeyDown := lHandler.SelectTargetRadio;
+
+    lForm.Show;
+    lFirstRadio.HandleNeeded;
+    lSecondRadio.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    lFirstRadio.SetFocus;
+    Application.ProcessMessages;
+
+    lFirstRadio.Perform(WM_KEYDOWN, VK_DOWN, 0);
+    Application.ProcessMessages;
+
+    Assert.IsTrue(lSecondRadio.Checked);
+    Assert.AreEqual('Detailed. Use the detailed view mode', lApi.LastNotificationText);
+    Assert.AreEqual('Detailed', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
+      UIA_NamePropertyId));
+  finally
+    lForm.Free;
+    lHandler.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallRaisesRadioGroupItemArrowNavigationNotificationFromButtonWindow;
+var
+  lApi: IManagerTestUiaApi;
+  lButton: TRadioButton;
+  lForm: TForm;
+  lHandler: TRadioNavigationTestHandler;
+  lRadioGroup: TRadioGroup;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lHandler := nil;
+  lForm := TForm.Create(nil);
+  try
+    lHandler := TRadioNavigationTestHandler.Create;
+
+    lForm.SetBounds(100, 100, 360, 180);
+
+    lRadioGroup := TRadioGroup.Create(lForm);
+    lRadioGroup.Parent := lForm;
+    lRadioGroup.Caption := 'Density';
+    lRadioGroup.Items.Add('Comfortable');
+    lRadioGroup.Items.Add('Compact density');
+    lRadioGroup.ItemIndex := 0;
+    lRadioGroup.SetBounds(24, 24, 220, 82);
+
+    lForm.Show;
+    lRadioGroup.HandleNeeded;
+    lRadioGroup.Buttons[0].HandleNeeded;
+    lRadioGroup.Buttons[1].HandleNeeded;
+    lButton := lRadioGroup.Buttons[0];
+    lHandler.TargetRadioGroup := lRadioGroup;
+    lHandler.TargetItemIndex := 1;
+    lButton.OnKeyDown := lHandler.SelectTargetRadioGroupItem;
+    TAccessibilityManager.Install(lForm);
+    lButton.SetFocus;
+    Application.ProcessMessages;
+
+    lButton.Perform(WM_KEYDOWN, VK_DOWN, 0);
+    Application.ProcessMessages;
+
+    Assert.AreEqual(1, lRadioGroup.ItemIndex);
+    Assert.AreEqual('Compact density', lApi.LastNotificationText);
+    Assert.AreEqual('Compact density', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
+      UIA_NamePropertyId));
+  finally
+    lForm.Free;
+    lHandler.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallReturnsGroupedRadioButtonProviderFromGroupBoxRadioWindow;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lGroupBox: TGroupBox;
+  lMessage: TMessage;
+  lRadioButton: TRadioButton;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 180);
+
+    lGroupBox := TGroupBox.Create(lForm);
+    lGroupBox.Parent := lForm;
+    lGroupBox.Caption := 'View mode';
+    lGroupBox.SetBounds(24, 24, 220, 86);
+    lGroupBox.HandleNeeded;
+
+    lRadioButton := TRadioButton.Create(lForm);
+    lRadioButton.Parent := lGroupBox;
+    lRadioButton.Caption := 'Compact';
+    lRadioButton.Checked := True;
+    lRadioButton.SetBounds(12, 28, 120, 22);
+    lRadioButton.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.WParam := 7;
+    lMessage.LParam := UiaRootObjectId;
+    lRadioButton.WindowProc(lMessage);
+
+    Assert.AreEqual(2468, lMessage.Result);
+    Assert.AreEqual(1, lApi.ReturnCalls);
+    Assert.AreEqual(lRadioButton.Handle, lApi.LastHwnd);
+    Assert.AreEqual('Compact', ProviderStringProperty(FragmentFromSimple(lApi.ReturnedProvider),
+      UIA_NamePropertyId));
+    Assert.AreEqual(UIA_RadioButtonControlTypeId, ProviderIntProperty(FragmentFromSimple(lApi.ReturnedProvider),
+      UIA_ControlTypePropertyId));
+    Assert.IsTrue(ProviderPattern(FragmentFromSimple(lApi.ReturnedProvider), UIA_SelectionItemPatternId) <> nil);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallBindsRadioGroupButtonWindowByControlIdentity;
+var
+  lApi: IManagerTestUiaApi;
+  lButton: TRadioButton;
+  lForm: TForm;
+  lMessage: TMessage;
+  lRadioGroup: TRadioGroup;
+  lRegistry: IAccessibilityAdapterRegistry;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lRegistry := TAccessibilityVclAdapters.CreateDefaultRegistry;
+  lRegistry.RegisterAdapter(TRadioGroup, TLyingRadioGroupAdapter.Create);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 180);
+
+    lRadioGroup := TRadioGroup.Create(lForm);
+    lRadioGroup.Parent := lForm;
+    lRadioGroup.Caption := 'Density';
+    lRadioGroup.Items.Add('Comfortable');
+    lRadioGroup.Items.Add('Compact density');
+    lRadioGroup.ItemIndex := 0;
+    lRadioGroup.SetBounds(24, 24, 220, 82);
+    lRadioGroup.HandleNeeded;
+    lRadioGroup.Buttons[0].HandleNeeded;
+    lButton := lRadioGroup.Buttons[0];
+
+    TAccessibilityManager.Install(lForm, lRegistry);
+
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.WParam := 7;
+    lMessage.LParam := UiaRootObjectId;
+    lButton.WindowProc(lMessage);
+
+    Assert.AreEqual(2468, lMessage.Result);
+    Assert.AreEqual(1, lApi.ReturnCalls);
+    Assert.AreEqual(lButton.Handle, lApi.LastHwnd);
+    Assert.AreEqual('Comfortable', ProviderStringProperty(FragmentFromSimple(lApi.ReturnedProvider),
+      UIA_NamePropertyId));
+    Assert.AreEqual(Integer(lButton.Handle), ProviderIntProperty(FragmentFromSimple(lApi.ReturnedProvider),
+      UIA_NativeWindowHandlePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallReturnsRadioGroupItemProviderFromButtonWindow;
+var
+  lApi: IManagerTestUiaApi;
+  lButton: TRadioButton;
+  lForm: TForm;
+  lMessage: TMessage;
+  lRadioGroup: TRadioGroup;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 180);
+
+    lRadioGroup := TRadioGroup.Create(lForm);
+    lRadioGroup.Parent := lForm;
+    lRadioGroup.Caption := 'Density';
+    lRadioGroup.Hint := 'TRadioGroup sample for role comparison';
+    lRadioGroup.Items.Add('Comfortable');
+    lRadioGroup.Items.Add('Compact density');
+    lRadioGroup.ItemIndex := 0;
+    lRadioGroup.SetBounds(24, 24, 220, 82);
+    lRadioGroup.HandleNeeded;
+    lRadioGroup.Buttons[0].HandleNeeded;
+    lButton := lRadioGroup.Buttons[0];
+
+    TAccessibilityManager.Install(lForm);
+
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.WParam := 7;
+    lMessage.LParam := UiaRootObjectId;
+    lButton.WindowProc(lMessage);
+
+    Assert.AreEqual(2468, lMessage.Result);
+    Assert.AreEqual(1, lApi.ReturnCalls);
+    Assert.AreEqual(lButton.Handle, lApi.LastHwnd);
+    Assert.AreEqual('Comfortable', ProviderStringProperty(FragmentFromSimple(lApi.ReturnedProvider),
+      UIA_NamePropertyId));
+    Assert.AreEqual(Integer(lButton.Handle), ProviderIntProperty(FragmentFromSimple(lApi.ReturnedProvider),
+      UIA_NativeWindowHandlePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
 procedure TAccessibilityManagerTests.DemoFormInstallRaisesRadioGroupItemHoverFromButtonWindow;
 var
   lApi: IManagerTestUiaApi;
@@ -2739,6 +3444,42 @@ begin
     Assert.AreEqual(UIA_AutomationFocusChangedEventId, lApi.LastEventId);
     Assert.AreEqual('Comfortable', ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider),
       UIA_NamePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.DemoFormInstallReturnsRadioGroupItemProviderFromButtonWindow;
+var
+  lApi: IManagerTestUiaApi;
+  lButton: TRadioButton;
+  lForm: TAccessibilityDemoMainForm;
+  lMessage: TMessage;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TAccessibilityDemoMainForm.Create(nil);
+  try
+    lForm.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+    lButton := lForm.radioGroupDensity.Buttons[0];
+
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.WParam := 7;
+    lMessage.LParam := UiaRootObjectId;
+    lButton.WindowProc(lMessage);
+
+    Assert.AreEqual(2468, lMessage.Result);
+    Assert.AreEqual(1, lApi.ReturnCalls);
+    Assert.AreEqual(lButton.Handle, lApi.LastHwnd);
+    Assert.AreEqual('Comfortable', ProviderStringProperty(FragmentFromSimple(lApi.ReturnedProvider),
+      UIA_NamePropertyId));
+    Assert.AreEqual(Integer(lButton.Handle), ProviderIntProperty(FragmentFromSimple(lApi.ReturnedProvider),
+      UIA_NativeWindowHandlePropertyId));
   finally
     lForm.Free;
     ResetManager;

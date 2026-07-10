@@ -22,6 +22,7 @@ const
   cDemoAgentBridgeMutationsSwitch = '--a11y-agent-bridge-mutations';
   cDemoAgentBridgePipePrefix = '--a11y-agent-bridge-pipe=';
   cDemoAgentBridgeSwitch = '--a11y-agent-bridge';
+  cDemoDiagnosticsSwitch = '--a11y-diagnostics';
 
 {$IF DEFINED(madExcept) AND DEFINED(DEBUG)}
 procedure RunMadExceptAiProbe;
@@ -112,8 +113,11 @@ begin
   Application.Initialize;
   Application.MainFormOnTaskbar := True;
   Application.Title := 'Accessibility Framework Demo';
-  TAccessibilityDiagnostics.Configure(ChangeFileExt(Application.ExeName, '.a11y.log'));
-  TAccessibilityDiagnostics.Log('AccessibilityComplexDemo starting');
+  if HasCommandLineSwitch(cDemoDiagnosticsSwitch) then
+  begin
+    TAccessibilityDiagnostics.Configure(ChangeFileExt(Application.ExeName, '.a11y.log'));
+    TAccessibilityDiagnostics.Log('AccessibilityComplexDemo starting');
+  end;
   Application.CreateForm(TAccessibilityDemoMainForm, AccessibilityDemoMain);
   SetDemoAccessibilityFrameworkEnabled(True);
   StartDemoAgentBridgeIfRequested;
@@ -122,5 +126,6 @@ begin
   finally
     StopDemoAgentBridge;
     SetDemoAccessibilityFrameworkEnabled(False);
+    TAccessibilityDiagnostics.Disable;
   end;
 end.

@@ -233,22 +233,536 @@ type
     class function ScannerMetricsEnabled: Boolean; static;
   end;
 
+  TAccessibilityDiagnosticsInternals = record
+  public
+    class function DroppedLogRecordCount: Int64; static;
+    class function FlushLog(aTimeoutMs: Cardinal): Boolean; static;
+    class function LogFileWriteThreadId: Cardinal; static;
+    class function PendingLogRecordCount: Integer; static;
+    class procedure PauseLogWriter(aPaused: Boolean); static;
+    class function QueueCapacity: Integer; static;
+    class procedure SetMaximumLogBytes(aMaxBytes: Int64); static;
+    class function WriterAcceptingRecords: Boolean; static;
+    class function WriterStarted: Boolean; static;
+  end;
+
 implementation
 
 uses
-  System.IOUtils, System.SysUtils, Winapi.Windows, MaxLogic.Accessibility.UIAutomationCore;
+  System.Classes, System.Generics.Collections, System.SyncObjs, System.SysUtils, System.Types, Winapi.Windows,
+  MaxLogic.Accessibility.UIAutomationCore;
+
+const
+  cDiagnosticsLogMaximumBytes = 8 * 1024 * 1024;
+  cDiagnosticsLogQueueCapacity = 1024;
+  cDiagnosticsLogSummaryReserve = 512;
+
+type
+  TAccessibilityDiagnosticLogEntry = record
+    Message: string;
+    ThreadId: Cardinal;
+    Timestamp: TDateTime;
+  end;
+
+  TAccessibilityDiagnosticWriter = class;
+
+  TAccessibilityDiagnosticWriterThread = class(TThread)
+  private
+    fOwner: TAccessibilityDiagnosticWriter;
+  protected
+    procedure Execute; override;
+  public
+    constructor Create(aOwner: TAccessibilityDiagnosticWriter);
+  end;
+
+  TAccessibilityDiagnosticWriter = class
+  private
+    fActiveProducerCount: Integer;
+    fBytesWritten: Int64;
+    fDroppedRecordCount: Int64;
+    fDroppedUnreportedCount: Int64;
+    fEnabled: Integer;
+    fFileHandle: THandle;
+    fIdleEvent: TEvent;
+    fLastWriteError: string;
+    fLogFileWriteThreadId: Cardinal;
+    fMaximumLogBytes: Int64;
+    fPauseEvent: TEvent;
+    fPendingRecordCount: Integer;
+    fProcessId: Cardinal;
+    fQueue: TThreadedQueue<TAccessibilityDiagnosticLogEntry>;
+    fThread: TAccessibilityDiagnosticWriterThread;
+    fThreadStarted: Boolean;
+    fWriterBusy: Integer;
+    fWriteFailed: Integer;
+    procedure AddDroppedRecord;
+    function CompleteEntry: Boolean;
+    function CurrentProducerCount: Integer;
+    function CurrentPendingCount: Integer;
+    procedure EnsureThread;
+    procedure HandleWriterException(aException: Exception);
+    function IsIdle: Boolean;
+    procedure ProcessEntry(const aEntry: TAccessibilityDiagnosticLogEntry);
+    procedure WaitForProducers;
+    procedure WriteDroppedSummary;
+    procedure WriteLine(const aLine: string);
+  public
+    constructor Create;
+    destructor Destroy; override;
+    procedure Configure(const aLogFile: string);
+    procedure Disable;
+    function DroppedRecordCount: Int64;
+    procedure Enqueue(const aMessage: string);
+    function Flush(aTimeoutMs: Cardinal): Boolean;
+    function IsEnabled: Boolean;
+    function LogFileWriteThreadId: Cardinal;
+    function PendingRecordCount: Integer;
+    procedure Pause(aPaused: Boolean);
+    procedure SetMaximumLogBytes(aMaxBytes: Int64);
+    function WriterStarted: Boolean;
+  end;
 
 var
   gAgentBridgePipeMetrics: TAccessibilityAgentBridgePipeMetrics;
   gAgentBridgePipeMetricsEnabled: Boolean;
   gDiagnosticsLock: TObject;
+  gDiagnosticsWriter: TAccessibilityDiagnosticWriter;
+  gDiagnosticsWriterLock: TLightweightMREW;
   gListBoxFocusMetrics: TAccessibilityListBoxFocusMetrics;
   gListBoxFocusMetricsEnabled: Boolean;
-  gLogFile: string;
   gProviderHotspotMetrics: TAccessibilityProviderHotspotMetrics;
   gProviderHotspotMetricsEnabled: Boolean;
   gScannerMetrics: TAccessibilityScannerMetrics;
   gScannerMetricsEnabled: Boolean;
+
+procedure WriteAllBytes(aHandle: THandle; const aBytes: TBytes);
+var
+  lOffset: Integer;
+  lWritten: Cardinal;
+begin
+  lOffset := 0;
+  while lOffset < Length(aBytes) do
+  begin
+    lWritten := 0;
+    if not WriteFile(aHandle, aBytes[lOffset], Cardinal(Length(aBytes) - lOffset), lWritten, nil) then
+    begin
+      RaiseLastOSError;
+    end;
+    if lWritten = 0 then
+    begin
+      raise EWriteError.Create('Diagnostics file write returned zero bytes.');
+    end;
+    Inc(lOffset, lWritten);
+  end;
+end;
+
+constructor TAccessibilityDiagnosticWriterThread.Create(aOwner: TAccessibilityDiagnosticWriter);
+begin
+  inherited Create(True);
+  fOwner := aOwner;
+  FreeOnTerminate := False;
+end;
+
+procedure TAccessibilityDiagnosticWriterThread.Execute;
+var
+  lBecameIdle: Boolean;
+  lEntry: TAccessibilityDiagnosticLogEntry;
+  lWaitResult: TWaitResult;
+begin
+  while not Terminated do
+  begin
+    if fOwner.fPauseEvent.WaitFor(INFINITE) <> wrSignaled then
+    begin
+      Continue;
+    end;
+
+    lWaitResult := fOwner.fQueue.PopItem(lEntry);
+    if Terminated then
+    begin
+      Break;
+    end;
+    if lWaitResult <> wrSignaled then
+    begin
+      Continue;
+    end;
+
+    fOwner.fPauseEvent.WaitFor(INFINITE);
+    TInterlocked.Exchange(fOwner.fWriterBusy, 1);
+    lBecameIdle := False;
+    try
+      try
+        fOwner.ProcessEntry(lEntry);
+      except
+        on E: Exception do
+        begin
+          fOwner.HandleWriterException(E);
+        end;
+      end;
+    finally
+      try
+        lBecameIdle := fOwner.CompleteEntry;
+      except
+        on E: Exception do
+        begin
+          fOwner.HandleWriterException(E);
+          lBecameIdle := fOwner.CurrentPendingCount = 0;
+        end;
+      end;
+      TInterlocked.Exchange(fOwner.fWriterBusy, 0);
+      if lBecameIdle and (fOwner.CurrentPendingCount = 0) then
+      begin
+        fOwner.fIdleEvent.SetEvent;
+      end;
+    end;
+  end;
+end;
+
+constructor TAccessibilityDiagnosticWriter.Create;
+begin
+  inherited Create;
+  fFileHandle := INVALID_HANDLE_VALUE;
+  fIdleEvent := TEvent.Create(nil, True, True, '');
+  fMaximumLogBytes := cDiagnosticsLogMaximumBytes;
+  fPauseEvent := TEvent.Create(nil, True, True, '');
+  fProcessId := GetCurrentProcessId;
+  fQueue := TThreadedQueue<TAccessibilityDiagnosticLogEntry>.Create(cDiagnosticsLogQueueCapacity, 0, INFINITE);
+end;
+
+destructor TAccessibilityDiagnosticWriter.Destroy;
+begin
+  if fPauseEvent <> nil then
+  begin
+    fPauseEvent.SetEvent;
+  end;
+  if fThreadStarted then
+  begin
+    Disable;
+  end;
+  if fThread <> nil then
+  begin
+    fThread.Terminate;
+  end;
+  if fQueue <> nil then
+  begin
+    fQueue.DoShutDown;
+  end;
+  fThread.Free;
+  fQueue.Free;
+  fPauseEvent.Free;
+  fIdleEvent.Free;
+  inherited Destroy;
+end;
+
+procedure TAccessibilityDiagnosticWriter.AddDroppedRecord;
+begin
+  TInterlocked.Increment(fDroppedRecordCount);
+  TInterlocked.Increment(fDroppedUnreportedCount);
+end;
+
+function TAccessibilityDiagnosticWriter.CompleteEntry: Boolean;
+begin
+  Result := TInterlocked.Decrement(fPendingRecordCount) = 0;
+  if Result then
+  begin
+    WriteDroppedSummary;
+    Result := CurrentPendingCount = 0;
+  end;
+end;
+
+procedure TAccessibilityDiagnosticWriter.Configure(const aLogFile: string);
+var
+  lDirectory: string;
+  lFileHandle: THandle;
+  lPreamble: TBytes;
+begin
+  Disable;
+  if aLogFile = '' then
+  begin
+    Exit;
+  end;
+
+  EnsureThread;
+
+  lDirectory := ExtractFilePath(aLogFile);
+  if (lDirectory <> '') and not ForceDirectories(lDirectory) then
+  begin
+    raise EInOutError.CreateFmt('Unable to create diagnostics directory: %s', [lDirectory]);
+  end;
+
+  lFileHandle := CreateFile(PChar(aLogFile), GENERIC_WRITE, FILE_SHARE_READ or FILE_SHARE_WRITE or FILE_SHARE_DELETE,
+    nil, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
+  if lFileHandle = INVALID_HANDLE_VALUE then
+  begin
+    RaiseLastOSError;
+  end;
+
+  try
+    lPreamble := TEncoding.UTF8.GetPreamble;
+    WriteAllBytes(lFileHandle, lPreamble);
+  except
+    CloseHandle(lFileHandle);
+    raise;
+  end;
+
+  fFileHandle := lFileHandle;
+  fBytesWritten := Length(lPreamble);
+  TInterlocked.Exchange(fDroppedRecordCount, 0);
+  TInterlocked.Exchange(fDroppedUnreportedCount, 0);
+  fLastWriteError := '';
+  fLogFileWriteThreadId := 0;
+  TInterlocked.Exchange(fWriteFailed, 0);
+  fIdleEvent.SetEvent;
+  TInterlocked.Exchange(fEnabled, 1);
+end;
+
+function TAccessibilityDiagnosticWriter.CurrentProducerCount: Integer;
+begin
+  Result := TInterlocked.CompareExchange(fActiveProducerCount, 0, 0);
+end;
+
+function TAccessibilityDiagnosticWriter.CurrentPendingCount: Integer;
+begin
+  Result := TInterlocked.CompareExchange(fPendingRecordCount, 0, 0);
+end;
+
+procedure TAccessibilityDiagnosticWriter.EnsureThread;
+var
+  lThread: TAccessibilityDiagnosticWriterThread;
+begin
+  if fThreadStarted then
+  begin
+    Exit;
+  end;
+
+  lThread := TAccessibilityDiagnosticWriterThread.Create(Self);
+  try
+    lThread.Start;
+    fThread := lThread;
+    fThreadStarted := True;
+  except
+    lThread.Free;
+    raise;
+  end;
+end;
+
+procedure TAccessibilityDiagnosticWriter.Disable;
+begin
+  TInterlocked.Exchange(fEnabled, 0);
+  WaitForProducers;
+  Flush(INFINITE);
+  if fFileHandle <> INVALID_HANDLE_VALUE then
+  begin
+    CloseHandle(fFileHandle);
+    fFileHandle := INVALID_HANDLE_VALUE;
+  end;
+end;
+
+function TAccessibilityDiagnosticWriter.DroppedRecordCount: Int64;
+begin
+  Result := TInterlocked.Read(fDroppedRecordCount);
+end;
+
+procedure TAccessibilityDiagnosticWriter.Enqueue(const aMessage: string);
+var
+  lEntry: TAccessibilityDiagnosticLogEntry;
+  lPendingCount: Integer;
+begin
+  if not IsEnabled then
+  begin
+    Exit;
+  end;
+
+  TInterlocked.Increment(fActiveProducerCount);
+  try
+    if not IsEnabled then
+    begin
+      Exit;
+    end;
+
+    lEntry.Message := aMessage;
+    lEntry.ThreadId := GetCurrentThreadId;
+    lEntry.Timestamp := Now;
+    lPendingCount := TInterlocked.Increment(fPendingRecordCount);
+    if lPendingCount = 1 then
+    begin
+      fIdleEvent.ResetEvent;
+    end;
+
+    if fQueue.PushItem(lEntry) <> wrSignaled then
+    begin
+      AddDroppedRecord;
+      if TInterlocked.Decrement(fPendingRecordCount) = 0 then
+      begin
+        fIdleEvent.SetEvent;
+      end;
+    end;
+  finally
+    TInterlocked.Decrement(fActiveProducerCount);
+  end;
+end;
+
+function TAccessibilityDiagnosticWriter.Flush(aTimeoutMs: Cardinal): Boolean;
+var
+  lElapsedMs: UInt64;
+  lStartedAt: UInt64;
+  lWaitMs: Cardinal;
+begin
+  Result := False;
+  lStartedAt := GetTickCount64;
+  while not Result do
+  begin
+    fIdleEvent.ResetEvent;
+    if IsIdle then
+    begin
+      Result := True;
+      Break;
+    end;
+
+    if aTimeoutMs = INFINITE then
+    begin
+      lWaitMs := INFINITE;
+    end else begin
+      lElapsedMs := GetTickCount64 - lStartedAt;
+      if lElapsedMs >= aTimeoutMs then
+      begin
+        Break;
+      end;
+      lWaitMs := Cardinal(aTimeoutMs - lElapsedMs);
+    end;
+
+    if fIdleEvent.WaitFor(lWaitMs) <> wrSignaled then
+    begin
+      Break;
+    end;
+  end;
+end;
+
+procedure TAccessibilityDiagnosticWriter.HandleWriterException(aException: Exception);
+begin
+  fLastWriteError := aException.ClassName + ': ' + aException.Message;
+  AddDroppedRecord;
+  TInterlocked.Exchange(fWriteFailed, 1);
+  TInterlocked.Exchange(fEnabled, 0);
+end;
+
+function TAccessibilityDiagnosticWriter.IsEnabled: Boolean;
+begin
+  Result := TInterlocked.CompareExchange(fEnabled, 0, 0) <> 0;
+end;
+
+function TAccessibilityDiagnosticWriter.IsIdle: Boolean;
+begin
+  Result := (CurrentProducerCount = 0) and (CurrentPendingCount = 0) and
+    (TInterlocked.CompareExchange(fWriterBusy, 0, 0) = 0);
+end;
+
+function TAccessibilityDiagnosticWriter.LogFileWriteThreadId: Cardinal;
+begin
+  Result := fLogFileWriteThreadId;
+end;
+
+function TAccessibilityDiagnosticWriter.PendingRecordCount: Integer;
+begin
+  Result := CurrentPendingCount;
+end;
+
+function TAccessibilityDiagnosticWriter.WriterStarted: Boolean;
+begin
+  Result := fThreadStarted;
+end;
+
+procedure TAccessibilityDiagnosticWriter.Pause(aPaused: Boolean);
+begin
+  if aPaused then
+  begin
+    fPauseEvent.ResetEvent;
+  end else begin
+    fPauseEvent.SetEvent;
+  end;
+end;
+
+procedure TAccessibilityDiagnosticWriter.ProcessEntry(const aEntry: TAccessibilityDiagnosticLogEntry);
+var
+  lDataLimit: Int64;
+  lLine: string;
+begin
+  if (fFileHandle = INVALID_HANDLE_VALUE) or (TInterlocked.CompareExchange(fWriteFailed, 0, 0) <> 0) then
+  begin
+    AddDroppedRecord;
+    Exit;
+  end;
+
+  lLine := Format('%s pid=%d tid=%d %s%s',
+    [FormatDateTime('yyyy-mm-dd"T"hh:nn:ss.zzz', aEntry.Timestamp), fProcessId, aEntry.ThreadId, aEntry.Message,
+    sLineBreak]);
+  lDataLimit := fMaximumLogBytes - cDiagnosticsLogSummaryReserve;
+  if (lDataLimit < 0) or (fBytesWritten + TEncoding.UTF8.GetByteCount(lLine) > lDataLimit) then
+  begin
+    AddDroppedRecord;
+    TInterlocked.Exchange(fEnabled, 0);
+    Exit;
+  end;
+
+  WriteLine(lLine);
+end;
+
+procedure TAccessibilityDiagnosticWriter.SetMaximumLogBytes(aMaxBytes: Int64);
+begin
+  if IsEnabled or (fFileHandle <> INVALID_HANDLE_VALUE) then
+  begin
+    raise EInvalidOperation.Create('Disable diagnostics before changing the maximum log size.');
+  end;
+  if aMaxBytes = 0 then
+  begin
+    fMaximumLogBytes := cDiagnosticsLogMaximumBytes;
+  end else if aMaxBytes < cDiagnosticsLogSummaryReserve then
+  begin
+    raise EArgumentOutOfRangeException.CreateFmt('Maximum diagnostics log size must be at least %d bytes.',
+      [cDiagnosticsLogSummaryReserve]);
+  end else begin
+    fMaximumLogBytes := aMaxBytes;
+  end;
+end;
+
+procedure TAccessibilityDiagnosticWriter.WaitForProducers;
+begin
+  while CurrentProducerCount <> 0 do
+  begin
+    Sleep(0);
+  end;
+end;
+
+procedure TAccessibilityDiagnosticWriter.WriteDroppedSummary;
+var
+  lDroppedCount: Int64;
+  lLine: string;
+begin
+  lDroppedCount := TInterlocked.Exchange(fDroppedUnreportedCount, 0);
+  if (lDroppedCount = 0) or (fFileHandle = INVALID_HANDLE_VALUE) or
+    (TInterlocked.CompareExchange(fWriteFailed, 0, 0) <> 0) then
+  begin
+    Exit;
+  end;
+
+  lLine := Format('%s pid=%d tid=%d Diagnostics dropped %d record(s) because a queue or file bound was reached.%s',
+    [FormatDateTime('yyyy-mm-dd"T"hh:nn:ss.zzz', Now), fProcessId, GetCurrentThreadId, lDroppedCount, sLineBreak]);
+  if fBytesWritten + TEncoding.UTF8.GetByteCount(lLine) > fMaximumLogBytes then
+  begin
+    Exit;
+  end;
+
+  WriteLine(lLine);
+end;
+
+procedure TAccessibilityDiagnosticWriter.WriteLine(const aLine: string);
+var
+  lBytes: TBytes;
+begin
+  lBytes := TEncoding.UTF8.GetBytes(aLine);
+  WriteAllBytes(fFileHandle, lBytes);
+  Inc(fBytesWritten, Length(lBytes));
+  fLogFileWriteThreadId := GetCurrentThreadId;
+end;
 
 function JsonBoolean(aValue: Boolean): string;
 begin
@@ -411,21 +925,27 @@ end;
 
 class procedure TAccessibilityDiagnostics.Configure(const aLogFile: string);
 begin
-  TMonitor.Enter(gDiagnosticsLock);
+  gDiagnosticsWriterLock.BeginWrite;
   try
-    gLogFile := aLogFile;
+    if gDiagnosticsWriter <> nil then
+    begin
+      gDiagnosticsWriter.Configure(aLogFile);
+    end;
   finally
-    TMonitor.Exit(gDiagnosticsLock);
+    gDiagnosticsWriterLock.EndWrite;
   end;
 end;
 
 class procedure TAccessibilityDiagnostics.Disable;
 begin
-  TMonitor.Enter(gDiagnosticsLock);
+  gDiagnosticsWriterLock.BeginWrite;
   try
-    gLogFile := '';
+    if gDiagnosticsWriter <> nil then
+    begin
+      gDiagnosticsWriter.Disable;
+    end;
   finally
-    TMonitor.Exit(gDiagnosticsLock);
+    gDiagnosticsWriterLock.EndWrite;
   end;
 end;
 
@@ -491,11 +1011,14 @@ end;
 
 class function TAccessibilityDiagnostics.Enabled: Boolean;
 begin
-  TMonitor.Enter(gDiagnosticsLock);
+  if not gDiagnosticsWriterLock.TryBeginRead then
+  begin
+    Exit(False);
+  end;
   try
-    Result := gLogFile <> '';
+    Result := (gDiagnosticsWriter <> nil) and gDiagnosticsWriter.IsEnabled;
   finally
-    TMonitor.Exit(gDiagnosticsLock);
+    gDiagnosticsWriterLock.EndRead;
   end;
 end;
 
@@ -723,29 +1246,18 @@ begin
 end;
 
 class procedure TAccessibilityDiagnostics.Log(const aMessage: string);
-var
-  lDirectory: string;
-  lLine: string;
 begin
-  TMonitor.Enter(gDiagnosticsLock);
+  if not gDiagnosticsWriterLock.TryBeginRead then
+  begin
+    Exit;
+  end;
   try
-    if gLogFile = '' then
+    if gDiagnosticsWriter <> nil then
     begin
-      Exit;
+      gDiagnosticsWriter.Enqueue(aMessage);
     end;
-
-    lDirectory := ExtractFilePath(gLogFile);
-    if lDirectory <> '' then
-    begin
-      ForceDirectories(lDirectory);
-    end;
-
-    lLine := Format('%s pid=%d tid=%d %s%s',
-      [FormatDateTime('yyyy-mm-dd"T"hh:nn:ss.zzz', Now), GetCurrentProcessId, GetCurrentThreadId, aMessage,
-      sLineBreak]);
-    TFile.AppendAllText(gLogFile, lLine, TEncoding.UTF8);
   finally
-    TMonitor.Exit(gDiagnosticsLock);
+    gDiagnosticsWriterLock.EndRead;
   end;
 end;
 
@@ -1638,10 +2150,110 @@ begin
   end;
 end;
 
+class function TAccessibilityDiagnosticsInternals.DroppedLogRecordCount: Int64;
+begin
+  gDiagnosticsWriterLock.BeginRead;
+  try
+    if gDiagnosticsWriter <> nil then
+    begin
+      Exit(gDiagnosticsWriter.DroppedRecordCount);
+    end;
+    Result := 0;
+  finally
+    gDiagnosticsWriterLock.EndRead;
+  end;
+end;
+
+class function TAccessibilityDiagnosticsInternals.FlushLog(aTimeoutMs: Cardinal): Boolean;
+begin
+  gDiagnosticsWriterLock.BeginRead;
+  try
+    Result := (gDiagnosticsWriter = nil) or gDiagnosticsWriter.Flush(aTimeoutMs);
+  finally
+    gDiagnosticsWriterLock.EndRead;
+  end;
+end;
+
+class function TAccessibilityDiagnosticsInternals.LogFileWriteThreadId: Cardinal;
+begin
+  gDiagnosticsWriterLock.BeginRead;
+  try
+    if gDiagnosticsWriter <> nil then
+    begin
+      Exit(gDiagnosticsWriter.LogFileWriteThreadId);
+    end;
+    Result := 0;
+  finally
+    gDiagnosticsWriterLock.EndRead;
+  end;
+end;
+
+class function TAccessibilityDiagnosticsInternals.PendingLogRecordCount: Integer;
+begin
+  gDiagnosticsWriterLock.BeginRead;
+  try
+    if gDiagnosticsWriter <> nil then
+    begin
+      Exit(gDiagnosticsWriter.PendingRecordCount);
+    end;
+    Result := 0;
+  finally
+    gDiagnosticsWriterLock.EndRead;
+  end;
+end;
+
+class procedure TAccessibilityDiagnosticsInternals.PauseLogWriter(aPaused: Boolean);
+begin
+  if gDiagnosticsWriter <> nil then
+  begin
+    gDiagnosticsWriter.Pause(aPaused);
+  end;
+end;
+
+class function TAccessibilityDiagnosticsInternals.QueueCapacity: Integer;
+begin
+  Result := cDiagnosticsLogQueueCapacity;
+end;
+
+class procedure TAccessibilityDiagnosticsInternals.SetMaximumLogBytes(aMaxBytes: Int64);
+begin
+  gDiagnosticsWriterLock.BeginWrite;
+  try
+    if gDiagnosticsWriter <> nil then
+    begin
+      gDiagnosticsWriter.SetMaximumLogBytes(aMaxBytes);
+    end;
+  finally
+    gDiagnosticsWriterLock.EndWrite;
+  end;
+end;
+
+class function TAccessibilityDiagnosticsInternals.WriterAcceptingRecords: Boolean;
+begin
+  Result := (gDiagnosticsWriter <> nil) and gDiagnosticsWriter.IsEnabled;
+end;
+
+class function TAccessibilityDiagnosticsInternals.WriterStarted: Boolean;
+begin
+  gDiagnosticsWriterLock.BeginRead;
+  try
+    Result := (gDiagnosticsWriter <> nil) and gDiagnosticsWriter.WriterStarted;
+  finally
+    gDiagnosticsWriterLock.EndRead;
+  end;
+end;
+
 initialization
   gDiagnosticsLock := TObject.Create;
+  gDiagnosticsWriter := TAccessibilityDiagnosticWriter.Create;
 
 finalization
+  gDiagnosticsWriterLock.BeginWrite;
+  try
+    FreeAndNil(gDiagnosticsWriter);
+  finally
+    gDiagnosticsWriterLock.EndWrite;
+  end;
   gDiagnosticsLock.Free;
 
 end.

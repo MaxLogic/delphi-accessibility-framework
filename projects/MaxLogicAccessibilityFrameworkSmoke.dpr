@@ -333,9 +333,12 @@ end;
 
 procedure RequireProvider(const aFragment: IRawElementProviderFragment; aControlTypeId: Integer; const aName: string;
   const aHelpText: string; const aDescription: string);
+var
+  lControlTypeId: Integer;
 begin
-  Require(ProviderIntProperty(aFragment, UIA_ControlTypePropertyId) = aControlTypeId,
-    aDescription + ' control type mismatch.');
+  lControlTypeId := ProviderIntProperty(aFragment, UIA_ControlTypePropertyId);
+  Require(lControlTypeId = aControlTypeId, Format('%s control type mismatch: expected %d, got %d.',
+    [aDescription, aControlTypeId, lControlTypeId]));
   Require(ProviderStringProperty(aFragment, UIA_NamePropertyId) = aName, aDescription + ' name mismatch.');
   Require(ProviderStringProperty(aFragment, UIA_HelpTextPropertyId) = aHelpText,
     aDescription + ' help text mismatch.');
@@ -361,7 +364,6 @@ var
   lNestedFragment: IRawElementProviderFragment;
   lNestedLabel: TLabel;
   lPanel: TPanel;
-  lPanelFragment: IRawElementProviderFragment;
   lPattern: IUnknown;
   lRecorder: TProbeClickRecorder;
   lRootFragment: IRawElementProviderFragment;
@@ -457,8 +459,8 @@ begin
     lToggleFragment := NextSibling(lRunFragment, 'toggle speed-button fragment');
     lApplyFragment := NextSibling(lToggleFragment, 'apply button fragment');
     lCheckBoxFragment := NextSibling(lApplyFragment, 'checkbox fragment');
-    lPanelFragment := NextSibling(lCheckBoxFragment, 'panel fragment');
-    lGraphicFragment := NextSibling(lPanelFragment, 'graphic-control fragment');
+    lNestedFragment := NextSibling(lCheckBoxFragment, 'flattened panel child label fragment');
+    lGraphicFragment := NextSibling(lNestedFragment, 'graphic-control fragment');
     Require(OptionalNextSibling(lGraphicFragment, 'decorative-control omission check') = nil,
       'Decorative controls were exposed after the graphic-control fragment.');
 
@@ -469,13 +471,8 @@ begin
       'apply button');
     RequireProvider(lCheckBoxFragment, UIA_CheckBoxControlTypeId, 'Include archived rows',
       'Toggle archived rows in the demo grids', 'checkbox');
-    RequireProvider(lPanelFragment, UIA_PaneControlTypeId, '', '', 'panel-with-child');
+    RequireProvider(lNestedFragment, UIA_TextControlTypeId, 'Nested value', '', 'flattened panel child label');
     RequireProvider(lGraphicFragment, UIA_TextControlTypeId, 'Custom graphic', 'Graphic help', 'graphic-control');
-
-    lNestedFragment := FirstNestedChild(lPanelFragment, 'panel child label fragment');
-    RequireProvider(lNestedFragment, UIA_TextControlTypeId, 'Nested value', '', 'nested label');
-    Require(OptionalNextSibling(lNestedFragment, 'panel child decorative omission check') = nil,
-      'Unexpected extra child under panel.');
 
     lPattern := PatternProvider(lRunFragment, UIA_InvokePatternId);
     Require(Supports(lPattern, IInvokeProvider, lInvoke), 'Run speed-button does not expose Invoke.');
@@ -515,7 +512,8 @@ begin
     Writeln('UIA_PROBE_OK BasicVclControls: install-path=manager-wm-getobject; ' +
       'label provider=text name/help; button provider=button invoke; ' +
       'speed button provider=button invoke/toggle; checkbox provider=checkbox toggle; ' +
-      'panel provider=pane with child; generic graphic-control provider=text; decorative controls omitted.');
+      'empty panel omitted with accessible child flattened; generic graphic-control provider=text; ' +
+      'decorative controls omitted.');
   finally
     TAccessibilityManager.Uninstall;
     lRecorder.Free;

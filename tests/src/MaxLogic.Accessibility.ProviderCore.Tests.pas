@@ -61,6 +61,9 @@ type
     [Test]
     procedure ElementProviderFromPointDoesNotBuildLogDescriptionWhenDiagnosticsDisabled;
     [Test]
+    [Category('Diagnostics')]
+    procedure ElementProviderFromPointDoesNotBuildLogDescriptionWhenDiagnosticsEnabled;
+    [Test]
     procedure ElementProviderFromPointUsesInternalBoundsWithoutProviderCallback;
     [Test]
     procedure WmGetObjectReturnsRootProviderOnlyForUiaRequests;
@@ -1289,6 +1292,35 @@ begin
   Assert.IsNotNull(lHit);
   Assert.AreEqual(0, lProbe.PropertyProbeCount,
     'Mouse hit testing must not query provider properties only to build discarded diagnostics text.');
+end;
+
+procedure TProviderCoreTests.ElementProviderFromPointDoesNotBuildLogDescriptionWhenDiagnosticsEnabled;
+var
+  lHit: IRawElementProviderFragment;
+  lLogFile: string;
+  lProbe: IPropertyProbeProvider;
+  lRoot: IAccessibilityProviderNode;
+begin
+  lLogFile := TPath.GetTempFileName;
+  try
+    TAccessibilityDiagnostics.Configure(lLogFile);
+    lRoot := TAccessibilityProviderFactory.CreateRoot([1], 0);
+    lProbe := TCountingHitTestProviderNode.Create as IPropertyProbeProvider;
+    lRoot.AddChild(lProbe as IAccessibilityProviderNode);
+
+    Assert.AreEqual(S_OK, (lRoot.FragmentProvider as IRawElementProviderFragmentRoot).ElementProviderFromPoint(10, 10,
+      lHit));
+    Assert.IsNotNull(lHit);
+    Assert.IsTrue(TAccessibilityDiagnosticsInternals.FlushLog(5000), 'Diagnostics did not become idle.');
+    Assert.AreEqual(0, lProbe.PropertyProbeCount,
+      'Enabled hit-test logging must not query provider properties solely to describe a trace line.');
+  finally
+    TAccessibilityDiagnostics.Disable;
+    if TFile.Exists(lLogFile) then
+    begin
+      TFile.Delete(lLogFile);
+    end;
+  end;
 end;
 
 procedure TProviderCoreTests.ElementProviderFromPointUsesInternalBoundsWithoutProviderCallback;

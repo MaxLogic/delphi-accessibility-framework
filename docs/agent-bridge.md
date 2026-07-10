@@ -66,6 +66,14 @@ The complex demo exposes the bridge only when started with an explicit diagnosti
 
 Add `--a11y-agent-bridge-mutations` only when the automation run should use bridge mutation commands. Without that switch, the demo still allows snapshots and hit testing, but mutation commands remain disabled. The demo stops the pipe server before uninstalling the accessibility framework when `Application.Run` exits.
 
+Verbose file diagnostics are a separate opt-in and are not enabled merely because the bridge is active:
+
+```powershell
+.\bin\Win32\Debug\AccessibilityComplexDemo.exe --a11y-diagnostics
+```
+
+The switch creates a fresh `AccessibilityComplexDemo.a11y.log` beside the executable. Log calls enqueue to a bounded background writer instead of performing file I/O on the VCL or UIA caller thread. Each run is capped at 8 MiB, queue or size-limit drops are summarized in the log, and the active file permits readers that share read and write access. The demo drains and closes diagnostics during its normal shutdown path.
+
 ## Handshake
 
 ```json

@@ -78,7 +78,7 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Cfg_1)'!=''">
     <DCC_Define>RELEASE;$(DCC_Define)</DCC_Define>
-    <DCC_DebugInformation>false</DCC_DebugInformation>
+    <DCC_DebugInformation>0</DCC_DebugInformation>
     <DCC_LocalDebugSymbols>false</DCC_LocalDebugSymbols>
     <DCC_SymbolReferenceInfo>0</DCC_SymbolReferenceInfo>
     <DCC_Optimize>true</DCC_Optimize>
@@ -98,8 +98,8 @@
     <VerInfo_IncludeVerInfo>true</VerInfo_IncludeVerInfo>
     <VerInfo_AutoIncVersion>true</VerInfo_AutoIncVersion>
     <VerInfo_Locale>1045</VerInfo_Locale>
-    <VerInfo_Build>210</VerInfo_Build>
-    <VerInfo_Keys>CompanyName=MaxLogic;FileDescription=Accessibility Framework Complex Demo;FileVersion=0.1.0.210;InternalName=AccessibilityComplexDemo;LegalCopyright=;OriginalFilename=AccessibilityComplexDemo.exe;ProductName=MaxLogic Accessibility Framework Demo;ProductVersion=0.1.0.0</VerInfo_Keys>
+    <VerInfo_Build>212</VerInfo_Build>
+    <VerInfo_Keys>CompanyName=MaxLogic;FileDescription=Accessibility Framework Complex Demo;FileVersion=0.1.0.212;InternalName=AccessibilityComplexDemo;LegalCopyright=;OriginalFilename=AccessibilityComplexDemo.exe;ProductName=MaxLogic Accessibility Framework Demo;ProductVersion=0.1.0.0</VerInfo_Keys>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Cfg_2_Win64)'!=''">
     <BT_BuildType>Debug</BT_BuildType>

@@ -410,47 +410,6 @@ begin
   end;
 end;
 
-function ProviderPropertyToString(const aProvider: IRawElementProviderFragment; aPropertyId: PROPERTYID): string;
-var
-  lProvider: IRawElementProviderSimple;
-  lValue: OleVariant;
-begin
-  Result := '';
-  if not Supports(aProvider, IRawElementProviderSimple, lProvider) then
-  begin
-    Exit;
-  end;
-
-  if lProvider.GetPropertyValue(aPropertyId, lValue) <> S_OK then
-  begin
-    Exit;
-  end;
-
-  if VarIsEmpty(lValue) or VarIsNull(lValue) then
-  begin
-    Exit;
-  end;
-
-  Result := VarToStr(lValue);
-end;
-
-function ProviderHitTestDescription(const aProvider: IRawElementProviderFragment): string;
-var
-  lClassName: string;
-  lControlType: string;
-  lName: string;
-begin
-  if aProvider = nil then
-  begin
-    Exit('provider=nil');
-  end;
-
-  lName := ProviderPropertyToString(aProvider, UIA_NamePropertyId);
-  lClassName := ProviderPropertyToString(aProvider, UIA_ClassNamePropertyId);
-  lControlType := ProviderPropertyToString(aProvider, UIA_ControlTypePropertyId);
-  Result := Format('provider name="%s" class="%s" controlType="%s"', [lName, lClassName, lControlType]);
-end;
-
 function TAccessibilityUiaApi.ClientsAreListening: Boolean;
 begin
   Result := UiaClientsAreListening <> BOOL(False);
@@ -1813,8 +1772,9 @@ begin
     Result := DoElementProviderFromPoint(aX, aY, aRetVal);
     if TAccessibilityDiagnostics.Enabled then
     begin
-      TAccessibilityDiagnostics.Log(Format('UIA ElementProviderFromPoint x=%.0f y=%.0f hresult=$%s %s',
-        [aX, aY, SignedDWordHex(Result), ProviderHitTestDescription(aRetVal)]));
+      TAccessibilityDiagnostics.Log(Format(
+        'UIA ElementProviderFromPoint x=%.0f y=%.0f hresult=$%s providerPresent=%s',
+        [aX, aY, SignedDWordHex(Result), BoolToStr(aRetVal <> nil, True)]));
     end;
   finally
     FinishProviderBoundaryTiming(pbcRootElementProviderFromPoint, lStopwatch, lMetricsEnabled);

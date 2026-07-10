@@ -8,10 +8,34 @@ uses
 type
   [TestFixture]
   [Category('Diagnostics')]
-  TAccessibilityDiagnosticsTests = class
+  TAccessibilityDiagnosticsStartupTests = class
   public
     [Test]
+    procedure DisabledDiagnosticsDoesNotStartWriterThread;
+  end;
+
+  [TestFixture]
+  [Category('Diagnostics')]
+  TAccessibilityDiagnosticsTests = class
+  public
+    [TearDown]
+    procedure TearDown;
+    [Test]
+    procedure ConcurrentLogAndDisableDrainsWithoutDeadlock;
+    [Test]
+    procedure HotPathCallsDoNotWaitForConcurrentDisable;
+    [Test]
     procedure EnabledDiagnosticsAppendTimestampedLinesToConfiguredLog;
+    [Test]
+    procedure LogFileIsBoundedAndReportsDroppedRecords;
+    [Test]
+    procedure LogFileWritesRunOnBackgroundThread;
+    [Test]
+    procedure LogCallerLatencyArtifactIsWritten;
+    [Test]
+    procedure QueueOverflowDropsRecordsWithoutWaitingForWriter;
+    [Test]
+    procedure ReconfigureTruncatesLogAndAllowsSharedReader;
   end;
 
   [TestFixture]
@@ -119,8 +143,10 @@ type
 implementation
 
 uses
-  System.IOUtils, System.JSON, System.SysUtils, Winapi.ActiveX, Winapi.Messages, Winapi.Windows, Vcl.CheckLst,
-  Vcl.Controls, Vcl.Forms, Vcl.Grids, Vcl.StdCtrls, AdvGrid, MaxLogic.Accessibility.Diagnostics,
+  System.Classes, System.Diagnostics, System.Generics.Collections, System.IOUtils, System.JSON, System.SyncObjs,
+  System.SysUtils, Winapi.ActiveX, Winapi.Messages, Winapi.Windows, Vcl.CheckLst, Vcl.Controls, Vcl.Forms, Vcl.Grids,
+  Vcl.StdCtrls, AdvGrid,
+  MaxLogic.Accessibility.Diagnostics,
   MaxLogic.Accessibility.Manager, MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.TmsAdvStringGridAdapters,
   MaxLogic.Accessibility.UIAutomationCore, MaxLogic.Accessibility.VclAdapters;
 
@@ -177,6 +203,106 @@ type
     property LineFromCharMessageCount: Integer read fLineFromCharMessageCount write fLineFromCharMessageCount;
   end;
 
+  TDiagnosticsShutdownContentionProbe = class
+  private
+    fDisableDone: TEvent;
+    fDisableStarted: TEvent;
+    fDisableThread: TThread;
+    fEnabled: Boolean;
+    fLogFile: string;
+    fProbeDone: TEvent;
+    fProbeThread: TThread;
+  public
+    constructor Create;
+    destructor Destroy; override;
+  private
+    procedure DisableDiagnostics;
+    procedure ProbeHotPath;
+  public
+    function Execute: TWaitResult;
+    property Enabled: Boolean read fEnabled;
+  end;
+
+constructor TDiagnosticsShutdownContentionProbe.Create;
+begin
+  inherited Create;
+  fDisableDone := TEvent.Create(nil, True, False, '');
+  fDisableStarted := TEvent.Create(nil, True, False, '');
+  fLogFile := TPath.GetTempFileName;
+  fProbeDone := TEvent.Create(nil, True, False, '');
+end;
+
+destructor TDiagnosticsShutdownContentionProbe.Destroy;
+begin
+  TAccessibilityDiagnosticsInternals.PauseLogWriter(False);
+  if fDisableThread <> nil then
+  begin
+    fDisableDone.WaitFor(5000);
+    fDisableThread.WaitFor;
+  end;
+  if fProbeThread <> nil then
+  begin
+    fProbeDone.WaitFor(5000);
+    fProbeThread.WaitFor;
+  end;
+  fProbeThread.Free;
+  fDisableThread.Free;
+  fProbeDone.Free;
+  fDisableStarted.Free;
+  fDisableDone.Free;
+  TAccessibilityDiagnostics.Disable;
+  if TFile.Exists(fLogFile) then
+  begin
+    TFile.Delete(fLogFile);
+  end;
+  inherited Destroy;
+end;
+
+procedure TDiagnosticsShutdownContentionProbe.DisableDiagnostics;
+begin
+  fDisableStarted.SetEvent;
+  TAccessibilityDiagnostics.Disable;
+  fDisableDone.SetEvent;
+end;
+
+function TDiagnosticsShutdownContentionProbe.Execute: TWaitResult;
+var
+  lStartedAt: UInt64;
+begin
+  TAccessibilityDiagnosticsInternals.PauseLogWriter(True);
+  TAccessibilityDiagnostics.Configure(fLogFile);
+  TAccessibilityDiagnostics.Log('blocked shutdown probe');
+  Assert.AreEqual(1, TAccessibilityDiagnosticsInternals.PendingLogRecordCount,
+    'Test setup did not leave one record waiting for the paused writer.');
+
+  fDisableThread := TThread.CreateAnonymousThread(DisableDiagnostics);
+  fDisableThread.FreeOnTerminate := False;
+  fDisableThread.Start;
+  Assert.AreEqual(wrSignaled, fDisableStarted.WaitFor(5000), 'Diagnostics shutdown did not start.');
+  lStartedAt := GetTickCount64;
+  while TAccessibilityDiagnosticsInternals.WriterAcceptingRecords and ((GetTickCount64 - lStartedAt) < 5000) do
+  begin
+    Sleep(1);
+  end;
+  Assert.IsFalse(TAccessibilityDiagnosticsInternals.WriterAcceptingRecords,
+    'Diagnostics shutdown did not disable record intake.');
+
+  fProbeThread := TThread.CreateAnonymousThread(ProbeHotPath);
+  fProbeThread.FreeOnTerminate := False;
+  fProbeThread.Start;
+  Result := fProbeDone.WaitFor(250);
+end;
+
+procedure TDiagnosticsShutdownContentionProbe.ProbeHotPath;
+begin
+  try
+    fEnabled := TAccessibilityDiagnostics.Enabled;
+    TAccessibilityDiagnostics.Log('shutdown contention probe');
+  finally
+    fProbeDone.SetEvent;
+  end;
+end;
+
 function BaselineArtifactFileName: string;
 var
   lAgentsDir: string;
@@ -197,6 +323,30 @@ begin
   lRunsDir := TPath.Combine(lAgentsDir, 'runs');
   ForceDirectories(lRunsDir);
   Result := TPath.Combine(lRunsDir, 'provider-hotspot-baseline.json');
+end;
+
+function ReadSharedLogText(const aLogFile: string): string;
+var
+  lByteCount: Integer;
+  lBytes: TBytes;
+  lStream: TFileStream;
+begin
+  lStream := TFileStream.Create(aLogFile, fmOpenRead or fmShareDenyNone);
+  try
+    if lStream.Size > MaxInt then
+    begin
+      raise EStreamError.Create('Diagnostics test log is too large to read.');
+    end;
+    lByteCount := Integer(lStream.Size);
+    SetLength(lBytes, lByteCount);
+    if lByteCount > 0 then
+    begin
+      lStream.ReadBuffer(lBytes[0], lByteCount);
+    end;
+    Result := TEncoding.UTF8.GetString(lBytes);
+  finally
+    lStream.Free;
+  end;
 end;
 
 function BuildBaselineJson(const aFrameworkMetrics: TAccessibilityListBoxFocusMetrics;
@@ -1215,9 +1365,10 @@ begin
   try
     TAccessibilityDiagnostics.Configure(lLogFile);
     TAccessibilityDiagnostics.Log('diagnostic probe message');
+    Assert.IsTrue(TAccessibilityDiagnosticsInternals.FlushLog(5000), 'Diagnostics did not become idle.');
 
     Assert.IsTrue(TFile.Exists(lLogFile), 'Diagnostics did not create a log file.');
-    lLogText := TFile.ReadAllText(lLogFile, TEncoding.UTF8);
+    lLogText := ReadSharedLogText(lLogFile);
     Assert.Contains(lLogText, 'diagnostic probe message');
     Assert.Contains(lLogText, 'T');
   finally
@@ -1227,6 +1378,291 @@ begin
       TFile.Delete(lLogFile);
     end;
   end;
+end;
+
+procedure TAccessibilityDiagnosticsTests.ConcurrentLogAndDisableDrainsWithoutDeadlock;
+const
+  cLogCount = 400;
+var
+  lDone: TEvent;
+  lLogFile: string;
+  lStarted: TEvent;
+  lThread: TThread;
+begin
+  lDone := TEvent.Create(nil, True, False, '');
+  lLogFile := TPath.GetTempFileName;
+  lStarted := TEvent.Create(nil, True, False, '');
+  lThread := nil;
+  try
+    TAccessibilityDiagnostics.Configure(lLogFile);
+    lThread := TThread.CreateAnonymousThread(
+      procedure
+      var
+        i: Integer;
+      begin
+        try
+          lStarted.SetEvent;
+          for i := 1 to cLogCount do
+          begin
+            TAccessibilityDiagnostics.Log('concurrent shutdown probe');
+          end;
+        finally
+          lDone.SetEvent;
+        end;
+      end);
+    lThread.FreeOnTerminate := False;
+    lThread.Start;
+    Assert.AreEqual(wrSignaled, lStarted.WaitFor(5000), 'Diagnostics producer did not start.');
+
+    TAccessibilityDiagnostics.Disable;
+
+    Assert.AreEqual(wrSignaled, lDone.WaitFor(5000), 'Diagnostics producer did not finish after Disable.');
+    lThread.WaitFor;
+    Assert.AreEqual(0, TAccessibilityDiagnosticsInternals.PendingLogRecordCount,
+      'Disable returned with queued diagnostics records.');
+    Assert.IsFalse(TAccessibilityDiagnostics.Enabled, 'Disable left diagnostics enabled.');
+  finally
+    lThread.Free;
+    lStarted.Free;
+    lDone.Free;
+    TAccessibilityDiagnostics.Disable;
+    if TFile.Exists(lLogFile) then
+    begin
+      TFile.Delete(lLogFile);
+    end;
+  end;
+end;
+
+function DiagnosticsCallerArtifactFileName: string;
+var
+  lAgentsDir: string;
+  lRunsDir: string;
+begin
+  lAgentsDir := TPath.Combine(GetCurrentDir, '.agents');
+  lRunsDir := TPath.Combine(lAgentsDir, 'runs');
+  ForceDirectories(lRunsDir);
+  Result := TPath.Combine(lRunsDir, 't110-diagnostics-caller-latency.json');
+end;
+
+function MillisecondsFromTicks(aTicks: Int64): Double;
+begin
+  Result := (aTicks * 1000.0) / TStopwatch.Frequency;
+end;
+
+function NearestRankIndex(aSampleCount: Integer; aPercentile: Integer): Integer;
+begin
+  Result := ((aSampleCount * aPercentile) + 99) div 100 - 1;
+end;
+
+procedure TAccessibilityDiagnosticsTests.HotPathCallsDoNotWaitForConcurrentDisable;
+var
+  lProbe: TDiagnosticsShutdownContentionProbe;
+  lProbeWaitResult: TWaitResult;
+begin
+  lProbe := TDiagnosticsShutdownContentionProbe.Create;
+  try
+    lProbeWaitResult := lProbe.Execute;
+
+    Assert.AreEqual(wrSignaled, lProbeWaitResult,
+      'Diagnostics hot-path calls waited for shutdown file I/O.');
+    Assert.IsFalse(lProbe.Enabled, 'Diagnostics remained enabled after concurrent shutdown started.');
+  finally
+    lProbe.Free;
+  end;
+end;
+
+procedure TAccessibilityDiagnosticsStartupTests.DisabledDiagnosticsDoesNotStartWriterThread;
+begin
+  TAccessibilityDiagnostics.Disable;
+  Assert.IsFalse(TAccessibilityDiagnosticsInternals.WriterStarted,
+    'Disabled diagnostics must not create a polling background thread.');
+end;
+
+procedure TAccessibilityDiagnosticsTests.LogFileIsBoundedAndReportsDroppedRecords;
+const
+  cMaximumBytes = 1024;
+var
+  lLogFile: string;
+begin
+  lLogFile := TPath.GetTempFileName;
+  try
+    TAccessibilityDiagnosticsInternals.SetMaximumLogBytes(cMaximumBytes);
+    TAccessibilityDiagnostics.Configure(lLogFile);
+    TAccessibilityDiagnostics.Log(StringOfChar('x', cMaximumBytes * 2));
+    Assert.IsTrue(TAccessibilityDiagnosticsInternals.FlushLog(5000), 'Diagnostics did not become idle.');
+
+    Assert.IsTrue(TFile.GetSize(lLogFile) <= cMaximumBytes, 'Diagnostics log exceeded its configured bound.');
+    Assert.IsTrue(TAccessibilityDiagnosticsInternals.DroppedLogRecordCount > 0,
+      'Diagnostics did not report the record dropped at the file-size bound.');
+    Assert.Contains(ReadSharedLogText(lLogFile), 'Diagnostics dropped 1 record(s)',
+      'Diagnostics log did not report the file-size drop.');
+  finally
+    TAccessibilityDiagnostics.Disable;
+    if TFile.Exists(lLogFile) then
+    begin
+      TFile.Delete(lLogFile);
+    end;
+  end;
+end;
+
+procedure TAccessibilityDiagnosticsTests.LogFileWritesRunOnBackgroundThread;
+var
+  lCallerThreadId: Cardinal;
+  lLogFile: string;
+  lWriterThreadId: Cardinal;
+begin
+  lLogFile := TPath.GetTempFileName;
+  try
+    TAccessibilityDiagnostics.Configure(lLogFile);
+    lCallerThreadId := GetCurrentThreadId;
+    TAccessibilityDiagnostics.Log('background writer probe');
+    Assert.IsTrue(TAccessibilityDiagnosticsInternals.FlushLog(5000), 'Diagnostics did not become idle.');
+    lWriterThreadId := TAccessibilityDiagnosticsInternals.LogFileWriteThreadId;
+
+    Assert.IsTrue(lWriterThreadId <> 0, 'Diagnostics did not record a filesystem writer thread.');
+    Assert.AreNotEqual(lCallerThreadId, lWriterThreadId,
+      'Diagnostics filesystem writes must not run on the caller thread.');
+  finally
+    TAccessibilityDiagnostics.Disable;
+    if TFile.Exists(lLogFile) then
+    begin
+      TFile.Delete(lLogFile);
+    end;
+  end;
+end;
+
+procedure TAccessibilityDiagnosticsTests.LogCallerLatencyArtifactIsWritten;
+const
+  cSampleCount = 200;
+{$IFDEF RELEASE}
+  cBuildConfiguration = 'Release';
+{$ELSE}
+  cBuildConfiguration = 'Debug';
+{$ENDIF}
+var
+  i: Integer;
+  lArtifactFile: string;
+  lJson: string;
+  lLogFile: string;
+  lSamples: TArray<Int64>;
+  lStopwatch: TStopwatch;
+begin
+  lArtifactFile := DiagnosticsCallerArtifactFileName;
+  lLogFile := TPath.GetTempFileName;
+  SetLength(lSamples, cSampleCount);
+  try
+    TAccessibilityDiagnostics.Configure(lLogFile);
+    for i := 1 to 20 do
+    begin
+      TAccessibilityDiagnostics.Log('diagnostics caller warmup ' + IntToStr(i));
+    end;
+    Assert.IsTrue(TAccessibilityDiagnosticsInternals.FlushLog(5000), 'Diagnostics warmup did not drain.');
+
+    TAccessibilityDiagnosticsInternals.PauseLogWriter(True);
+    for i := 0 to Pred(cSampleCount) do
+    begin
+      lStopwatch := TStopwatch.StartNew;
+      TAccessibilityDiagnostics.Log('diagnostics caller latency sample');
+      lSamples[i] := lStopwatch.ElapsedTicks;
+    end;
+    TArray.Sort<Int64>(lSamples);
+
+    lJson := Format('{"scenario":"t110-diagnostics-caller-latency","buildConfiguration":"%s",' +
+      '"diagnosticsState":"buffered","sampleCount":%d,"stopwatchFrequency":%d,' +
+      '"medianTicks":%d,"p95Ticks":%d,"p99Ticks":%d,"maximumTicks":%d,' +
+      '"medianMs":%.6f,"p95Ms":%.6f,"p99Ms":%.6f,"maximumMs":%.6f}',
+      [cBuildConfiguration, cSampleCount, TStopwatch.Frequency, lSamples[NearestRankIndex(cSampleCount, 50)],
+      lSamples[NearestRankIndex(cSampleCount, 95)], lSamples[NearestRankIndex(cSampleCount, 99)],
+      lSamples[Pred(cSampleCount)], MillisecondsFromTicks(lSamples[NearestRankIndex(cSampleCount, 50)]),
+      MillisecondsFromTicks(lSamples[NearestRankIndex(cSampleCount, 95)]),
+      MillisecondsFromTicks(lSamples[NearestRankIndex(cSampleCount, 99)]),
+      MillisecondsFromTicks(lSamples[Pred(cSampleCount)])], TFormatSettings.Invariant);
+    TFile.WriteAllText(lArtifactFile, lJson, TEncoding.UTF8);
+
+    Assert.IsTrue(TFile.Exists(lArtifactFile), 'Diagnostics caller-latency artifact was not written.');
+    Assert.Contains(TFile.ReadAllText(lArtifactFile, TEncoding.UTF8), '"sampleCount":200');
+  finally
+    TAccessibilityDiagnosticsInternals.PauseLogWriter(False);
+    Assert.IsTrue(TAccessibilityDiagnosticsInternals.FlushLog(5000), 'Diagnostics samples did not drain.');
+    TAccessibilityDiagnostics.Disable;
+    if TFile.Exists(lLogFile) then
+    begin
+      TFile.Delete(lLogFile);
+    end;
+  end;
+end;
+
+procedure TAccessibilityDiagnosticsTests.QueueOverflowDropsRecordsWithoutWaitingForWriter;
+var
+  i: Integer;
+  lCapacity: Integer;
+  lLogFile: string;
+begin
+  lLogFile := TPath.GetTempFileName;
+  TAccessibilityDiagnosticsInternals.PauseLogWriter(True);
+  try
+    TAccessibilityDiagnostics.Configure(lLogFile);
+    lCapacity := TAccessibilityDiagnosticsInternals.QueueCapacity;
+    for i := 0 to Succ(lCapacity) do
+    begin
+      TAccessibilityDiagnostics.Log('bounded queue probe');
+    end;
+
+    Assert.IsTrue(TAccessibilityDiagnosticsInternals.PendingLogRecordCount <= Succ(lCapacity),
+      'Diagnostics retained more records than the bounded queue permits.');
+    Assert.IsTrue(TAccessibilityDiagnosticsInternals.DroppedLogRecordCount > 0,
+      'A full diagnostics queue must drop records instead of waiting for the writer.');
+    TAccessibilityDiagnosticsInternals.PauseLogWriter(False);
+    Assert.IsTrue(TAccessibilityDiagnosticsInternals.FlushLog(5000), 'Diagnostics did not drain after resuming.');
+    Assert.Contains(ReadSharedLogText(lLogFile), 'Diagnostics dropped ',
+      'Diagnostics log did not report the queue-overflow drop.');
+  finally
+    TAccessibilityDiagnosticsInternals.PauseLogWriter(False);
+    TAccessibilityDiagnostics.Disable;
+    if TFile.Exists(lLogFile) then
+    begin
+      TFile.Delete(lLogFile);
+    end;
+  end;
+end;
+
+procedure TAccessibilityDiagnosticsTests.ReconfigureTruncatesLogAndAllowsSharedReader;
+var
+  lLogFile: string;
+  lLogText: string;
+  lReader: TFileStream;
+begin
+  lLogFile := TPath.GetTempFileName;
+  try
+    TFile.WriteAllText(lLogFile, 'previous run', TEncoding.UTF8);
+    TAccessibilityDiagnostics.Configure(lLogFile);
+    lReader := TFileStream.Create(lLogFile, fmOpenRead or fmShareDenyNone);
+    try
+      TAccessibilityDiagnostics.Log('current run');
+      Assert.IsTrue(TAccessibilityDiagnosticsInternals.FlushLog(5000), 'Diagnostics did not become idle.');
+    finally
+      lReader.Free;
+    end;
+
+    lLogText := ReadSharedLogText(lLogFile);
+    Assert.DoesNotContain(lLogText, 'previous run');
+    Assert.Contains(lLogText, 'current run');
+  finally
+    TAccessibilityDiagnostics.Disable;
+    if TFile.Exists(lLogFile) then
+    begin
+      TFile.Delete(lLogFile);
+    end;
+  end;
+end;
+
+procedure TAccessibilityDiagnosticsTests.TearDown;
+begin
+  TAccessibilityDiagnosticsInternals.PauseLogWriter(False);
+  TAccessibilityDiagnostics.Disable;
+  Assert.AreEqual(0, TAccessibilityDiagnosticsInternals.PendingLogRecordCount,
+    'Diagnostics teardown left queued records.');
+  TAccessibilityDiagnosticsInternals.SetMaximumLogBytes(0);
 end;
 
 procedure TAccessibilityProviderHotspotPerformanceTests.ListBoxProviderHotspotMetricsCaptureGetSelection;
@@ -2303,6 +2739,7 @@ begin
 end;
 
 initialization
+  TDUnitX.RegisterTestFixture(TAccessibilityDiagnosticsStartupTests);
   TDUnitX.RegisterTestFixture(TAccessibilityDiagnosticsTests);
   TDUnitX.RegisterTestFixture(TAccessibilityListBoxPerformanceTests);
   TDUnitX.RegisterTestFixture(TAccessibilityProviderHotspotPerformanceTests);

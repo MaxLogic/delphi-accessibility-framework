@@ -15,9 +15,13 @@ type
     [Test]
     procedure ReadmeDocumentsInstallAndSupportedScenarios;
     [Test]
+    procedure ReleaseProjectsUseCompilerCompatibleDebugInformationSetting;
+    [Test]
     procedure DemoContainsWrappedAndUnwrappedMemoTabs;
     [Test]
     procedure DemoDocumentsAndWiresAgentBridgeDiagnosticSwitch;
+    [Test]
+    procedure DemoFileDiagnosticsAreOptIn;
     [Test]
     procedure AgentBridgeDocumentationSeparatesAccessibilityControlAndAgentModes;
     [Test]
@@ -106,6 +110,21 @@ begin
   RequireText(lDocText, 'AccessibilityComplexDemo.exe --a11y-agent-bridge', 'agent bridge demo docs');
   RequireText(lDocText, '--a11y-agent-bridge-pipe=MaxLogicAccessibilityDemo', 'agent bridge demo docs');
   RequireText(lDocText, '--a11y-agent-bridge-mutations', 'agent bridge demo docs');
+end;
+
+procedure TAccessibilityDocumentationTests.DemoFileDiagnosticsAreOptIn;
+var
+  lDocText: string;
+  lDprText: string;
+begin
+  lDocText := ReadRepoText('docs\agent-bridge.md');
+  lDprText := ReadRepoText('demos\AccessibilityComplexDemo.dpr');
+
+  RequireText(lDprText, 'cDemoDiagnosticsSwitch = ''--a11y-diagnostics'';', 'demo diagnostics switch');
+  RequireText(lDprText, 'if HasCommandLineSwitch(cDemoDiagnosticsSwitch) then', 'demo diagnostics switch');
+  RequireText(lDprText, 'TAccessibilityDiagnostics.Disable;', 'demo diagnostics shutdown');
+  RequireText(lDocText, 'AccessibilityComplexDemo.exe --a11y-diagnostics', 'demo diagnostics documentation');
+  RequireText(lDocText, '8 MiB', 'demo diagnostics documentation');
 end;
 
 procedure TAccessibilityDocumentationTests.AgentBridgeDocumentationDescribesContract;
@@ -302,6 +321,26 @@ begin
   RequireText(lText, 'Use the direct provider builder only for diagnostics', 'README');
   RequireText(lText, 'Native Fallback', 'README');
   RequireText(lText, 'TVirtualStringTree', 'README');
+end;
+
+procedure TAccessibilityDocumentationTests.ReleaseProjectsUseCompilerCompatibleDebugInformationSetting;
+const
+  cNumericSetting = '<DCC_DebugInformation>0</DCC_DebugInformation>';
+  cRejectedSetting = '<DCC_DebugInformation>false</DCC_DebugInformation>';
+var
+  lText: string;
+begin
+  lText := ReadRepoText('projects\MaxLogicAccessibilityFrameworkSmoke.dproj');
+  RequireText(lText, cNumericSetting, 'smoke Release project');
+  RejectText(lText, cRejectedSetting, 'smoke Release project');
+
+  lText := ReadRepoText('tests\MaxLogicAccessibilityFramework.Tests.dproj');
+  RequireText(lText, cNumericSetting, 'test Release project');
+  RejectText(lText, cRejectedSetting, 'test Release project');
+
+  lText := ReadRepoText('demos\AccessibilityComplexDemo.dproj');
+  RequireText(lText, cNumericSetting, 'demo Release project');
+  RejectText(lText, cRejectedSetting, 'demo Release project');
 end;
 
 procedure TAccessibilityDocumentationTests.UiaProbeDocumentationListsRunnableScenarios;

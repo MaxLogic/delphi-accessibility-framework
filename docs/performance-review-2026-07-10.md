@@ -27,6 +27,32 @@ The practical conclusion is that further micro-optimizing already-small provider
 | Task | Status | Evidence |
 | --- | --- | --- |
 | T-109 | Complete | Provider-map serialization queries direct-access, geometry, VCL metadata, and child-access interfaces once per node. Runtime tests cover query counts, failed child counts, depth limits, child limits, and detail levels. Debug correctness gates pass; no latency claim is made because Windows Defender was active during the run. |
+| T-110 | Complete | Diagnostics use a bounded non-blocking producer queue and one lazy background writer; the demo is opt-in, logs are share-readable and capped, and hot-path traces perform no extra provider reads. Debug tests pass 337/337, Release UIA probes pass 5/5, and shutdown tests pass 6/6. Defender remained active, so timing distributions below are evidence records rather than acceptance claims. |
+
+### T-110 measurement record
+
+Process-local caller work was measured around `TAccessibilityDiagnostics.Log` with the bounded writer paused so no filesystem work could enter the sample. The Win32 Release run used buffered diagnostics and 200 warmed samples.
+
+| Diagnostics state | Samples | Median | p95 | p99 | Maximum | CPU before/after | Antivirus |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| Buffered | 200 | 0.0003 ms | 0.0004 ms | 0.0017 ms | 0.0075 ms | 7% / 10% | Microsoft Defender active |
+
+External wall time was measured in Win32 Release with demo diagnostics disabled. Each operation used 200 samples in both framework modes.
+
+| Framework | Operation | Median | p95 | p99 | Maximum |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Enabled | Send `WM_KEYDOWN`/`WM_KEYUP` | 2.050 ms | 12.556 ms | 17.205 ms | 23.780 ms |
+| Enabled | `AutomationElement.FromHandle` | 1.814 ms | 11.978 ms | 23.840 ms | 103.811 ms |
+| Enabled | Current properties | 0.436 ms | 2.174 ms | 8.327 ms | 18.353 ms |
+| Enabled | `FindAll` children | 0.093 ms | 0.209 ms | 1.208 ms | 16.640 ms |
+| Enabled | Scan selected child | 0.104 ms | 0.147 ms | 0.197 ms | 18.201 ms |
+| Disabled | Send `WM_KEYDOWN`/`WM_KEYUP` | 2.233 ms | 12.481 ms | 15.658 ms | 20.890 ms |
+| Disabled | `AutomationElement.FromHandle` | 2.073 ms | 12.735 ms | 14.373 ms | 15.418 ms |
+| Disabled | Current properties | 0.400 ms | 2.967 ms | 9.666 ms | 11.905 ms |
+| Disabled | `FindAll` children | 0.069 ms | 0.155 ms | 0.315 ms | 2.607 ms |
+| Disabled | Scan selected child | 0.052 ms | 0.074 ms | 0.081 ms | 0.085 ms |
+
+The external run recorded 15% CPU before and 23% after, with Microsoft Defender real-time protection active. Its `FromHandle` target surfaced as a UIA Pane with zero children, so these values measure boundary and main-thread wall time but are not semantic listbox acceptance evidence. The 28-node enabled tree sample took 315.670 ms and the 36-node disabled sample took 224.226 ms. All performance claims remain deferred until the machine is idle.
 
 ## Ranked findings
 

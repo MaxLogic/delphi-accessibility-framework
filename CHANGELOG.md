@@ -1,7 +1,12 @@
 # Changelog
 
 ## 2026-07-10
+### Added
+- The complex demo now enables file diagnostics only when launched with `--a11y-diagnostics`.
+
 ### Fixed
+- Accessibility diagnostics now use a bounded background writer with shared-read logs, per-run truncation, an 8 MiB limit, and observable drop summaries instead of performing file I/O on accessibility callback threads.
+- Diagnostics calls now return immediately during configuration or shutdown contention, and provider hit-test logging no longer reads extra UIA properties solely to build trace text.
 - Agent bridge provider maps now query direct-access, geometry, VCL metadata, and child-access interfaces at most once per provider node and reuse those results while serializing the snapshot.
 - Provider-map child metadata is now written once per node, and failed child-count calls cannot leak a dirty out value into JSON.
 

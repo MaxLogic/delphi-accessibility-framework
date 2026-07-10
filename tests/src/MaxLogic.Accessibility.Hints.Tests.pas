@@ -13,6 +13,8 @@ type
     [Test]
     procedure ControlHintIsExposedAsHelpText;
     [Test]
+    procedure DestroyedFormIsRemovedAndLaterFormReceivesHints;
+    [Test]
     procedure ApplicationHintNotificationsAreChainedGatedAndDeduplicated;
     [Test]
     procedure BalloonHintTitleAndDescriptionAreRaisedTogether;
@@ -49,6 +51,10 @@ type
     [Test]
     procedure PreviousApplicationShowHintHandlerCanUninstallManager;
     [Test]
+    procedure RepeatedObserveDoesNotRefreshExistingFormTrees;
+    [Test]
+    procedure ObserverIndexUsesPointerIdentity;
+    [Test]
     procedure UninstallDuringObservedMouseEnterDoesNotReadFreedHook;
     [Test]
     procedure VisibleHintShortPartAfterLongPartIsSuppressed;
@@ -57,9 +63,10 @@ type
 implementation
 
 uses
-  System.Classes, System.SysUtils, System.Variants, Winapi.Windows, Vcl.Controls, Vcl.Forms, Vcl.StdCtrls,
-  Vcl.ExtCtrls, DUnitX.Assert, MaxLogic.Accessibility.Hints, MaxLogic.Accessibility.Manager,
-  MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.UIAutomationCore,
+  System.Classes, System.Generics.Collections, System.SysUtils, System.Variants, Winapi.Windows, Vcl.Controls,
+  Vcl.ExtCtrls, Vcl.Forms, Vcl.StdCtrls, DUnitX.Assert, MaxLogic.Accessibility.Diagnostics,
+  MaxLogic.Accessibility.Hints, MaxLogic.Accessibility.Manager, MaxLogic.Accessibility.ProviderCore,
+  MaxLogic.Accessibility.UIAutomationCore,
   MaxLogic.Accessibility.VclAdapters;
 
 type
@@ -121,6 +128,48 @@ type
       var aHintInfo: Vcl.Controls.THintInfo);
     procedure HandleMouseEnter(aSender: TObject);
   end;
+
+  TEqualHintTestForm = class(TForm)
+  public
+    function Equals(aObject: TObject): Boolean; override;
+    function GetHashCode: Integer; override;
+  end;
+
+function TEqualHintTestForm.Equals(aObject: TObject): Boolean;
+begin
+  Result := aObject is TEqualHintTestForm;
+end;
+
+function TEqualHintTestForm.GetHashCode: Integer;
+begin
+  Result := 42;
+end;
+
+procedure CreateObservedHintForms(aController: TAccessibilityHintController; aForms: TObjectList<TForm>;
+  aCount: Integer);
+var
+  i: Integer;
+begin
+  i := 0;
+  while i < aCount do
+  begin
+    aForms.Add(TForm.Create(nil));
+    aController.ObserveForm(aForms[Pred(aForms.Count)]);
+    Inc(i);
+  end;
+end;
+
+procedure RepeatObserveForm(aController: TAccessibilityHintController; aForm: TCustomForm; aCount: Integer);
+var
+  i: Integer;
+begin
+  i := 0;
+  while i < aCount do
+  begin
+    aController.ObserveForm(aForm);
+    Inc(i);
+  end;
+end;
 
 function THintTestUiaApi.ClientsAreListening: Boolean;
 begin
@@ -260,6 +309,51 @@ begin
     Assert.AreEqual('Long help text', string(lValue));
   finally
     lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityHintTests.DestroyedFormIsRemovedAndLaterFormReceivesHints;
+var
+  lApi: IHintTestUiaApi;
+  lBalloonHint: TBalloonHint;
+  lController: TAccessibilityHintController;
+  lFirstForm: TForm;
+  lLaterForm: TForm;
+  lPanel: TPanel;
+  lProvider: IAccessibilityProviderNode;
+begin
+  lApi := THintTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  lProvider := TAccessibilityProviderFactory.CreateRoot([710], 0, lApi);
+  lController := TAccessibilityHintController.Create(nil, lProvider, lApi);
+  lBalloonHint := TBalloonHint.Create(nil);
+  lFirstForm := TForm.Create(nil);
+  lLaterForm := nil;
+  try
+    lController.ObserveForm(lFirstForm);
+    Assert.AreEqual(1, TAccessibilityHintControllerInternals.ObserverCount(lController));
+    lFirstForm.Free;
+    lFirstForm := nil;
+    Assert.AreEqual(0, TAccessibilityHintControllerInternals.ObserverCount(lController),
+      'Destroying a form must remove its hint observer from the index.');
+
+    lLaterForm := TForm.Create(nil);
+    lPanel := TPanel.Create(lLaterForm);
+    lPanel.Hint := 'Later title|Later description';
+    lPanel.CustomHint := lBalloonHint;
+    lPanel.ShowHint := True;
+    lPanel.Parent := lLaterForm;
+    lController.ObserveForm(lLaterForm);
+    lPanel.Perform(CM_MOUSEENTER, 0, 0);
+
+    Assert.AreEqual(1, TAccessibilityHintControllerInternals.ObserverCount(lController));
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('Later title: Later description', lApi.LastDisplayString);
+  finally
+    lController.Free;
+    lFirstForm.Free;
+    lLaterForm.Free;
+    lBalloonHint.Free;
   end;
 end;
 
@@ -958,6 +1052,61 @@ begin
     Application.OnHint := lOriginalHint;
     Application.OnShowHint := lOriginalShowHint;
     lProbe.Free;
+  end;
+end;
+
+procedure TAccessibilityHintTests.ObserverIndexUsesPointerIdentity;
+var
+  lApi: IHintTestUiaApi;
+  lController: TAccessibilityHintController;
+  lFirstForm: TEqualHintTestForm;
+  lProvider: IAccessibilityProviderNode;
+  lSecondForm: TEqualHintTestForm;
+begin
+  lApi := THintTestUiaApi.Create;
+  lProvider := TAccessibilityProviderFactory.CreateRoot([711], 0, lApi);
+  lController := TAccessibilityHintController.Create(nil, lProvider, lApi);
+  lFirstForm := TEqualHintTestForm.CreateNew(nil);
+  lSecondForm := TEqualHintTestForm.CreateNew(nil);
+  try
+    lController.ObserveForm(lFirstForm);
+    lController.ObserveForm(lSecondForm);
+
+    Assert.AreEqual(2, TAccessibilityHintControllerInternals.ObserverCount(lController),
+      'Distinct form instances must never share an observer through virtual equality.');
+  finally
+    lController.Free;
+    lSecondForm.Free;
+    lFirstForm.Free;
+  end;
+end;
+
+procedure TAccessibilityHintTests.RepeatedObserveDoesNotRefreshExistingFormTrees;
+const
+  cFormCount = 100;
+  cRepeatCount = 200;
+var
+  lApi: IHintTestUiaApi;
+  lController: TAccessibilityHintController;
+  lForms: TObjectList<TForm>;
+  lProvider: IAccessibilityProviderNode;
+begin
+  lApi := THintTestUiaApi.Create;
+  lProvider := TAccessibilityProviderFactory.CreateRoot([712], 0, lApi);
+  lController := TAccessibilityHintController.Create(nil, lProvider, lApi);
+  lForms := TObjectList<TForm>.Create(True);
+  try
+    CreateObservedHintForms(lController, lForms, cFormCount);
+    Assert.AreEqual(cFormCount, TAccessibilityHintControllerInternals.ObserverRefreshCount(lController));
+
+    RepeatObserveForm(lController, lForms[0], cRepeatCount);
+
+    Assert.AreEqual(cFormCount, TAccessibilityHintControllerInternals.ObserverCount(lController));
+    Assert.AreEqual(cFormCount, TAccessibilityHintControllerInternals.ObserverRefreshCount(lController),
+      'Observing an indexed form again must not refresh any form tree.');
+  finally
+    lController.Free;
+    lForms.Free;
   end;
 end;
 

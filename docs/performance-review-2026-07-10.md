@@ -29,6 +29,7 @@ The practical conclusion is that further micro-optimizing already-small provider
 | T-109 | Complete | Provider-map serialization queries direct-access, geometry, VCL metadata, and child-access interfaces once per node. Runtime tests cover query counts, failed child counts, depth limits, child limits, and detail levels. Debug correctness gates pass; no latency claim is made because Windows Defender was active during the run. |
 | T-110 | Complete | Diagnostics use a bounded non-blocking producer queue and one lazy background writer; the demo is opt-in, logs are share-readable and capped, and hot-path traces perform no extra provider reads. Debug tests pass 337/337, Release UIA probes pass 5/5, and shutdown tests pass 6/6. Defender remained active, so timing distributions below are evidence records rather than acceptance claims. |
 | T-111 | Complete | All nine real wrappers cache one atomically published export pointer, concurrent first use resolves once, and the System32 module is pinned before publication. Focused tests pass 9/9, the full Debug suite passes 342/342, and the final Release Basic UIA probe passes. |
+| T-112 | Complete | Active-form notifications install only `Screen.ActiveCustomForm`; pointer-keyed, form-owned hint observers avoid repeated refreshes and unregister on destruction. Manager passes 91/91, T-112 scaling passes 1/1, Hints passes 24/24, shutdown passes 6/6, and Release Basic/Hint UIA probes pass. The unrelated bridge scaling performance test timed out under Defender, so that gate and all wall-time acceptance remain deferred. |
 
 ### T-110 measurement record
 
@@ -80,6 +81,34 @@ The current external run uses Win32 Release, diagnostics disabled, and 200 sampl
 | Disabled | Scan selected child | 0.053 ms | 0.084 ms | 0.096 ms | 0.109 ms |
 
 The external run recorded CPU at 18% before and 23% after with Defender active. The enabled 28-node tree sample took 310.781 ms and the disabled 36-node sample took 202.193 ms. As in T-110, the target HWND surfaced as a UIA Pane with zero children; the distribution is boundary/main-thread evidence, not semantic listbox proof. The deterministic result is the reduction from 201 export resolutions to one; the final process-local maximum also rose under 27%/38% load, so idle-machine wall-time acceptance remains deferred.
+
+### T-112 measurement record
+
+The process-local benchmark uses 100 future inactive forms and one active form. The 200-sample distribution measures the warm, already-installed `OnActiveFormChange` callback; first activation is recorded separately because it includes VCL window display and message processing. Diagnostics were disabled.
+
+| Phase | Samples | Inactive forms touched | Median | p95 | p99 | Maximum | CPU before/after | Antivirus |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| Whole-application rescan baseline | 200 | 100 | 235 ticks / 0.0235 ms | 375 / 0.0375 ms | 543 / 0.0543 ms | 3,488 / 0.3488 ms | 34% / 33% | Defender active |
+| Active-form-only final | 200 | 0 | 1 tick / 0.0001 ms | 1 / 0.0001 ms | 1 / 0.0001 ms | 54 / 0.0054 ms | 19% / 28% | Defender active |
+
+The final first-activation sample was 3,672,106 ticks / 367.2106 ms under the same contaminated load; there is no comparable pre-change first-activation sample, so no speedup is claimed for that phase.
+
+The final external run uses Win32 Release, diagnostics disabled, and 200 samples per framework mode.
+
+| Framework | Operation | Median | p95 | p99 | Maximum |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Enabled | Send `WM_KEYDOWN`/`WM_KEYUP` | 3.871 ms | 25.884 ms | 44.665 ms | 56.112 ms |
+| Enabled | `AutomationElement.FromHandle` | 3.045 ms | 27.850 ms | 57.804 ms | 109.522 ms |
+| Enabled | Current properties | 0.599 ms | 9.620 ms | 17.952 ms | 32.443 ms |
+| Enabled | `FindAll` children | 0.082 ms | 0.244 ms | 1.924 ms | 17.310 ms |
+| Enabled | Scan selected child | 0.061 ms | 0.132 ms | 0.172 ms | 6.097 ms |
+| Disabled | Send `WM_KEYDOWN`/`WM_KEYUP` | 3.004 ms | 24.467 ms | 31.392 ms | 49.300 ms |
+| Disabled | `AutomationElement.FromHandle` | 2.631 ms | 27.931 ms | 51.516 ms | 63.587 ms |
+| Disabled | Current properties | 0.477 ms | 13.901 ms | 21.456 ms | 48.382 ms |
+| Disabled | `FindAll` children | 0.067 ms | 0.161 ms | 1.104 ms | 1.827 ms |
+| Disabled | Scan selected child | 0.052 ms | 0.068 ms | 0.076 ms | 0.084 ms |
+
+CPU was 18% before and 29% after with Defender active. The enabled 28-node tree sample took 1,056.168 ms and the disabled 36-node sample took 577.962 ms; the listbox HWND again surfaced as a zero-child UIA Pane. These are contaminated external-boundary records, not semantic listbox or idle-machine acceptance evidence.
 
 ## Ranked findings
 

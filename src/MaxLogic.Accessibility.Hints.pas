@@ -14,7 +14,7 @@ type
     fDispatchDepth: Integer;
     fHookInstalled: Boolean;
     fLastNotificationText: string;
-    fObservers: TList<TComponent>;
+    fObservers: TDictionary<Pointer, TComponent>;
     fPassive: Boolean;
     fPendingBalloonFollowUpText: string;
     fPreviousHint: TNotifyEvent;
@@ -37,6 +37,7 @@ type
       const aFollowUpHint: string): Boolean;
     procedure NotifyControlCustomHint(aControl: TControl);
     function NotifyPreparedText(const aText: string; const aActivityId: WideString): Boolean;
+    procedure RemoveObserver(aForm: TCustomForm; aObserver: TComponent);
     procedure ReleaseObservers;
     function ShouldSuppressVisibleHint(const aHint: string; const aHintInfo: Vcl.Controls.THintInfo): Boolean;
     function TryBeginNotificationBatch: Boolean;
@@ -49,6 +50,12 @@ type
     procedure NotifyBalloonHint(aHint: TCustomHint); overload;
     procedure NotifyVisibleHint(const aHint: string);
     procedure ObserveForm(aForm: TCustomForm);
+  end;
+
+  TAccessibilityHintControllerInternals = record
+  public
+    class function ObserverCount(aController: TAccessibilityHintController): Integer; static;
+    class function ObserverRefreshCount(aController: TAccessibilityHintController): Integer; static;
   end;
 
 implementation
@@ -88,13 +95,13 @@ type
     fController: TAccessibilityHintController;
     fForm: TCustomForm;
     fHooks: TObjectDictionary<TWinControl, TAccessibilityHintControlHook>;
+    fRefreshCount: Integer;
     procedure HookWinControls(aControl: TWinControl);
   public
     constructor Create(aController: TAccessibilityHintController; aForm: TCustomForm); reintroduce;
     destructor Destroy; override;
     procedure ControlChanged;
     procedure ControlMouseEnter(aHookControl: TWinControl; const aMessage: TMessage);
-    function Observes(aForm: TCustomForm): Boolean;
     procedure Refresh;
   end;
 
@@ -367,7 +374,7 @@ end;
 
 constructor TAccessibilityHintFormObserver.Create(aController: TAccessibilityHintController; aForm: TCustomForm);
 begin
-  inherited Create(nil);
+  inherited Create(aForm);
   if aForm = nil then
   begin
     raise EArgumentException.Create('Form must not be nil.');
@@ -383,6 +390,13 @@ destructor TAccessibilityHintFormObserver.Destroy;
 var
   lHook: TAccessibilityHintControlHook;
 begin
+  if fController <> nil then
+  begin
+    fController.RemoveObserver(fForm, Self);
+  end;
+  fController := nil;
+  fForm := nil;
+
   for lHook in fHooks.Values do
   begin
     if not lHook.Passivate then
@@ -448,14 +462,37 @@ begin
   end;
 end;
 
-function TAccessibilityHintFormObserver.Observes(aForm: TCustomForm): Boolean;
-begin
-  Result := fForm = aForm;
-end;
-
 procedure TAccessibilityHintFormObserver.Refresh;
 begin
+  Inc(fRefreshCount);
   HookWinControls(fForm);
+end;
+
+class function TAccessibilityHintControllerInternals.ObserverCount(
+  aController: TAccessibilityHintController): Integer;
+begin
+  if aController = nil then
+  begin
+    Exit(0);
+  end;
+  Result := aController.fObservers.Count;
+end;
+
+class function TAccessibilityHintControllerInternals.ObserverRefreshCount(
+  aController: TAccessibilityHintController): Integer;
+var
+  lObserver: TComponent;
+begin
+  Result := 0;
+  if aController = nil then
+  begin
+    Exit;
+  end;
+
+  for lObserver in aController.fObservers.Values do
+  begin
+    Inc(Result, (lObserver as TAccessibilityHintFormObserver).fRefreshCount);
+  end;
 end;
 
 constructor TAccessibilityHintController.Create(aApplication: TApplication;
@@ -464,7 +501,7 @@ begin
   inherited Create(nil);
   fApi := aApi;
   fApplication := aApplication;
-  fObservers := TList<TComponent>.Create;
+  fObservers := TDictionary<Pointer, TComponent>.Create;
   fProvider := aProvider;
   if fApplication <> nil then
   begin
@@ -751,16 +788,33 @@ begin
     raise EArgumentException.Create('Form must not be nil.');
   end;
 
-  for lObserver in fObservers do
+  if fObservers.ContainsKey(Pointer(aForm)) then
   begin
-    if TAccessibilityHintFormObserver(lObserver).Observes(aForm) then
-    begin
-      TAccessibilityHintFormObserver(lObserver).Refresh;
-      Exit;
-    end;
+    Exit;
   end;
 
-  fObservers.Add(TAccessibilityHintFormObserver.Create(Self, aForm));
+  lObserver := TAccessibilityHintFormObserver.Create(Self, aForm);
+  try
+    fObservers.Add(Pointer(aForm), lObserver);
+  except
+    lObserver.Free;
+    raise;
+  end;
+end;
+
+procedure TAccessibilityHintController.RemoveObserver(aForm: TCustomForm; aObserver: TComponent);
+var
+  lObserver: TComponent;
+begin
+  if (aForm = nil) or (aObserver = nil) then
+  begin
+    Exit;
+  end;
+
+  if fObservers.TryGetValue(Pointer(aForm), lObserver) and (lObserver = aObserver) then
+  begin
+    fObservers.Remove(Pointer(aForm));
+  end;
 end;
 
 function TAccessibilityHintController.Passivate: Boolean;
@@ -814,14 +868,26 @@ end;
 
 procedure TAccessibilityHintController.ReleaseObservers;
 var
-  lObserver: TComponent;
+  lComponent: TComponent;
+  lObserver: TAccessibilityHintFormObserver;
 begin
-  for lObserver in fObservers do
+  while fObservers.Count > 0 do
   begin
+    lObserver := nil;
+    for lComponent in fObservers.Values do
+    begin
+      lObserver := lComponent as TAccessibilityHintFormObserver;
+      Break;
+    end;
+    if lObserver = nil then
+    begin
+      Exit;
+    end;
+
+    fObservers.Remove(Pointer(lObserver.fForm));
+    lObserver.fController := nil;
     lObserver.Free;
   end;
-
-  fObservers.Clear;
 end;
 
 function TAccessibilityHintController.ShouldSuppressVisibleHint(const aHint: string;

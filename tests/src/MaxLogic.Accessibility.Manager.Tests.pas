@@ -13,6 +13,9 @@ type
     [Test]
     procedure ApplicationInstallDiscoversFutureFormsAndChainsActiveFormChange;
     [Test]
+    [Category('T112Performance')]
+    procedure ApplicationActiveFormChangeTouchesOnlyActiveFutureFormAtScale;
+    [Test]
     procedure ApplicationInstallWithCustomRegistryDiscoversFutureTmsForms;
     [Test]
     procedure ApplicationInstallWithCustomRegistryScansCurrentTmsForms;
@@ -197,9 +200,10 @@ type
 implementation
 
 uses
-  System.Classes, System.Generics.Collections, System.SysUtils, System.Types, System.Variants, Winapi.ActiveX,
-  Winapi.Messages, Winapi.oleacc, Winapi.Windows, Vcl.Buttons, Vcl.ComCtrls, Vcl.Controls, Vcl.ExtCtrls, Vcl.Forms,
-  Vcl.Grids, Vcl.StdCtrls, AdvGrid, AccessibilityDemoMainForm, MaxLogic.Accessibility.Manager,
+  System.Classes, System.Diagnostics, System.Generics.Collections, System.IOUtils, System.SysUtils, System.Types,
+  System.Variants, Winapi.ActiveX, Winapi.Messages, Winapi.oleacc, Winapi.Windows, Vcl.Buttons, Vcl.ComCtrls,
+  Vcl.Controls, Vcl.ExtCtrls, Vcl.Forms, Vcl.Grids, Vcl.StdCtrls, AdvGrid, AccessibilityDemoMainForm,
+  MaxLogic.Accessibility.Manager,
   MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.Scanner,
   MaxLogic.Accessibility.TmsAdvStringGridAdapters, MaxLogic.Accessibility.UIAutomationCore,
   MaxLogic.Accessibility.VclAdapters;
@@ -679,6 +683,130 @@ begin
   TAccessibilityManagerInternals.SetWinEventSink(nil);
 end;
 
+procedure HideTestForm(aForm: TCustomForm);
+begin
+  if (aForm <> nil) and aForm.Visible then
+  begin
+    aForm.Hide;
+    Application.ProcessMessages;
+  end;
+end;
+
+function T112ArtifactFileName: string;
+var
+  lAgentsDir: string;
+  lRunsDir: string;
+begin
+  lAgentsDir := TPath.Combine(GetCurrentDir, '.agents');
+  lRunsDir := TPath.Combine(lAgentsDir, 'runs');
+  ForceDirectories(lRunsDir);
+  Result := TPath.Combine(lRunsDir, 't112-active-form-current.json');
+end;
+
+function T112MillisecondsFromTicks(aTicks: Int64): Double;
+begin
+  Result := (aTicks * 1000.0) / TStopwatch.Frequency;
+end;
+
+function T112NearestRankIndex(aSampleCount: Integer; aPercentile: Integer): Integer;
+begin
+  Result := (((aSampleCount * aPercentile) + 99) div 100) - 1;
+end;
+
+procedure WriteT112Artifact(const aSamples: TArray<Int64>; aInactiveFormCount: Integer;
+  aFirstActivationTicks: Int64);
+const
+{$IFDEF RELEASE}
+  cBuildConfiguration = 'Release';
+{$ELSE}
+  cBuildConfiguration = 'Debug';
+{$ENDIF}
+var
+  lDiagnosticsState: string;
+  lJson: string;
+  lSampleCount: Integer;
+begin
+  lSampleCount := Length(aSamples);
+  if TAccessibilityDiagnostics.Enabled then
+  begin
+    lDiagnosticsState := 'enabled';
+  end else begin
+    lDiagnosticsState := 'disabled';
+  end;
+  lJson := Format('{"scenario":"t112-active-form-change","phase":"warm-installed-active-form-callback",' +
+    '"buildConfiguration":"%s","diagnosticsState":"%s","sampleCount":%d,"inactiveFormCount":%d,' +
+    '"stopwatchFrequency":%d,"firstActivationTicks":%d,"firstActivationMs":%.6f,' +
+    '"medianTicks":%d,"p95Ticks":%d,"p99Ticks":%d,"maximumTicks":%d,' +
+    '"medianMs":%.6f,"p95Ms":%.6f,"p99Ms":%.6f,"maximumMs":%.6f}',
+    [cBuildConfiguration, lDiagnosticsState, lSampleCount, aInactiveFormCount, TStopwatch.Frequency,
+    aFirstActivationTicks, T112MillisecondsFromTicks(aFirstActivationTicks),
+    aSamples[T112NearestRankIndex(lSampleCount, 50)], aSamples[T112NearestRankIndex(lSampleCount, 95)],
+    aSamples[T112NearestRankIndex(lSampleCount, 99)], aSamples[Pred(lSampleCount)],
+    T112MillisecondsFromTicks(aSamples[T112NearestRankIndex(lSampleCount, 50)]),
+    T112MillisecondsFromTicks(aSamples[T112NearestRankIndex(lSampleCount, 95)]),
+    T112MillisecondsFromTicks(aSamples[T112NearestRankIndex(lSampleCount, 99)]),
+    T112MillisecondsFromTicks(aSamples[Pred(lSampleCount)])], TFormatSettings.Invariant);
+  TFile.WriteAllText(T112ArtifactFileName, lJson, TEncoding.UTF8);
+end;
+
+function ActivateT112Form(aForm: TCustomForm): Int64;
+var
+  lStopwatch: TStopwatch;
+begin
+  lStopwatch := TStopwatch.StartNew;
+  aForm.Show;
+  Application.ProcessMessages;
+  Result := lStopwatch.ElapsedTicks;
+end;
+
+function CountT112InstalledForms(const aRecorder: IFormInstallRecorder; const aForms: TArray<TForm>): Integer;
+var
+  i: Integer;
+begin
+  Result := 0;
+  for i := 0 to Pred(Length(aForms)) do
+  begin
+    if aRecorder.CountFor(aForms[i]) > 0 then
+    begin
+      Inc(Result);
+    end;
+  end;
+end;
+
+procedure CreateT112FutureForms(aOwner: TObjectList<TForm>; aInactiveFormCount: Integer;
+  out aInactiveForms: TArray<TForm>; var aActiveForm: TForm);
+var
+  i: Integer;
+begin
+  SetLength(aInactiveForms, aInactiveFormCount);
+  for i := 0 to Pred(aInactiveFormCount) do
+  begin
+    aInactiveForms[i] := TForm.Create(nil);
+    aOwner.Add(aInactiveForms[i]);
+  end;
+  aActiveForm := TForm.Create(nil);
+  aOwner.Add(aActiveForm);
+end;
+
+procedure MeasureT112ActiveFormChanges(aInactiveFormCount: Integer; aFirstActivationTicks: Int64);
+const
+  cSampleCount = 200;
+var
+  i: Integer;
+  lSamples: TArray<Int64>;
+  lStopwatch: TStopwatch;
+begin
+  SetLength(lSamples, cSampleCount);
+  for i := 0 to Pred(cSampleCount) do
+  begin
+    lStopwatch := TStopwatch.StartNew;
+    Screen.OnActiveFormChange(Screen);
+    lSamples[i] := lStopwatch.ElapsedTicks;
+  end;
+  TArray.Sort<Int64>(lSamples);
+  WriteT112Artifact(lSamples, aInactiveFormCount, aFirstActivationTicks);
+end;
+
 function TManagerTestUiaApi.ClientsAreListening: Boolean;
 begin
   Inc(fClientsAreListeningCalls);
@@ -1078,6 +1206,7 @@ end;
 
 procedure TAccessibilityManagerTests.ApplicationInstallDiscoversFutureFormsAndChainsActiveFormChange;
 var
+  lCallsBefore: Integer;
   lForm: TForm;
   lOriginalActiveFormChange: TNotifyEvent;
   lProbe: TActiveFormChangeProbe;
@@ -1096,15 +1225,60 @@ begin
     try
       Assert.AreEqual(0, lRecorder.CountFor(lForm));
 
+      lForm.Show;
+      Application.ProcessMessages;
+      lCallsBefore := lProbe.Calls;
       Screen.OnActiveFormChange(Screen);
 
-      Assert.AreEqual(1, lProbe.Calls);
+      Assert.AreEqual(Succ(lCallsBefore), lProbe.Calls);
       Assert.AreEqual(1, lRecorder.CountFor(lForm));
     finally
+      HideTestForm(lForm);
       lForm.Free;
     end;
   finally
     ResetManager;
+    Screen.OnActiveFormChange := lOriginalActiveFormChange;
+    lProbe.Free;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.ApplicationActiveFormChangeTouchesOnlyActiveFutureFormAtScale;
+const
+  cInactiveFormCount = 100;
+var
+  lActiveForm: TForm;
+  lFirstActivationTicks: Int64;
+  lForms: TObjectList<TForm>;
+  lInactiveForms: TArray<TForm>;
+  lOriginalActiveFormChange: TNotifyEvent;
+  lProbe: TActiveFormChangeProbe;
+  lRecorder: IFormInstallRecorder;
+begin
+  ResetManager;
+  lActiveForm := nil;
+  lOriginalActiveFormChange := Screen.OnActiveFormChange;
+  lProbe := TActiveFormChangeProbe.Create;
+  lForms := TObjectList<TForm>.Create(True);
+  try
+    lRecorder := TFormInstallRecorder.Create;
+    TAccessibilityManagerInternals.SetFormInstaller(lRecorder);
+    Screen.OnActiveFormChange := lProbe.HandleActiveFormChange;
+    TAccessibilityManager.Install(Application);
+
+    CreateT112FutureForms(lForms, cInactiveFormCount, lInactiveForms, lActiveForm);
+    lFirstActivationTicks := ActivateT112Form(lActiveForm);
+    Assert.AreSame(lActiveForm, Screen.ActiveCustomForm, 'The scaling fixture did not activate its target form.');
+
+    MeasureT112ActiveFormChanges(cInactiveFormCount, lFirstActivationTicks);
+
+    Assert.AreEqual(0, CountT112InstalledForms(lRecorder, lInactiveForms),
+      'An active-form event installed inactive future forms.');
+    Assert.AreEqual(1, lRecorder.CountFor(lActiveForm), 'The active future form was not installed exactly once.');
+  finally
+    ResetManager;
+    HideTestForm(lActiveForm);
+    lForms.Free;
     Screen.OnActiveFormChange := lOriginalActiveFormChange;
     lProbe.Free;
   end;
@@ -1128,11 +1302,14 @@ begin
       Assert.IsNotNull(lGrid);
       Assert.AreEqual(0, TAccessibilityManagerInternals.InstalledFormCount);
 
+      lForm.Show;
+      Application.ProcessMessages;
       Screen.OnActiveFormChange(Screen);
 
       Assert.IsTrue(TAccessibilityManagerInternals.InstalledFormCount >= 1);
       AssertManagerGridCellName(lApi, lForm, 'Alice');
     finally
+      HideTestForm(lForm);
       lForm.Free;
     end;
   finally
@@ -1230,6 +1407,8 @@ begin
     lFutureForm := TAccessibilityDemoMainForm.Create(Application);
     Assert.IsTrue(lFutureForm.chkAccessibilityEnabled.Checked);
 
+    lFutureForm.Show;
+    Application.ProcessMessages;
     Screen.OnActiveFormChange(Screen);
 
     Assert.IsTrue(TAccessibilityManagerInternals.InstalledFormCount >= 3,
@@ -1239,6 +1418,7 @@ begin
     begin
       SetDemoAccessibilityFrameworkEnabled(False);
     end;
+    HideTestForm(lFutureForm);
     lFutureForm.Free;
     lSecondForm.Free;
     lFirstForm.Free;
@@ -1275,6 +1455,7 @@ begin
       Assert.IsTrue(lRaised, 'One-arg form install must not mix with active app-wide custom registry.');
       Assert.AreEqual(0, TAccessibilityManagerInternals.InstalledFormCount);
     finally
+      HideTestForm(lForm);
       lForm.Free;
     end;
   finally
@@ -1629,9 +1810,12 @@ begin
 
       Assert.IsTrue(lRaised, 'Scoped custom registry must not mix with active app-wide default registry.');
 
+      lForm.Show;
+      Application.ProcessMessages;
       Screen.OnActiveFormChange(Screen);
       AssertManagerGridCellName(lApi, lForm, '<b>Alice</b>');
     finally
+      HideTestForm(lForm);
       lForm.Free;
     end;
   finally

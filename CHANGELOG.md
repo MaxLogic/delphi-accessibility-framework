@@ -5,6 +5,8 @@
 - The complex demo now enables file diagnostics only when launched with `--a11y-diagnostics`.
 
 ### Fixed
+- App-wide active-form changes now install only the newly active VCL form instead of rescanning every live form and recursively refreshing existing hint trees.
+- Hint observers now use a constant-time pointer-identity index, are owned by their forms, and unregister when transient dialogs are destroyed.
 - UI Automation Core wrapper calls now cache atomically published export pointers, avoiding repeated export-name conversion and `GetProcAddress`; the System32 module is pinned before publication so shutdown cannot invalidate concurrent cached calls.
 - Accessibility diagnostics now use a bounded background writer with shared-read logs, per-run truncation, an 8 MiB limit, and observable drop summaries instead of performing file I/O on accessibility callback threads.
 - Diagnostics calls now return immediately during configuration or shutdown contention, and provider hit-test logging no longer reads extra UIA properties solely to build trace text.

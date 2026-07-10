@@ -2734,6 +2734,8 @@ begin
 end;
 
 procedure TAccessibilityManagerState.ActiveFormChanged(aSender: TObject);
+var
+  lActiveForm: TCustomForm;
 begin
   if Assigned(fPreviousActiveFormChange) then
   begin
@@ -2742,7 +2744,11 @@ begin
 
   if fAppInstalled then
   begin
-    ScanCurrentForms;
+    lActiveForm := Screen.ActiveCustomForm;
+    if lActiveForm <> nil then
+    begin
+      InstallFormWithRegistry(lActiveForm, fApplicationRegistry);
+    end;
   end;
 end;
 

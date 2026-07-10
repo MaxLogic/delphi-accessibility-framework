@@ -1,11 +1,178 @@
 # Changelog
 
+## 2026-07-09
+### Added
+- Agent bridge `provider.map` can now return a capped in-process framework provider-tree snapshot, including virtual children, without walking external UIA.
+- The desktop-control helper now exposes `bridge-provider-map` for fast MaxLogic provider-tree diagnostics.
+- The desktop-control helper now exposes `fast-semantic-map`, which tries the MaxLogic provider bridge first for semantic discovery and falls back to cached UIA for generic Windows applications.
+- Agent bridge `controls.info` can now enrich several current snapshot refs in one request, sharing one focus read, one RTTI cache, and cached snapshot rectangles for the batch.
+- The desktop-control helper now exposes `bridge-controls-info` for batched bridge detail reads after a geometry map.
+- Provider hotspot diagnostics now time focus-announcement text construction and UIA notification dispatch separately, making speech-delay investigations distinguish our text work from the UIA/NVDA event boundary.
+
+### Fixed
+- VCL adapters now reuse scanner-provided explicit fallback text before doing their own RTTI explicit-text checks, avoiding duplicate adapter RTTI reads for clear captioned custom controls.
+- Virtual hover providers now cache leaf bounds through direct in-process geometry access instead of the public UIA bounding-rectangle callback wrapper.
+- Agent bridge `provider.map` now reads provider rectangles through direct in-process geometry access instead of the public UIA bounding-rectangle callback wrapper.
+- Agent bridge `provider.map` now treats direct-access provider misses as final instead of falling back to public UIA property callbacks, avoiding duplicate provider-boundary work while building in-process semantic maps.
+- Agent bridge `provider.map` now reuses the provider tree already installed by `TAccessibilityManager` when available, avoiding a fresh accessibility scan and provider rebuild for managed forms.
+- Paired VCL focus messages now reuse the cached focus announcement before rebuilding speech text, avoiding duplicate synchronous text construction on focus transitions.
+- Focus and hover speech now remove duplicate leading value text from help text with a single-pass helper instead of repeated delete/trim string work on long hints.
+- Focus and hover speech now skips duplicate-removal scan/copy work when there is no value text to remove, returning already-clean help text directly.
+- Focus and hover speech now returns already-clean non-duplicate help text directly when value text is present but not duplicated, avoiding a full-string copy on independent hints.
+- The desktop-control helper `uia-map` now lists `bridge-provider-map` as a faster alternative, so bridge-enabled VCL apps can route semantic discovery to the in-process provider-tree bypass instead of external UIA traversal.
+- The desktop-control helper now reads MaxLogic bridge response lines in one buffered binary read instead of one byte at a time, reducing client overhead for large `form.map` JSON snapshots.
+- The desktop-control helper `fast-map` now caps automatic default-pipe bridge probes at 5 ms and clamps retry sleeps to the remaining deadline, so custom-pipe or no-bridge targets fall back to Win32 mapping without a hidden 25-250 ms wait.
+- The desktop-control helper `fast-semantic-map` now uses a separate 75 ms automatic bridge probe, giving bridge-enabled apps a fair chance to answer from in-process `provider.map` before falling back to slow external UIA traversal.
+- The desktop-control helper `fast-semantic-map --pid` now probes the process-default MaxLogic bridge directly when no title filter is requested, avoiding native top-level window enumeration before the in-process provider-tree bypass.
+- The desktop-control helper `fast-semantic-map` now includes bridge `fallbackAttempts` when it has to return a cached UIA map, making slow UIA samples distinguishable from the preferred in-process provider bypass.
+- Static provider sibling navigation now reuses the current prepared child snapshot when parent indexes are still valid, avoiding repeated child-preparation work during UIA sibling walks.
+- Multi-select `TListBox`/`TCheckListBox` UIA selection queries now fill the selection `SAFEARRAY` directly from selected indexes, avoiding a transient provider-list allocation.
+- TMS `TAdvStringGrid` visible-cell refresh now checks active/visible ancestor state once per refresh instead of once per candidate cell.
+- `TStringGrid` and TMS `TAdvStringGrid` focus queries now reuse current prepared visible-cell providers instead of refreshing and probing visible cells again when the focused cell is already prepared.
+- Common UIA provider properties now use typed fields instead of `OleVariant` fields on the hot provider path, reducing allocation/conversion pressure during provider creation and direct property reads.
+- Agent bridge snapshot refs now use direct string construction instead of `Format`, reducing per-control allocation/parser overhead during large `form.map` snapshots.
+- Manager, hint, and scanner hook passivation now use per-hook retained flags instead of scanning retained lists, removing quadratic shutdown/passivation work on heavily hooked legacy forms.
+- Provider runtime IDs are now copied with one native block copy per destination array instead of per-Integer assignment during provider creation and structure-change events.
+- VCL adapter fallback RTTI property lookups are now cached by class/property, reducing repeated `GetPropInfo` work when large legacy forms use many controls of the same custom class.
+- Scanner RTTI fallback caching now avoids composite string key construction on cache hits, reducing allocation pressure during full accessibility scans of large legacy forms.
+- MSAA focus queries now use direct focused-item providers before generic fragment-root focus traversal, reducing provider work when screen readers ask for current grid/list focus through MSAA.
+- MSAA location queries now read provider bounds through direct in-process geometry access instead of the public UIA bounding-rectangle callback wrapper.
+- MSAA hit testing now uses direct in-process framework root access before falling back to public UIA root callbacks, including form/body misses that resolve to self.
+- Listbox item `SelectionItemPattern` containers now return the owner list provider directly instead of calling the public UIA parent-navigation callback.
+- VCL radio-button and tab-sheet `SelectionItemPattern` containers now read the parent provider directly instead of calling the public UIA parent-navigation callback.
+- Memo visible-line preparation now clamps candidate lines to the memo's native line count and reuses that known range when creating line providers, avoiding native existence probes for nonexistent lines.
+- Memo visible-line preparation now reuses its one native line-count read and skips off-screen caret-line queries, leaving native memo accessibility to own caret speech.
+- Agent bridge `hitTest` now reuses screen rectangles from the current `form.map` snapshot, avoiding live `ClientToScreen`/parent-geometry probes for mapped controls during pointer automation.
+- Agent bridge `control.info` now reuses screen rectangles from the current `form.map` snapshot, avoiding another live VCL geometry probe when automation enriches one mapped control.
+- Fixed-height `TListBox`/`TCheckListBox` provider preparation now derives visible item indexes from `TopIndex`, `ItemHeight`, and `ClientHeight` instead of probing each visible row with `ItemRect`.
+- Fixed-height `TListBox`/`TCheckListBox` item bounds now reuse prepared listbox geometry and bypass Delphi's `ItemHeight` getter, avoiding hidden `LB_GETITEMRECT` calls during UIA bounds queries.
+- Focus and hover speech now rejects obvious long value/help mismatches before copying the candidate prefix, avoiding avoidable allocation on the speech cleanup path.
+- Focus and hover speech now compares long ASCII value/help prefixes in place before falling back to Unicode `CompareText`, avoiding another prefix-copy allocation when similar texts diverge after the first character.
+
+## 2026-07-08
+### Added
+- The desktop-control helper `fast-map` now supports `--detail full`, so bridge-enabled VCL apps can return visible captions, values, hints, roles, and native checked/selected/list state through process-local VCL/RTL reads instead of a semantic UIA tree walk.
+- Agent bridge `form.map` responses now include in-process elapsed timing fields, making bridge map performance separable from Python, PowerShell, UIA traversal, and client JSON overhead.
+- Agent bridge `control.info` can now enrich one existing snapshot ref with process-local VCL caption, value, hint, and native state data, letting automation pair cheap geometry maps with targeted detail reads instead of broad UIA tree walks or full-form scans.
+- The desktop-control helper `uia-map` now marks its output as recommended for semantic verification, not coordinate discovery, and returns faster alternatives so automation can branch to `fast-map`, `bridge-form-map`, or `win32-map --detail geometry` without parsing prose.
+- The desktop-control helper `uia-map --cache` now uses .NET UIAutomation cache requests for bounded semantic UIA snapshots, avoiding separate property round trips for common fields when UIA itself must be verified.
+- The desktop-control helper `uia-map` can now start from a resolved target HWND and cap child enumeration per node, making semantic UIA probes easier to keep narrow when native `fast-map`/`win32-map` is not enough.
+- The desktop-control helper `uia-map` now supports `--detail geometry` to skip semantic UIA property reads when only rectangles and tree shape are needed.
+- The desktop-control helper `win32-map` now supports `--detail geometry`, and `fast-map` uses that Win32 fallback to skip per-HWND title reads when only native coordinates are needed.
+- The desktop-control helper `fast-map` now auto-tries the MaxLogic bridge default pipe from a PID, focused window, HWND, or title-matched target before falling back to generic Win32 geometry discovery.
+
+### Fixed
+- Native checkbox/radio hover now skips provider UIA event batching when no UIA clients are listening, while still raising the native WinEvents that preserve screen-reader state speech.
+- Hint notification paths now skip provider UIA event batching when no UIA clients are listening, avoiding empty hover/hint event batches during silent automation or non-screen-reader runs.
+- Native checkbox/radio focus messages that rely on native HWND state events now bypass provider UIA event batching when no supplemental UIA speech is emitted.
+- The desktop-control helper `fast-map --pid` now resolves the process window to a native HWND before probing the MaxLogic bridge, so background target discovery maps the intended form instead of the currently focused form.
+- The desktop-control helper `fast-map` now preserves in-process bridge timing as `bridgeElapsedMs`/`bridgeElapsedTicks` instead of overwriting it with helper wall-clock time.
+- The desktop-control helper `uia-map` now defaults to the cached .NET UIAutomation traversal and keeps the slower Python `uiautomation` traversal behind `--plain`, reducing accidental broad semantic UIA property round trips.
+- The desktop-control helper `win32-map --max-children` now stops native sibling traversal at the requested cap instead of enumerating every child and truncating afterward, keeping wide HWND trees responsive.
+- The desktop-control helper `uia-map --max-children` now uses capped sibling traversal when available instead of materializing every child before truncating, reducing broad UIA map latency on wide trees.
+- The desktop-control helper `fast-map` now keeps automatic MaxLogic-bridge probes short before falling back to Win32, so generic applications without the bridge do not pay the full command timeout.
+- Additional static UIA provider properties (`AutomationId`, `FrameworkId`, `ItemStatus`, and `ItemType`) now avoid per-provider dictionary allocation during provider creation and property reads.
+- Provider direct-child enumeration now prepares a child snapshot once per count/index pass instead of re-preparing for every indexed child, reducing small UIA tree traversal latency for virtual child providers such as visible grid cells.
+- TMS `TAdvStringGrid` sibling navigation now reuses the prepared visible-cell snapshot instead of refreshing visible cells for every next/previous sibling traversal.
+- Radio-group child-window binding now resolves framework child providers through direct in-process child access instead of UIA `Navigate`, removing provider-boundary traversal from custom `TRadioGroup` hook setup.
+- The desktop-control helper `uia-map` now reports elapsed time after the UIA tree snapshot is materialized, so timing evidence includes the slow semantic traversal instead of only setup.
+- The desktop-control helper `uia-map --cache` now passes its .NET UIAutomation `CacheRequest` into TreeWalker child/sibling calls, so descendant properties are cached instead of falling back to per-property UIA reads.
+- Form installation now walks framework-owned provider child trees through direct in-process child access before falling back to UIA `Navigate`, avoiding provider-boundary traversal work on large VCL forms.
+- Root fallback hit testing now walks framework-owned provider children through direct in-process child access instead of UIA `Navigate`, reducing mouse-hover hit-test work for page-control/container body points.
+- Root fallback hit testing now computes framework-owned VCL provider bounds through native control geometry instead of provider `Get_BoundingRectangle` callbacks, removing another provider-boundary cost from container/body hover points.
+- Internal provider hit-test descent now calls child bounds through the provider-core virtual method instead of the public UIA `Get_BoundingRectangle` wrapper, removing one provider-boundary callback per candidate child.
+- Provider fragments now cache their nearest fragment root when attached, avoiding repeated parent-chain walks on UIA `Get_FragmentRoot` callbacks during tree traversal.
+- Agent bridge geometry maps now carry parent client origins through recursive traversal, avoiding repeated parent-chain coordinate reconstruction for non-windowed VCL descendants.
+- Hint notification paths now check for listening UIA clients before parsing or cleaning hint text, avoiding unnecessary VCL hint work during silent runs and non-screen-reader automation.
+- Native-owned checkbox/radio hover now skips full framework announcement-text construction when native UIA/MSAA focus and state events own the speech result.
+- Repeated form/control hover over the same leaf now skips redundant UIA client-listener probes and reuses the event-batch listener result for the actual hover notification, reducing high-frequency mouse-move overhead.
+- Native-owned `TListBox`/`TCheckListBox` arrow-key handling now exits through the VCL window procedure before framework listener checks, HWND-publication checks, or item-state probes run on the rapid navigation path.
+- Native `TListBox`/`TCheckListBox` child `WM_GETOBJECT` requests now pass through to VCL when the framework provider does not publish that HWND, avoiding framework MSAA interception during rapid screen-reader list navigation.
+- MSAA child enumeration now reads framework provider children directly instead of walking siblings through UIA `Navigate` callbacks, avoiding repeated provider-boundary round trips during screen-reader tree exploration.
+- `TMemo` provider preparation now uses native edit-control line count for cache invalidation instead of full window-text length, keeping large memo navigation responsive on long text buffers.
+- Multi-select `TListBox` and `TCheckListBox` UIA selection queries now read selected indexes through native listbox messages and create providers only for selected rows instead of probing every item.
+- Scan trees now cache their flattened node order and return a fresh copy per query, avoiding repeated recursive traversal when tooling asks for the same tree repeatedly.
+- Leaf UIA provider nodes now allocate child storage only after children are added, avoiding one list allocation per leaf provider in provider-tree snapshots and traversal.
+- Focus and keyboard speech helpers now skip announcement text construction when UIA reports that no clients are listening, avoiding unnecessary row/text composition during silent automation or non-screen-reader runs.
+- Framework provider focus speech now reads name, value, and help text through one in-process speech-property batch instead of three separate manager-side detail probes.
+- Scanner text extraction now caches RTTI property lookups for the duration of a form scan, avoiding repeated `GetPropInfo` work on large legacy forms with many controls of the same custom class.
+- Agent bridge full form maps now cache fallback RTTI property lookups per request, avoiding repeated `GetPropInfo` work on large legacy forms with many controls of the same custom class.
+- Agent bridge full/native maps now avoid RTTI misses for known-empty `Caption`/`Text` fields on common stock VCL controls, keeping the process-local automation bypass cheaper on large forms.
+- Grid keyboard/change hooks now exit before provider event batching when UIA reports that no clients are listening, avoiding extra key-path work in silent automation and non-screen-reader runs.
+- Grouped radio-button arrow handling now checks UIA listener state before state capture and skips selection scans and provider event batches when no UIA client is listening.
+- Mouse-hover speech helpers now skip provider hit-testing and announcement text construction when UIA reports that no clients are listening, while preserving native/MSAA hover events for controls that keep their native accessibility.
+- `TStringGrid` and TMS `TAdvStringGrid` visible-provider refresh now creates scratch prune lists only when stale providers actually exist, eliminating that allocation from the common speech-navigation path.
+- Row-select `TStringGrid` row bounding rectangles now inspect only fixed and visible columns instead of every column, keeping wide-grid focus and bounds queries responsive for screen readers.
+- `TMemo` line providers now read individual visible lines through native edit-control messages instead of copying the entire memo text per line, keeping large memo preparation tied to visible lines rather than total text size.
+- `TStringGrid` cell bounding rectangles now reuse a single native visible-cell rectangle lookup instead of probing visibility and geometry separately.
+- `TMemo` visible-line preparation now avoids copying and cleaning line text just to create child providers; line text is read only when UIA asks for the line name.
+- The `MemoListStatus` UIA probe now validates the native-HWND listbox focus speech path instead of expecting a duplicate framework notification from listbox arrow-key navigation.
+- Agent bridge named-pipe clients can now send multiple sequential request/response lines on one connection, and the desktop-control helper exposes this through `bridge-batch` to avoid repeated pipe/helper setup during automation loops.
+- Desktop-control bridge clients now retry while the single-instance named pipe is being recreated, avoiding transient "pipe not available" failures during rapid request loops.
+- Agent bridge hit testing now rejects off-point child branches before descending into them, avoiding whole-subtree traversal when a target point is outside a nested container.
+- Agent bridge visible geometry maps now check child visibility top-down instead of rewalking each control's ancestor chain, keeping deep or heavily nested form snapshots close to linear time.
+- Agent bridge geometry maps now skip child-client-origin conversion for leaf windowed controls, derive child bounds from cached parent origins, and cache the focused HWND once per snapshot; diagnostics expose `agentBridgeChildClientOriginProbeCount` and `agentBridgeFocusProbeCount` to catch regressions in those hot paths.
+- Agent bridge geometry maps now derive nested `TPanel` child origins from cached screen rectangles instead of probing `ClientToScreen` at every panel depth, keeping deep legacy panel maps close to linear time.
+- Form installation now indexes child hooks by VCL control instead of scanning previously hooked controls for every child, keeping large legacy form install work linear.
+- Grid keyboard speech batches now reuse the already-known UIA listener state, avoiding a duplicate listener probe per arrow-key announcement burst.
+
 ## 2026-07-07
 ### Fixed
 - `TRadioGroup` item providers are now present from initial provider-tree construction and child HWND hooks bind by wrapped VCL control identity, so mouse hover resolves item-level UIA `RadioButton` providers with selected state instead of the parent group provider.
+- UIA runtime-id callbacks now fill the returned SAFEARRAY in one contiguous write pass instead of one `SafeArrayPutElement` call per value, reducing provider-boundary allocation overhead during screen-reader tree traversal.
+- TMS `TAdvStringGrid` selection queries now fill their one-item UIA selection SAFEARRAY through direct data access, matching the faster VCL grid/listbox provider path.
 - `TGroupBox` and `TRadioGroup` windows now return their own UIA group providers, so mouse tracking over blank group areas resolves the group caption instead of the form title.
 - `TRadioButton` controls inside a `TGroupBox` now use the framework radio-button provider with selection semantics and focus notifications; standalone radio buttons still preserve their native HWND accessibility path.
 - Keyboard focus and arrow-key navigation on `TRadioGroup` items and grouped `TRadioButton` controls now raise supplemental framework UIA notifications so screen readers receive the focused or newly selected radio caption.
+- `TListBox` and `TCheckListBox` keyboard navigation now stays on the native HWND accessibility path, avoiding duplicate framework notifications and custom provider state probes during rapid arrow-key movement.
+- Native-listbox keyboard navigation now caches framework HWND-publication checks per current handle, avoiding repeated provider-property checks on the rapid key path.
+- Native-listbox arrow-key handling now skips grid-focus probes entirely, avoiding wasted grid-provider checks on the rapid navigation path.
+- Native-listbox arrow-key handling now also skips framework item-index probes and empty post-message event batches when the native HWND provider owns speech.
+- Repeated hover over the same leaf provider now reuses the last leaf bounding rectangle, avoiding redundant root hit testing while still resolving a different leaf under the pointer.
+- Mouse hover over simple VCL leaf controls now resolves providers through the root control-to-provider lookup, avoiding root provider hit testing before raising hover speech.
+- Common static UIA provider properties now avoid per-provider dictionary allocation.
+- Row-select `TStringGrid` provider refresh now scans fixed and visible rows instead of every row when screen readers query focus or selection on large grids.
+- UIA speech event bursts now reuse one `UiaClientsAreListening` probe per input-message batch, avoiding repeated listener checks for grouped radio, hover/state, and grid focus announcements.
+- Prepared `TListBox` and `TCheckListBox` item providers now reuse cleaned item text for repeated UIA `Name` property queries, reducing per-callback work during screen-reader enumeration.
+- HWND-backed UIA providers now advertise override-provider options and guard native host-provider lookup against re-entering the framework `WM_GETOBJECT` handler.
+- Child `WM_GETOBJECT` handling now skips framework UIA handoff for providers that do not publish the child HWND, avoiding predictable UIAutomationCore rejection round trips for layout/native controls.
+- Published HWND-backed UIA providers now cache native host-provider lookup results for their HWND lifetime, avoiding repeated UIAutomationCore host lookup and re-entry guard work during provider enumeration.
+- Form-root providers now use the UIA `Window` control type, and listbox provider preparation no longer rebuilds children for focus-only item changes.
+- Custom HWND-backed framework providers now publish native window handles only when UIA needs to bind that control fragment, fall back to native handling when UIA rejects a provider, and resolve embedded child fragments to the nearest fragment root.
+- The agent bridge now exposes provider-hotspot diagnostics so a running application can report UIA provider boundary call counts while an external probe drives it.
+- Diagnostics logging now avoids formatting provider descriptions and querying provider properties on `ElementProviderFromPoint` and `WM_GETOBJECT` hot paths when logging is disabled.
+- Blank `TPanel`/layout-panel containers are no longer emitted as extra UIA pane nodes just because they contain accessible descendants; their children remain exposed directly.
+- `TListBox` and `TCheckListBox` providers now keep their native HWND identity internally without publishing it through the framework UIA provider, so `AutomationElement.FromHandle` and screen-reader focus speech use the fast native listbox provider while the framework tree still supports hit testing and selection queries.
+- VCL root providers now expose a native control-to-provider lookup, avoiding recursive UIA fragment tree walks when framework hooks need to resolve a known VCL control.
+- `TStringGrid` and TMS `TAdvStringGrid` keyboard navigation now resolve the focused cell provider directly for speech events instead of refreshing visible cell providers first.
+- The agent bridge `form.map` now includes UIA-equivalent role IDs/names and role-specific native state, giving automation a process-local VCL/RTTI bypass for common UIA property queries.
+- Non-published child HWND fragments no longer advertise UIA native-provider override options, avoiding unnecessary UIAutomationCore native-merge navigation and property probes during broad tree traversal.
+- Focus and hover speech helpers now read framework provider names, hints, control types, and values through an in-process provider path before falling back to UIA property/pattern calls.
+- Provider state capture now reads framework toggle and selection state through in-process VCL provider properties and skips impossible pattern fallbacks, removing provider pattern callbacks from grouped-radio arrow speech.
+- Provider state capture now also skips impossible toggle/selection pattern probes for grid keyboard navigation, removing two extra provider pattern callbacks from each `TStringGrid` and TMS `TAdvStringGrid` arrow-key speech update.
+- MSAA speech property reads now use in-process provider access for framework providers, avoiding extra UIA provider boundary callbacks when screen readers query name, role, value, and state.
+- MSAA tab default-action queries now use direct in-process pattern support checks for framework tab items, avoiding an extra provider pattern callback when screen readers ask for the tab action text.
+- MSAA provider wrappers now cache direct-access support once, avoiding repeated interface lookups while screen readers query name, role, state, value, and help text for the same framework element.
+- Direct toggle/selection state reads now bypass redundant pattern-support probes, so framework and MSAA state composition use native provider properties first.
+- Text cleanup now keeps already-clean text on a fast path and strips VCL accelerators with a single pre-sized buffer, reducing per-item speech work for list and grid navigation.
+- Single-select `TListBox` and `TCheckListBox` UIA selection queries now build the one-item result directly, avoiding a transient provider-list allocation.
+- Repeated `TListBox` and `TCheckListBox` UIA child navigation now avoids repeated `LB_GETITEMHEIGHT` window messages for fixed-height listboxes.
+- Prepared `TListBox` and `TCheckListBox` sibling navigation now uses cached provider indexes instead of re-querying listbox window state on every `NextSibling`/`PreviousSibling` step.
+- Prepared `TMemo` and `TStringGrid` sibling navigation now reuses the current visible child snapshot instead of re-preparing visible lines or cells on every `NextSibling`/`PreviousSibling` step.
+- Row-select `TStringGrid` speech text now scans only fixed and visible columns instead of every column in wide grids.
+- `TStringGrid` and TMS `TAdvStringGrid` visible-cell refresh now avoids temporary row/column range lists on speech-navigation paths.
+- Scanner, bridge snapshots, and VCL providers now read/write common VCL caption, text, hint, and state properties directly before falling back to RTTI, and scanner node flattening avoids repeated dynamic-array growth.
+- Provider-hotspot diagnostics now include elapsed tick totals for UIA provider boundary callbacks, making it easier to distinguish framework callback work from UIA/client traversal overhead.
+- Agent bridge and desktop-control guidance now explain that small UIA tree samples can still be slow because they perform many client/provider boundary calls, and recommend bridge geometry maps or Win32 maps for fast control discovery.
+- `form.map` now supports `includeAccessibility:false` for fast native VCL coordinate/state snapshots when automation does not need accessible-name/help-text scanning.
+- `form.map` now supports `visibleOnly:true` so automation can request only currently visible controls and skip hidden or inactive tab-page descendants on large forms.
+- `form.map` now supports `detail:"geometry"` for the fastest bridge control-targeting snapshot, returning VCL refs, roles, handles, rectangles, and target points while skipping UIA traversal, accessibility scanning, text RTTI, and native state reads.
+- `form.map` no longer creates HWNDs for controls that have not allocated one yet; unallocated controls report handle `0` while still returning process-local geometry.
+- The agent bridge named-pipe server now grows request buffers in chunks instead of resizing once per byte for large control requests.
+- The Windows desktop-control skill helper now includes `win32-map`, a generic User32 HWND-tree snapshot for fast title/class/rectangle discovery before falling back to UIA tree traversal.
+- Agent bridge `keyboard.tab` now delegates to VCL's native tab traversal instead of rebuilding and sorting a custom tab-stop list, improving large-form background/foreground drive responsiveness.
+- Scanner label association now resolves explicit `TLabel.FocusControl` captions through a per-parent native map, avoiding per-edit sibling rescans on large legacy forms with many labeled text inputs.
+- Scanner child ordering now bypasses generic sorting when VCL children are already in component order, reducing scan work for the common ordered-control case while preserving stable reordered-form traversal.
 
 ## 2026-06-30
 ### Added

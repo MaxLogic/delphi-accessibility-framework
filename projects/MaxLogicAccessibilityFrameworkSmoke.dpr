@@ -700,14 +700,14 @@ begin
 
       lListBox.Perform(WM_KEYDOWN, VK_DOWN, 0);
       Require(lListBox.ItemIndex = 2, 'MemoListStatus listbox arrow key did not move selection.');
-      Require(lApi.NotificationCalls = 4, 'MemoListStatus listbox arrow key did not raise a notification.');
-      Require(lApi.LastDisplayString = 'Completed action', 'MemoListStatus listbox arrow key text mismatch.');
+      Require(lApi.NotificationCalls = 3,
+        'MemoListStatus listbox arrow key should stay on the native HWND speech path.');
     finally
       TAccessibilityManager.Uninstall;
       TAccessibilityManagerInternals.SetUiaApi(nil);
     end;
 
-    Writeln('UIA_PROBE_OK MemoListStatus: manager-installed memo line hit testing, listbox item hit/focus notifications, and statusbar text hover confirmed.');
+    Writeln('UIA_PROBE_OK MemoListStatus: manager-installed memo line hit testing, listbox item hover, native-HWND listbox focus speech path, and statusbar text hover confirmed.');
   finally
     lForm.Free;
   end;

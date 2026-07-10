@@ -23,6 +23,16 @@ type
     [Test]
     procedure ScanTreeFindNodeUsesIndexedLookupForRepeatedQueries;
     [Test]
+    procedure FlattenedNodesScalesWithNodeCount;
+    [Test]
+    procedure TextExtractionCachesRepeatedRttiPropertyLookups;
+    [Test]
+    procedure TextExtractionAvoidsCompositeRttiCacheKeysOnHits;
+    [Test]
+    procedure ScanFormSkipsSortForAlreadyOrderedControlTrees;
+    [Test]
+    procedure ScanFormAssociatesExplicitLabelsWithoutQuadraticSiblingScans;
+    [Test]
     procedure ScanFormSortsLargeReorderedControlTreesWithoutQuadraticCost;
     [Test]
     procedure ScannerWalksVclTreeInStableOrder;
@@ -35,8 +45,8 @@ type
 implementation
 
 uses
-  System.Actions, System.Diagnostics, System.SysUtils, Winapi.Messages, Vcl.ActnList, Vcl.Controls, Vcl.ExtCtrls,
-  Vcl.Forms, Vcl.StdCtrls, MaxLogic.Accessibility.Scanner;
+  System.Actions, System.Classes, System.Diagnostics, System.SysUtils, Winapi.Messages, Vcl.ActnList, Vcl.Controls,
+  Vcl.ExtCtrls, Vcl.Forms, Vcl.StdCtrls, MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.Scanner;
 
 type
   TAccessibleLabel = class(TLabel)
@@ -136,6 +146,20 @@ begin
   Result := lStopwatch.ElapsedTicks;
 end;
 
+function BuildOrderedLabelForm(aControlCount: Integer): TForm;
+var
+  i: Integer;
+  lLabel: TLabel;
+begin
+  Result := TForm.Create(nil);
+  for i := 1 to aControlCount do
+  begin
+    lLabel := TLabel.Create(Result);
+    lLabel.Caption := Format('Sorted node %d', [i]);
+    lLabel.Parent := Result;
+  end;
+end;
+
 function BuildReorderedLabelForm(aControlCount: Integer): TForm;
 var
   i: Integer;
@@ -148,6 +172,41 @@ begin
     lLabel.Caption := Format('Sorted node %d', [i]);
     lLabel.Parent := Result;
     lLabel.SendToBack;
+  end;
+end;
+
+function BuildExplicitLabeledEditForm(aPairCount: Integer): TForm;
+var
+  i: Integer;
+  lEdit: TEdit;
+  lLabel: TLabel;
+begin
+  Result := TForm.Create(nil);
+  for i := 1 to aPairCount do
+  begin
+    lEdit := TEdit.Create(Result);
+    lEdit.Name := 'Edit' + IntToStr(i);
+    lEdit.Text := 'Value ' + IntToStr(i);
+    lEdit.Parent := Result;
+
+    lLabel := TLabel.Create(Result);
+    lLabel.Caption := 'Label ' + IntToStr(i);
+    lLabel.FocusControl := lEdit;
+    lLabel.Parent := Result;
+  end;
+end;
+
+function BuildAccessibleNameFallbackForm(aControlCount: Integer): TForm;
+var
+  i: Integer;
+  lLabel: TAccessibleLabel;
+begin
+  Result := TForm.Create(nil);
+  for i := 1 to aControlCount do
+  begin
+    lLabel := TAccessibleLabel.Create(Result);
+    lLabel.AccessibleName := 'Accessible ' + IntToStr(i);
+    lLabel.Parent := Result;
   end;
 end;
 
@@ -171,6 +230,52 @@ begin
     Result := lStopwatch.ElapsedTicks;
   finally
     lForm.Free;
+  end;
+end;
+
+function MeasureExplicitLabeledEditScanTicks(aPairCount: Integer): Int64;
+var
+  lEdit: TComponent;
+  lForm: TForm;
+  lNode: IAccessibilityScanNode;
+  lStopwatch: TStopwatch;
+  lTree: IAccessibilityScanTree;
+begin
+  lForm := BuildExplicitLabeledEditForm(aPairCount);
+  try
+    lStopwatch := TStopwatch.StartNew;
+    lTree := TAccessibilityScanner.ScanForm(lForm);
+    lStopwatch.Stop;
+
+    lEdit := lForm.FindComponent('Edit' + IntToStr(aPairCount));
+    Assert.IsTrue(lEdit is TControl, 'Expected the final edit control to exist.');
+    lNode := lTree.FindNode(TControl(lEdit));
+    Assert.IsNotNull(lNode, 'The final edit should be included in the scan tree.');
+    Assert.AreEqual('Label ' + IntToStr(aPairCount), lNode.Name);
+
+    Result := lStopwatch.ElapsedTicks;
+    if Result < 1 then
+    begin
+      Result := 1;
+    end;
+  finally
+    lForm.Free;
+  end;
+end;
+
+function MeasureBestExplicitLabeledEditScanTicks(aPairCount: Integer; aSamples: Integer): Int64;
+var
+  i: Integer;
+  lTicks: Int64;
+begin
+  Result := High(Int64);
+  for i := 1 to aSamples do
+  begin
+    lTicks := MeasureExplicitLabeledEditScanTicks(aPairCount);
+    if lTicks < Result then
+    begin
+      Result := lTicks;
+    end;
   end;
 end;
 
@@ -362,6 +467,169 @@ begin
   finally
     lForm.Free;
   end;
+end;
+
+procedure TAccessibilityScannerTests.FlattenedNodesScalesWithNodeCount;
+const
+  cControlCount = 1500;
+  cIterations = 200;
+var
+  i: Integer;
+  lForm: TForm;
+  lMetrics: TAccessibilityScannerMetrics;
+  lNodes: TArray<IAccessibilityScanNode>;
+  lTree: IAccessibilityScanTree;
+begin
+  lForm := BuildReorderedLabelForm(cControlCount);
+  try
+    TAccessibilityDiagnostics.EnableScannerMetrics;
+    TAccessibilityDiagnostics.ResetScannerMetrics;
+    try
+      lTree := TAccessibilityScanner.ScanForm(lForm);
+      for i := 1 to cIterations do
+      begin
+        lNodes := lTree.FlattenedNodes;
+      end;
+
+      Assert.AreEqual(cControlCount, Length(lNodes));
+      lMetrics := TAccessibilityDiagnostics.ScannerMetrics;
+      Assert.AreEqual(1, lMetrics.FlattenedNodesBuildCount);
+      Assert.AreEqual(cControlCount, lMetrics.FlattenedNodesBuildItemCount);
+      Assert.AreEqual(cIterations, lMetrics.FlattenedNodesSnapshotCount);
+      Assert.AreEqual(cControlCount * cIterations, lMetrics.FlattenedNodesSnapshotItemCount);
+    finally
+      TAccessibilityDiagnostics.DisableScannerMetrics;
+    end;
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityScannerTests.TextExtractionCachesRepeatedRttiPropertyLookups;
+const
+  cControlCount = 150;
+  cMaxRttiLookups = 4;
+var
+  lForm: TForm;
+  lMetrics: TAccessibilityScannerMetrics;
+  lNodes: TArray<IAccessibilityScanNode>;
+  lTree: IAccessibilityScanTree;
+begin
+  lForm := BuildAccessibleNameFallbackForm(cControlCount);
+  try
+    TAccessibilityDiagnostics.EnableScannerMetrics;
+    TAccessibilityDiagnostics.ResetScannerMetrics;
+    try
+      lTree := TAccessibilityScanner.ScanForm(lForm);
+      lNodes := lTree.FlattenedNodes;
+
+      Assert.AreEqual(cControlCount, Length(lNodes));
+      lMetrics := TAccessibilityDiagnostics.ScannerMetrics;
+      Assert.IsTrue(lMetrics.RttiPropertyLookupCount <= cMaxRttiLookups,
+        Format('Scanner should cache RTTI property lookups by class/property; got %d lookups for %d controls.',
+        [lMetrics.RttiPropertyLookupCount, cControlCount]));
+    finally
+      TAccessibilityDiagnostics.DisableScannerMetrics;
+    end;
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityScannerTests.TextExtractionAvoidsCompositeRttiCacheKeysOnHits;
+const
+  cControlCount = 150;
+  cMaxCompositeKeyBuilds = 4;
+var
+  lForm: TForm;
+  lMetrics: TAccessibilityScannerMetrics;
+  lNodes: TArray<IAccessibilityScanNode>;
+  lTree: IAccessibilityScanTree;
+begin
+  lForm := BuildAccessibleNameFallbackForm(cControlCount);
+  try
+    TAccessibilityDiagnostics.EnableScannerMetrics;
+    TAccessibilityDiagnostics.ResetScannerMetrics;
+    try
+      lTree := TAccessibilityScanner.ScanForm(lForm);
+      lNodes := lTree.FlattenedNodes;
+
+      Assert.AreEqual(cControlCount, Length(lNodes));
+      lMetrics := TAccessibilityDiagnostics.ScannerMetrics;
+      Assert.IsTrue(lMetrics.RttiPropertyCacheKeyBuildCount <= cMaxCompositeKeyBuilds,
+        Format('Scanner RTTI cache hits should not build composite string keys per control; got %d builds for %d controls.',
+        [lMetrics.RttiPropertyCacheKeyBuildCount, cControlCount]));
+    finally
+      TAccessibilityDiagnostics.DisableScannerMetrics;
+    end;
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityScannerTests.ScanFormSkipsSortForAlreadyOrderedControlTrees;
+const
+  cControlCount = 2500;
+var
+  lForm: TForm;
+  lMetrics: TAccessibilityScannerMetrics;
+  lNodes: TArray<IAccessibilityScanNode>;
+  lTree: IAccessibilityScanTree;
+begin
+  TAccessibilityDiagnostics.EnableScannerMetrics;
+  try
+    lForm := BuildOrderedLabelForm(cControlCount);
+    try
+      TAccessibilityDiagnostics.ResetScannerMetrics;
+      lTree := TAccessibilityScanner.ScanForm(lForm);
+      lNodes := lTree.FlattenedNodes;
+      Assert.AreEqual(cControlCount, Length(lNodes));
+
+      lMetrics := TAccessibilityDiagnostics.ScannerMetrics;
+      Assert.AreEqual(1, lMetrics.SortedChildrenCallCount);
+      Assert.AreEqual(cControlCount, lMetrics.SortedChildrenItemCount);
+      Assert.AreEqual(1, lMetrics.SortedChildrenAlreadyOrderedCount);
+      Assert.AreEqual(0, lMetrics.SortedChildrenSortCount);
+    finally
+      lForm.Free;
+    end;
+
+    lForm := BuildReorderedLabelForm(cControlCount);
+    try
+      TAccessibilityDiagnostics.ResetScannerMetrics;
+      lTree := TAccessibilityScanner.ScanForm(lForm);
+      lNodes := lTree.FlattenedNodes;
+      Assert.AreEqual(cControlCount, Length(lNodes));
+
+      lMetrics := TAccessibilityDiagnostics.ScannerMetrics;
+      Assert.AreEqual(1, lMetrics.SortedChildrenCallCount);
+      Assert.AreEqual(cControlCount, lMetrics.SortedChildrenItemCount);
+      Assert.AreEqual(0, lMetrics.SortedChildrenAlreadyOrderedCount);
+      Assert.AreEqual(1, lMetrics.SortedChildrenSortCount);
+    finally
+      lForm.Free;
+    end;
+  finally
+    TAccessibilityDiagnostics.DisableScannerMetrics;
+  end;
+end;
+
+procedure TAccessibilityScannerTests.ScanFormAssociatesExplicitLabelsWithoutQuadraticSiblingScans;
+const
+  cSmallPairCount = 120;
+  cLargePairCount = 600;
+  cMaxTickGrowth = 12;
+  cSampleCount = 2;
+var
+  lLargeTicks: Int64;
+  lSmallTicks: Int64;
+begin
+  lSmallTicks := MeasureBestExplicitLabeledEditScanTicks(cSmallPairCount, cSampleCount);
+  lLargeTicks := MeasureBestExplicitLabeledEditScanTicks(cLargePairCount, cSampleCount);
+
+  Assert.IsTrue(lLargeTicks <= lSmallTicks * cMaxTickGrowth,
+    Format('Explicit label association should avoid per-edit sibling rescans; %d pairs=%d ticks, %d pairs=%d ticks.',
+    [cSmallPairCount, lSmallTicks, cLargePairCount, lLargeTicks]));
 end;
 
 procedure TAccessibilityScannerTests.ScanFormSortsLargeReorderedControlTreesWithoutQuadraticCost;

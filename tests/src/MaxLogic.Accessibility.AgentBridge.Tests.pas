@@ -17,7 +17,47 @@ type
     [Test]
     procedure FormMapReturnsSnapshotRefsAndTargetPoints;
     [Test]
+    procedure FormMapReferenceGenerationAvoidsFormatParser;
+    [Test]
+    procedure FormMapReturnsNativeAccessibilityRoleAndState;
+    [Test]
+    procedure ProviderMapReturnsInProcessProviderTreeWithVirtualChildren;
+    [Test]
+    procedure ProviderMapReusesInstalledManagerProviderWithoutRescanningForm;
+    [Test]
+    procedure FormMapCanSkipAccessibilityScanForFastNativeSnapshot;
+    [Test]
+    procedure FormMapCanReturnOnlyVisibleActivePageControls;
+    [Test]
+    procedure FormMapGeometryDetailSkipsTextAccessibilityAndState;
+    [Test]
+    procedure FormMapGeometryVisibleOnlyScalesOnDeepNestedControls;
+    [Test]
+    procedure FormMapGeometrySkipsClientOriginForLeafWindowedControls;
+    [Test]
+    procedure FormMapGeometryReadsFocusedHandleOnceForFlatWindowedControls;
+    [Test]
+    procedure FormMapFullCachesRepeatedRttiPropertyLookups;
+    [Test]
+    procedure FormMapFullAvoidsRttiForStandardVclStringProperties;
+    [Test]
+    procedure FormMapDoesNotAllocateHiddenControlHandles;
+    [Test]
+    procedure ControlInfoEnrichesOneSnapshotRefWithoutFullMapScan;
+    [Test]
+    procedure ControlInfoReusesSnapshotRectangleForMappedControl;
+    [Test]
+    procedure ControlsInfoBatchesSnapshotRefsWithOneFocusProbe;
+    [Test]
     procedure HitTestReturnsControlFromLastSnapshot;
+    [Test]
+    procedure HitTestUsesSnapshotRectanglesForMappedControls;
+    [Test]
+    procedure HitTestSkipsSubtreesOutsideTheTargetPoint;
+    [Test]
+    procedure DiagnosticsCommandsExposeProviderHotspotMetrics;
+    [Test]
+    procedure KeyboardTabScalesWithTabStopCount;
     [Test]
     procedure MutationsAreGatedAndOperateOnLastSnapshotRefs;
   end;
@@ -25,8 +65,10 @@ type
 implementation
 
 uses
-  System.Generics.Collections, System.JSON, System.SysUtils, System.Types, Vcl.Controls, Vcl.Forms, Vcl.StdCtrls,
-  MaxLogic.Accessibility.AgentBridge, MaxLogic.Accessibility.Framework;
+  System.Diagnostics, System.Generics.Collections, System.IOUtils, System.JSON, System.SysUtils, System.Types, Vcl.ComCtrls,
+  Vcl.Controls, Vcl.ExtCtrls, Vcl.Forms, Vcl.Grids, Vcl.StdCtrls, MaxLogic.Accessibility.AgentBridge,
+  MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.Framework, MaxLogic.Accessibility.Manager,
+  MaxLogic.Accessibility.UIAutomationCore;
 
 type
   TAgentBridgeClickRecorder = class
@@ -35,6 +77,13 @@ type
   public
     procedure Click(aSender: TObject);
     property Clicks: Integer read fClicks;
+  end;
+
+  TAgentBridgeFallbackTextControl = class(TCustomControl)
+  private
+    fText: string;
+  published
+    property Text: string read fText write fText;
   end;
 
 procedure TAgentBridgeClickRecorder.Click(aSender: TObject);
@@ -86,6 +135,25 @@ begin
   Result := StrToInt(JsonText(aObject, aName));
 end;
 
+function JsonHasValue(aObject: TJSONObject; const aName: string): Boolean;
+begin
+  Result := aObject.GetValue(aName) <> nil;
+end;
+
+function RepoRoot: string;
+begin
+  Result := TPath.GetFullPath(TPath.Combine(ExtractFilePath(ParamStr(0)), '..\..\..'));
+end;
+
+function ReadRepoText(const aRelativePath: string): string;
+var
+  lPath: string;
+begin
+  lPath := TPath.Combine(RepoRoot, aRelativePath);
+  Assert.IsTrue(TFile.Exists(lPath), aRelativePath + ' is missing.');
+  Result := TFile.ReadAllText(lPath, TEncoding.UTF8);
+end;
+
 procedure BuildBridgeTestForm(out aForm: TForm; out aEdit: TEdit; out aButton: TButton);
 begin
   aForm := TForm.Create(nil);
@@ -112,13 +180,369 @@ begin
   aButton.HandleNeeded;
 end;
 
-function MapForm(aForm: TCustomForm): TJSONObject;
+function BuildTabOrderStressForm(aControlCount: Integer): TForm;
+var
+  i: Integer;
+  lEdit: TEdit;
+begin
+  Result := TForm.Create(nil);
+  Result.Name := 'BridgeTabStressForm';
+  Result.Caption := 'Bridge Tab Stress Window';
+  Result.SetBounds(200, 150, 420, 280);
+
+  for i := 0 to Pred(aControlCount) do
+  begin
+    lEdit := TEdit.Create(Result);
+    lEdit.Parent := Result;
+    lEdit.TabOrder := Pred(aControlCount) - i;
+    lEdit.SetBounds(8, 8, 120, 22);
+  end;
+
+  Result.HandleNeeded;
+end;
+
+function BuildDeepPanelMapForm(aDepth: Integer): TForm;
+var
+  i: Integer;
+  lLabel: TLabel;
+  lPanel: TPanel;
+  lParent: TWinControl;
+begin
+  Result := TForm.Create(nil);
+  Result.Name := 'BridgeDeepMapForm';
+  Result.Caption := 'Bridge Deep Map Window';
+  Result.SetBounds(200, 150, 420, 280);
+
+  lParent := Result;
+  for i := 0 to Pred(aDepth) do
+  begin
+    lPanel := TPanel.Create(Result);
+    lPanel.Name := 'NestedPanel' + IntToStr(i);
+    lPanel.SetBounds(1, 1, 240, 120);
+    lPanel.Parent := lParent;
+
+    lLabel := TLabel.Create(Result);
+    lLabel.Name := 'NestedLabel' + IntToStr(i);
+    lLabel.Caption := 'Nested label ' + IntToStr(i);
+    lLabel.SetBounds(2, 2, 96, 17);
+    lLabel.Parent := lPanel;
+
+    lParent := lPanel;
+  end;
+
+  Result.HandleNeeded;
+end;
+
+function BuildHitTestBranchForm(aDepth: Integer; out aTargetButton: TButton): TForm;
+var
+  i: Integer;
+  lPanel: TPanel;
+  lParent: TWinControl;
+begin
+  Result := TForm.Create(nil);
+  Result.Name := 'BridgeHitTestBranchForm';
+  Result.Caption := 'Bridge Hit Test Branch Window';
+  Result.SetBounds(200, 150, 640, 360);
+
+  aTargetButton := TButton.Create(Result);
+  aTargetButton.Name := 'TargetButton';
+  aTargetButton.Caption := 'Target';
+  aTargetButton.SetBounds(360, 40, 90, 28);
+  aTargetButton.Parent := Result;
+
+  lParent := Result;
+  for i := 0 to Pred(aDepth) do
+  begin
+    lPanel := TPanel.Create(Result);
+    lPanel.Name := 'IgnoredBranchPanel' + IntToStr(i);
+    lPanel.SetBounds(1, 1, 220, 96);
+    lPanel.Parent := lParent;
+    lParent := lPanel;
+  end;
+
+  Result.HandleNeeded;
+end;
+
+function BuildFlatGeometryMapForm(aControlCount: Integer; aWindowed: Boolean): TForm;
+var
+  i: Integer;
+  lEdit: TEdit;
+  lLabel: TLabel;
+begin
+  Result := TForm.Create(nil);
+  Result.Name := 'BridgeFlatMapForm';
+  Result.Caption := 'Bridge Flat Map Window';
+  Result.SetBounds(200, 150, 640, 480);
+
+  for i := 0 to Pred(aControlCount) do
+  begin
+    if aWindowed then
+    begin
+      lEdit := TEdit.Create(Result);
+      lEdit.Name := 'WindowedEdit' + IntToStr(i);
+      lEdit.Parent := Result;
+      lEdit.TabOrder := i;
+      lEdit.SetBounds(8 + (i mod 20) * 28, 8 + (i div 20) * 20, 24, 18);
+    end else begin
+      lLabel := TLabel.Create(Result);
+      lLabel.Name := 'NonWindowedLabel' + IntToStr(i);
+      lLabel.Parent := Result;
+      lLabel.SetBounds(8 + (i mod 20) * 28, 8 + (i div 20) * 20, 24, 18);
+    end;
+  end;
+
+  Result.HandleNeeded;
+  if aWindowed then
+  begin
+    for i := 0 to Pred(Result.ControlCount) do
+    begin
+      if Result.Controls[i] is TWinControl then
+      begin
+        TWinControl(Result.Controls[i]).HandleNeeded;
+      end;
+    end;
+  end;
+end;
+
+function BuildFallbackTextMapForm(aControlCount: Integer): TForm;
+var
+  i: Integer;
+  lControl: TAgentBridgeFallbackTextControl;
+begin
+  Result := TForm.Create(nil);
+  Result.Name := 'BridgeFallbackTextMapForm';
+  Result.Caption := 'Bridge Fallback Text Map Window';
+  Result.SetBounds(200, 150, 640, 480);
+
+  for i := 0 to Pred(aControlCount) do
+  begin
+    lControl := TAgentBridgeFallbackTextControl.Create(Result);
+    lControl.Name := 'FallbackTextControl' + IntToStr(i);
+    lControl.Text := 'Fallback text ' + IntToStr(i);
+    lControl.Parent := Result;
+    lControl.SetBounds(8 + (i mod 20) * 28, 8 + (i div 20) * 20, 24, 18);
+  end;
+
+  Result.HandleNeeded;
+end;
+
+function BuildStandardNativeStringMapForm: TForm;
+var
+  lButton: TButton;
+  lCheckBox: TCheckBox;
+  lComboBox: TComboBox;
+  lEdit: TEdit;
+  lGroupBox: TGroupBox;
+  lLabel: TLabel;
+  lListBox: TListBox;
+  lPageControl: TPageControl;
+  lSplitter: TSplitter;
+  lStatusBar: TStatusBar;
+  lStringGrid: TStringGrid;
+  lTabSheet: TTabSheet;
+  lToolBar: TToolBar;
+begin
+  Result := TForm.Create(nil);
+  Result.Name := 'BridgeNativeStringMapForm';
+  Result.Caption := 'Bridge Native String Map Window';
+  Result.SetBounds(200, 150, 720, 420);
+
+  lButton := TButton.Create(Result);
+  lButton.Name := 'ActionButton';
+  lButton.Caption := 'Apply';
+  lButton.SetBounds(16, 16, 96, 28);
+  lButton.Parent := Result;
+
+  lCheckBox := TCheckBox.Create(Result);
+  lCheckBox.Name := 'EnabledCheckBox';
+  lCheckBox.Caption := 'Enabled';
+  lCheckBox.Checked := True;
+  lCheckBox.SetBounds(16, 56, 120, 24);
+  lCheckBox.Parent := Result;
+
+  lEdit := TEdit.Create(Result);
+  lEdit.Name := 'SearchEdit';
+  lEdit.Text := 'Query';
+  lEdit.SetBounds(16, 88, 140, 24);
+  lEdit.Parent := Result;
+
+  lComboBox := TComboBox.Create(Result);
+  lComboBox.Name := 'ModeComboBox';
+  lComboBox.SetBounds(16, 120, 140, 24);
+  lComboBox.Parent := Result;
+  lComboBox.Items.Add('All');
+  lComboBox.ItemIndex := 0;
+
+  lListBox := TListBox.Create(Result);
+  lListBox.Name := 'EventsListBox';
+  lListBox.SetBounds(176, 16, 140, 96);
+  lListBox.Parent := Result;
+  lListBox.Items.Add('Created');
+  lListBox.ItemIndex := 0;
+
+  lLabel := TLabel.Create(Result);
+  lLabel.Name := 'HeaderLabel';
+  lLabel.Caption := 'Header';
+  lLabel.SetBounds(176, 120, 120, 20);
+  lLabel.Parent := Result;
+
+  lGroupBox := TGroupBox.Create(Result);
+  lGroupBox.Name := 'OptionsGroup';
+  lGroupBox.Caption := 'Options';
+  lGroupBox.SetBounds(336, 16, 160, 96);
+  lGroupBox.Parent := Result;
+
+  lPageControl := TPageControl.Create(Result);
+  lPageControl.Name := 'Pages';
+  lPageControl.SetBounds(336, 128, 180, 120);
+  lPageControl.Parent := Result;
+
+  lTabSheet := TTabSheet.Create(Result);
+  lTabSheet.Name := 'SummaryPage';
+  lTabSheet.Caption := 'Summary';
+  lTabSheet.PageControl := lPageControl;
+
+  lStringGrid := TStringGrid.Create(Result);
+  lStringGrid.Name := 'DataGrid';
+  lStringGrid.SetBounds(16, 160, 260, 110);
+  lStringGrid.Parent := Result;
+  lStringGrid.ColCount := 2;
+  lStringGrid.RowCount := 2;
+  lStringGrid.Cells[0, 0] := 'Name';
+  lStringGrid.Cells[1, 1] := 'Value';
+
+  lToolBar := TToolBar.Create(Result);
+  lToolBar.Name := 'MainToolBar';
+  lToolBar.SetBounds(16, 288, 260, 28);
+  lToolBar.Parent := Result;
+
+  lSplitter := TSplitter.Create(Result);
+  lSplitter.Name := 'FilterSplitter';
+  lSplitter.SetBounds(296, 288, 6, 96);
+  lSplitter.Parent := Result;
+
+  lStatusBar := TStatusBar.Create(Result);
+  lStatusBar.Name := 'MainStatusBar';
+  lStatusBar.SimpleText := 'Ready';
+  lStatusBar.Parent := Result;
+
+  Result.HandleNeeded;
+end;
+
+function MapForm(aForm: TCustomForm; aIncludeAccessibility: Boolean = True; aVisibleOnly: Boolean = False;
+  const aDetail: string = ''): TJSONObject;
+var
+  lDetail: string;
+  lIncludeAccessibility: string;
+  lResponse: string;
+  lVisibleOnly: string;
+begin
+  if aIncludeAccessibility then
+  begin
+    lIncludeAccessibility := 'true';
+  end else begin
+    lIncludeAccessibility := 'false';
+  end;
+
+  if aVisibleOnly then
+  begin
+    lVisibleOnly := 'true';
+  end else begin
+    lVisibleOnly := 'false';
+  end;
+
+  lDetail := '';
+  if aDetail <> '' then
+  begin
+    lDetail := ',"detail":"' + aDetail + '"';
+  end;
+
+  lResponse := TAccessibilityAgentBridge.Execute(
+    '{"cmd":"form.map","target":"handle","handle":' + UIntToStr(NativeUInt(aForm.Handle)) +
+    ',"includeAccessibility":' + lIncludeAccessibility + ',"visibleOnly":' + lVisibleOnly + lDetail + '}');
+  Result := JsonObjectFrom(lResponse);
+end;
+
+function ProviderMapForm(aForm: TCustomForm; const aDetail: string = 'full'; aMaxDepth: Integer = 3;
+  aMaxChildren: Integer = 200): TJSONObject;
 var
   lResponse: string;
 begin
   lResponse := TAccessibilityAgentBridge.Execute(
-    '{"cmd":"form.map","target":"handle","handle":' + UIntToStr(NativeUInt(aForm.Handle)) + '}');
+    '{"cmd":"provider.map","target":"handle","handle":' + UIntToStr(NativeUInt(aForm.Handle)) +
+    ',"detail":"' + aDetail + '","maxDepth":' + IntToStr(aMaxDepth) + ',"maxChildren":' +
+    IntToStr(aMaxChildren) + '}');
   Result := JsonObjectFrom(lResponse);
+end;
+
+function ProviderNodeByName(aNode: TJSONObject; const aName: string): TJSONObject;
+var
+  i: Integer;
+  lChild: TJSONObject;
+  lChildren: TJSONArray;
+begin
+  if JsonHasValue(aNode, 'name') and (JsonText(aNode, 'name') = aName) then
+  begin
+    Exit(aNode);
+  end;
+
+  lChildren := JsonArrayValue(aNode, 'children');
+  for i := 0 to Pred(lChildren.Count) do
+  begin
+    if not (lChildren.Items[i] is TJSONObject) then
+    begin
+      Continue;
+    end;
+
+    lChild := ProviderNodeByName(TJSONObject(lChildren.Items[i]), aName);
+    if lChild <> nil then
+    begin
+      Exit(lChild);
+    end;
+  end;
+
+  Result := nil;
+end;
+
+function ProviderNodeByVclName(aNode: TJSONObject; const aName: string): TJSONObject;
+var
+  i: Integer;
+  lChild: TJSONObject;
+  lChildren: TJSONArray;
+begin
+  if JsonHasValue(aNode, 'vclName') and (JsonText(aNode, 'vclName') = aName) then
+  begin
+    Exit(aNode);
+  end;
+
+  lChildren := JsonArrayValue(aNode, 'children');
+  for i := 0 to Pred(lChildren.Count) do
+  begin
+    if not (lChildren.Items[i] is TJSONObject) then
+    begin
+      Continue;
+    end;
+
+    lChild := ProviderNodeByVclName(TJSONObject(lChildren.Items[i]), aName);
+    if lChild <> nil then
+    begin
+      Exit(lChild);
+    end;
+  end;
+
+  Result := nil;
+end;
+
+function RequireProviderNodeByName(aMap: TJSONObject; const aName: string): TJSONObject;
+begin
+  Result := ProviderNodeByName(JsonObjectValue(aMap, 'root'), aName);
+  Assert.IsNotNull(Result, 'Provider node was not found in map: ' + aName);
+end;
+
+function RequireProviderNodeByVclName(aMap: TJSONObject; const aName: string): TJSONObject;
+begin
+  Result := ProviderNodeByVclName(JsonObjectValue(aMap, 'root'), aName);
+  Assert.IsNotNull(Result, 'Provider node was not found in map by VCL name: ' + aName);
 end;
 
 function ControlByName(aMap: TJSONObject; const aName: string): TJSONObject;
@@ -147,9 +571,180 @@ begin
   Result := JsonText(ControlByName(aMap, aName), 'ref');
 end;
 
+function ControlExistsByName(aMap: TJSONObject; const aName: string): Boolean;
+var
+  i: Integer;
+  lControl: TJSONObject;
+  lControls: TJSONArray;
+begin
+  lControls := JsonArrayValue(aMap, 'controls');
+  for i := 0 to Pred(lControls.Count) do
+  begin
+    if not (lControls.Items[i] is TJSONObject) then
+    begin
+      Continue;
+    end;
+
+    lControl := TJSONObject(lControls.Items[i]);
+    if JsonText(lControl, 'name') = aName then
+    begin
+      Exit(True);
+    end;
+  end;
+
+  Result := False;
+end;
+
 procedure AssertOk(aResponse: TJSONObject);
 begin
   Assert.AreEqual('true', JsonText(aResponse, 'ok'), aResponse.ToJSON);
+end;
+
+function MeasureKeyboardTabTicks(aControlCount: Integer): Int64;
+var
+  lForm: TForm;
+  lMap: TJSONObject;
+  lResponse: TJSONObject;
+  lStopwatch: TStopwatch;
+begin
+  lForm := BuildTabOrderStressForm(aControlCount);
+  try
+    lForm.Show;
+    Application.ProcessMessages;
+    lMap := MapForm(lForm, False, True, 'geometry');
+    try
+      AssertOk(lMap);
+    finally
+      lMap.Free;
+    end;
+
+    TAccessibilityAgentBridge.SetMutationEnabled(True);
+    try
+      lStopwatch := TStopwatch.StartNew;
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute('{"cmd":"keyboard.tab"}'));
+      lStopwatch.Stop;
+      try
+        AssertOk(lResponse);
+      finally
+        lResponse.Free;
+      end;
+    finally
+      TAccessibilityAgentBridge.SetMutationEnabled(False);
+    end;
+
+    Result := lStopwatch.ElapsedTicks;
+    if Result < 1 then
+    begin
+      Result := 1;
+    end;
+  finally
+    lForm.Free;
+  end;
+end;
+
+function MeasureBestKeyboardTabTicks(aControlCount: Integer; aSamples: Integer): Int64;
+var
+  i: Integer;
+  lTicks: Int64;
+begin
+  Result := High(Int64);
+  for i := 1 to aSamples do
+  begin
+    lTicks := MeasureKeyboardTabTicks(aControlCount);
+    if lTicks < Result then
+    begin
+      Result := lTicks;
+    end;
+  end;
+end;
+
+function MeasureBestGeometryMapTicks(aDepth: Integer; aSamples: Integer): Int64;
+var
+  i: Integer;
+  lForm: TForm;
+  lMap: TJSONObject;
+  lStopwatch: TStopwatch;
+  lTicks: Int64;
+begin
+  Result := High(Int64);
+  lForm := BuildDeepPanelMapForm(aDepth);
+  try
+    for i := 1 to aSamples do
+    begin
+      lStopwatch := TStopwatch.StartNew;
+      lMap := MapForm(lForm, False, True, 'geometry');
+      lStopwatch.Stop;
+      try
+        AssertOk(lMap);
+      finally
+        lMap.Free;
+      end;
+
+      lTicks := lStopwatch.ElapsedTicks;
+      if lTicks < Result then
+      begin
+        Result := lTicks;
+      end;
+    end;
+
+    if Result < 1 then
+    begin
+      Result := 1;
+    end;
+  finally
+    lForm.Free;
+  end;
+end;
+
+function MeasureBestHitTestTicks(aDepth: Integer; aSamples: Integer): Int64;
+var
+  i: Integer;
+  lButton: TButton;
+  lForm: TForm;
+  lMap: TJSONObject;
+  lPoint: TPoint;
+  lResponse: TJSONObject;
+  lStopwatch: TStopwatch;
+  lTicks: Int64;
+begin
+  Result := High(Int64);
+  lForm := BuildHitTestBranchForm(aDepth, lButton);
+  try
+    lMap := MapForm(lForm, False, True, 'geometry');
+    try
+      AssertOk(lMap);
+    finally
+      lMap.Free;
+    end;
+
+    lPoint := lButton.ClientToScreen(Point(lButton.Width div 2, lButton.Height div 2));
+    for i := 1 to aSamples do
+    begin
+      lStopwatch := TStopwatch.StartNew;
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        Format('{"cmd":"hitTest","x":%d,"y":%d}', [lPoint.X, lPoint.Y])));
+      lStopwatch.Stop;
+      try
+        AssertOk(lResponse);
+        Assert.AreEqual('TargetButton', JsonText(lResponse, 'name'));
+      finally
+        lResponse.Free;
+      end;
+
+      lTicks := lStopwatch.ElapsedTicks;
+      if lTicks < Result then
+      begin
+        Result := lTicks;
+      end;
+    end;
+
+    if Result < 1 then
+    begin
+      Result := 1;
+    end;
+  finally
+    lForm.Free;
+  end;
 end;
 
 procedure TAccessibilityAgentBridgeTests.HelloReportsFrameworkPresenceAndMutationGate;
@@ -231,6 +826,10 @@ begin
       AssertOk(lMap);
       Assert.AreEqual('snapshot', JsonText(lMap, 'refModel'));
       Assert.IsTrue(JsonInt(lMap, 'snapshotId') > 0, 'Snapshot id should be positive.');
+      Assert.IsTrue(JsonHasValue(lMap, 'elapsedMs'), 'form.map should report in-process elapsed milliseconds.');
+      Assert.IsTrue(JsonHasValue(lMap, 'elapsedTicks'), 'form.map should report in-process elapsed ticks.');
+      Assert.IsTrue(JsonInt(lMap, 'elapsedMs') >= 0, 'form.map elapsed milliseconds should be non-negative.');
+      Assert.IsTrue(JsonInt(lMap, 'stopwatchFrequency') > 0, 'form.map should report the stopwatch frequency.');
 
       lRoot := JsonObjectValue(lMap, 'form');
       Assert.AreEqual('@a0', JsonText(lRoot, 'ref'));
@@ -249,7 +848,7 @@ begin
       Assert.AreEqual(0, JsonInt(lEditEntry, 'tabOrder'));
 
       lCenter := JsonObjectValue(JsonObjectValue(lEditEntry, 'targetPoints'), 'center');
-      lPoint := lEdit.ClientToScreen(Point(lEdit.Width div 2, lEdit.Height div 2));
+      lPoint := lForm.ClientToScreen(Point(lEdit.Left + (lEdit.Width div 2), lEdit.Top + (lEdit.Height div 2)));
       Assert.AreEqual(lPoint.X, JsonInt(lCenter, 'x'));
       Assert.AreEqual(lPoint.Y, JsonInt(lCenter, 'y'));
 
@@ -259,6 +858,680 @@ begin
     end;
   finally
     lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.FormMapReferenceGenerationAvoidsFormatParser;
+var
+  lSourceText: string;
+begin
+  lSourceText := ReadRepoText('src\MaxLogic.Accessibility.AgentBridge.pas');
+
+  Assert.IsFalse(Pos('Format(''@a%d''', lSourceText) > 0,
+    'Agent bridge refs are generated for every mapped control; avoid Format parser and variant allocation here.');
+end;
+
+procedure TAccessibilityAgentBridgeTests.FormMapReturnsNativeAccessibilityRoleAndState;
+var
+  lCheckBox: TCheckBox;
+  lCheckBoxEntry: TJSONObject;
+  lCheckBoxState: TJSONObject;
+  lForm: TForm;
+  lListBox: TListBox;
+  lListBoxEntry: TJSONObject;
+  lListBoxState: TJSONObject;
+  lMap: TJSONObject;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lForm.Name := 'NativeStateForm';
+    lForm.Caption := 'Native State Test';
+    lForm.SetBounds(200, 150, 420, 240);
+
+    lCheckBox := TCheckBox.Create(lForm);
+    lCheckBox.Name := 'ArchivedCheckBox';
+    lCheckBox.Caption := 'Include archived rows';
+    lCheckBox.Checked := True;
+    lCheckBox.SetBounds(20, 20, 180, 24);
+    lCheckBox.Parent := lForm;
+
+    lListBox := TListBox.Create(lForm);
+    lListBox.Name := 'EventsListBox';
+    lListBox.Parent := lForm;
+    lListBox.Items.Add('Queued order');
+    lListBox.Items.Add('Audit warning');
+    lListBox.ItemIndex := 1;
+    lListBox.SetBounds(20, 60, 220, 90);
+
+    lForm.HandleNeeded;
+    lCheckBox.HandleNeeded;
+    lListBox.HandleNeeded;
+
+    lMap := MapForm(lForm);
+    try
+      lCheckBoxEntry := ControlByName(lMap, 'ArchivedCheckBox');
+      Assert.AreEqual(UIA_CheckBoxControlTypeId, JsonInt(lCheckBoxEntry, 'uiaControlTypeId'));
+      Assert.AreEqual('CheckBox', JsonText(lCheckBoxEntry, 'uiaControlType'));
+      lCheckBoxState := JsonObjectValue(lCheckBoxEntry, 'state');
+      Assert.AreEqual('true', JsonText(lCheckBoxState, 'checked'));
+      Assert.AreEqual('on', JsonText(lCheckBoxState, 'toggleState'));
+
+      lListBoxEntry := ControlByName(lMap, 'EventsListBox');
+      Assert.AreEqual(UIA_ListControlTypeId, JsonInt(lListBoxEntry, 'uiaControlTypeId'));
+      Assert.AreEqual('List', JsonText(lListBoxEntry, 'uiaControlType'));
+      lListBoxState := JsonObjectValue(lListBoxEntry, 'state');
+      Assert.AreEqual(2, JsonInt(lListBoxState, 'itemCount'));
+      Assert.AreEqual(1, JsonInt(lListBoxState, 'itemIndex'));
+      Assert.AreEqual('Audit warning', JsonText(lListBoxState, 'selectedText'));
+    finally
+      lMap.Free;
+    end;
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.ProviderMapReturnsInProcessProviderTreeWithVirtualChildren;
+var
+  lForm: TForm;
+  lItemNode: TJSONObject;
+  lListBox: TListBox;
+  lListBoxNode: TJSONObject;
+  lMap: TJSONObject;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lForm.Name := 'ProviderTreeForm';
+    lForm.Caption := 'Provider Tree Test';
+    lForm.SetBounds(200, 150, 420, 260);
+
+    lListBox := TListBox.Create(lForm);
+    lListBox.Name := 'OrdersListBox';
+    lListBox.Parent := lForm;
+    lListBox.Items.Add('Queued order');
+    lListBox.Items.Add('Audit warning');
+    lListBox.ItemIndex := 1;
+    lListBox.SetBounds(20, 20, 220, 96);
+
+    lForm.HandleNeeded;
+    lListBox.HandleNeeded;
+
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+    try
+      lMap := ProviderMapForm(lForm, 'full', 3, 20);
+      try
+        AssertOk(lMap);
+        Assert.AreEqual('provider.map', JsonText(lMap, 'cmd'));
+        Assert.AreEqual('maxlogic-provider', JsonText(lMap, 'source'));
+        Assert.AreEqual('full', JsonText(lMap, 'detail'));
+        Assert.IsTrue(JsonInt(lMap, 'nodeCount') >= 4, 'Provider map should include virtual listbox items.');
+
+        lListBoxNode := RequireProviderNodeByVclName(lMap, 'OrdersListBox');
+        Assert.AreEqual(UIA_ListControlTypeId, JsonInt(lListBoxNode, 'uiaControlTypeId'));
+        Assert.AreEqual('List', JsonText(lListBoxNode, 'uiaControlType'));
+        Assert.AreEqual(2, JsonInt(lListBoxNode, 'childCount'));
+
+        lItemNode := RequireProviderNodeByName(lMap, 'Audit warning');
+        Assert.AreEqual(UIA_ListItemControlTypeId, JsonInt(lItemNode, 'uiaControlTypeId'));
+      finally
+        lMap.Free;
+      end;
+
+      lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+      Assert.AreEqual(0, lMetrics.ProviderNavigateCount,
+        'provider.map should use in-process direct child access, not TreeWalker-style Navigate traversal.');
+      Assert.AreEqual(0, lMetrics.ProviderGetBoundingRectangleCount,
+        'provider.map should use provider direct geometry access, not UIA bounding rectangle callbacks.');
+      Assert.AreEqual(0, lMetrics.ProviderGetPropertyValueCount,
+        'provider.map should not fall back to public UIA property callbacks after direct-access providers answer.');
+    finally
+      TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+    end;
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.ProviderMapReusesInstalledManagerProviderWithoutRescanningForm;
+var
+  lButton: TButton;
+  lForm: TForm;
+  lMap: TJSONObject;
+  lMetrics: TAccessibilityScannerMetrics;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lForm.Name := 'InstalledProviderMapForm';
+    lForm.Caption := 'Installed Provider Map Test';
+    lForm.SetBounds(200, 150, 420, 260);
+
+    lButton := TButton.Create(lForm);
+    lButton.Name := 'ApplyButton';
+    lButton.Caption := 'Apply';
+    lButton.Parent := lForm;
+    lButton.SetBounds(20, 20, 120, 28);
+
+    lForm.HandleNeeded;
+    lButton.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+    TAccessibilityDiagnostics.EnableScannerMetrics;
+    TAccessibilityDiagnostics.ResetScannerMetrics;
+    try
+      lMap := ProviderMapForm(lForm, 'geometry', 2, 20);
+      try
+        AssertOk(lMap);
+        Assert.AreEqual('installed', JsonText(lMap, 'providerTreeSource'));
+        Assert.IsTrue(JsonInt(lMap, 'nodeCount') >= 2, 'Provider map should still return the installed tree.');
+      finally
+        lMap.Free;
+      end;
+
+      lMetrics := TAccessibilityDiagnostics.ScannerMetrics;
+      Assert.AreEqual(0, lMetrics.SortedChildrenCallCount,
+        'provider.map should reuse the installed manager provider instead of scanning the form again.');
+      Assert.AreEqual(0, lMetrics.RttiPropertyLookupCount,
+        'provider.map should not do scanner RTTI reads when the installed provider is reused.');
+    finally
+      TAccessibilityDiagnostics.DisableScannerMetrics;
+      TAccessibilityManager.Uninstall;
+    end;
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.FormMapCanSkipAccessibilityScanForFastNativeSnapshot;
+var
+  lButton: TButton;
+  lEdit: TEdit;
+  lEditEntry: TJSONObject;
+  lForm: TForm;
+  lMap: TJSONObject;
+  lRoot: TJSONObject;
+begin
+  BuildBridgeTestForm(lForm, lEdit, lButton);
+  try
+    lMap := MapForm(lForm, False);
+    try
+      AssertOk(lMap);
+      Assert.AreEqual('false', JsonText(lMap, 'includeAccessibility'));
+
+      lRoot := JsonObjectValue(lMap, 'form');
+      Assert.AreEqual('BridgeForm', JsonText(lRoot, 'name'));
+      Assert.AreEqual('Bridge Test Window', JsonText(lRoot, 'caption'));
+      Assert.AreEqual('', JsonText(lRoot, 'accessibleName'));
+      Assert.AreEqual('', JsonText(lRoot, 'helpText'));
+
+      lEditEntry := ControlByName(lMap, 'SearchEdit');
+      Assert.AreEqual('@a1', JsonText(lEditEntry, 'ref'));
+      Assert.AreEqual('TEdit', JsonText(lEditEntry, 'className'));
+      Assert.AreEqual('Search text', JsonText(lEditEntry, 'hint'));
+      Assert.AreEqual('', JsonText(lEditEntry, 'accessibleName'));
+      Assert.AreEqual('', JsonText(lEditEntry, 'helpText'));
+    finally
+      lMap.Free;
+    end;
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.FormMapCanReturnOnlyVisibleActivePageControls;
+var
+  lActiveEdit: TEdit;
+  lActivePage: TTabSheet;
+  lButton: TButton;
+  lControls: TJSONArray;
+  lHiddenEdit: TEdit;
+  lHiddenPage: TTabSheet;
+  lForm: TForm;
+  lMap: TJSONObject;
+  lPageControl: TPageControl;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lForm.Name := 'VisibleMapForm';
+    lForm.Caption := 'Visible Map Test';
+    lForm.SetBounds(200, 150, 420, 260);
+
+    lButton := TButton.Create(lForm);
+    lButton.Name := 'TopButton';
+    lButton.Caption := 'Top action';
+    lButton.SetBounds(16, 16, 96, 28);
+    lButton.Parent := lForm;
+
+    lPageControl := TPageControl.Create(lForm);
+    lPageControl.Name := 'Pages';
+    lPageControl.SetBounds(16, 56, 360, 160);
+    lPageControl.Parent := lForm;
+
+    lActivePage := TTabSheet.Create(lForm);
+    lActivePage.Name := 'ActivePage';
+    lActivePage.Caption := 'Active';
+    lActivePage.PageControl := lPageControl;
+
+    lHiddenPage := TTabSheet.Create(lForm);
+    lHiddenPage.Name := 'HiddenPage';
+    lHiddenPage.Caption := 'Hidden';
+    lHiddenPage.PageControl := lPageControl;
+
+    lActiveEdit := TEdit.Create(lForm);
+    lActiveEdit.Name := 'ActiveEdit';
+    lActiveEdit.Text := 'Visible value';
+    lActiveEdit.SetBounds(20, 24, 160, 24);
+    lActiveEdit.Parent := lActivePage;
+
+    lHiddenEdit := TEdit.Create(lForm);
+    lHiddenEdit.Name := 'HiddenEdit';
+    lHiddenEdit.Text := 'Inactive value';
+    lHiddenEdit.SetBounds(20, 24, 160, 24);
+    lHiddenEdit.Parent := lHiddenPage;
+
+    lPageControl.ActivePage := lActivePage;
+    lForm.HandleNeeded;
+    lButton.HandleNeeded;
+    lPageControl.HandleNeeded;
+    lActiveEdit.HandleNeeded;
+    lHiddenEdit.HandleNeeded;
+
+    lMap := MapForm(lForm, False, True);
+    try
+      AssertOk(lMap);
+      Assert.AreEqual('false', JsonText(lMap, 'includeAccessibility'));
+      Assert.AreEqual('true', JsonText(lMap, 'visibleOnly'));
+      lControls := JsonArrayValue(lMap, 'controls');
+      Assert.IsTrue(lControls.Count < 5, 'Visible map should skip inactive page descendants.');
+      ControlByName(lMap, 'TopButton');
+      ControlByName(lMap, 'Pages');
+      ControlByName(lMap, 'ActivePage');
+      ControlByName(lMap, 'ActiveEdit');
+      Assert.IsFalse(ControlExistsByName(lMap, 'HiddenEdit'));
+    finally
+      lMap.Free;
+    end;
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.FormMapGeometryDetailSkipsTextAccessibilityAndState;
+var
+  lButton: TButton;
+  lButtonEntry: TJSONObject;
+  lEdit: TEdit;
+  lForm: TForm;
+  lMap: TJSONObject;
+  lRoot: TJSONObject;
+begin
+  BuildBridgeTestForm(lForm, lEdit, lButton);
+  try
+    lButton.Hint := 'Runs the action';
+    lMap := MapForm(lForm, True, True, 'geometry');
+    try
+      AssertOk(lMap);
+      Assert.AreEqual('geometry', JsonText(lMap, 'detail'));
+      Assert.AreEqual('false', JsonText(lMap, 'includeAccessibility'));
+      Assert.AreEqual('true', JsonText(lMap, 'visibleOnly'));
+
+      lRoot := JsonObjectValue(lMap, 'form');
+      Assert.AreEqual('BridgeForm', JsonText(lRoot, 'name'));
+      Assert.AreEqual('Window', JsonText(lRoot, 'uiaControlType'));
+      Assert.IsTrue(JsonHasValue(lRoot, 'screenRect'));
+      Assert.IsFalse(JsonHasValue(lRoot, 'caption'), 'Geometry detail should skip Caption RTTI.');
+      Assert.IsFalse(JsonHasValue(lRoot, 'accessibleName'), 'Geometry detail should skip accessibility scanning.');
+      Assert.IsFalse(JsonHasValue(lRoot, 'state'), 'Geometry detail should skip role-specific native state.');
+
+      lButtonEntry := ControlByName(lMap, 'ApplyButton');
+      Assert.AreEqual('Button', JsonText(lButtonEntry, 'uiaControlType'));
+      Assert.AreEqual(UIntToStr(NativeUInt(lButton.Handle)), JsonText(lButtonEntry, 'handle'));
+      Assert.IsTrue(JsonHasValue(lButtonEntry, 'targetPoints'));
+      Assert.IsFalse(JsonHasValue(lButtonEntry, 'caption'), 'Geometry detail should not read captions.');
+      Assert.IsFalse(JsonHasValue(lButtonEntry, 'value'), 'Geometry detail should not read values.');
+      Assert.IsFalse(JsonHasValue(lButtonEntry, 'hint'), 'Geometry detail should not read hints.');
+      Assert.IsFalse(JsonHasValue(lButtonEntry, 'helpText'), 'Geometry detail should not read help text.');
+      Assert.IsFalse(JsonHasValue(lButtonEntry, 'state'), 'Geometry detail should not read role state.');
+    finally
+      lMap.Free;
+    end;
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.FormMapGeometryVisibleOnlyScalesOnDeepNestedControls;
+const
+  cSmallDepth = 120;
+  cLargeDepth = 600;
+  cMaxTickGrowth = 7;
+  cSampleCount = 3;
+var
+  lLargeTicks: Int64;
+  lSmallTicks: Int64;
+begin
+  lSmallTicks := MeasureBestGeometryMapTicks(cSmallDepth, cSampleCount);
+  lLargeTicks := MeasureBestGeometryMapTicks(cLargeDepth, cSampleCount);
+
+  Assert.IsTrue(lLargeTicks < lSmallTicks * cMaxTickGrowth,
+    Format('Visible geometry map should scale close to control count. small=%d large=%d', [lSmallTicks, lLargeTicks]));
+end;
+
+procedure TAccessibilityAgentBridgeTests.FormMapGeometrySkipsClientOriginForLeafWindowedControls;
+const
+  cControlCount = 700;
+var
+  lForm: TForm;
+  lMap: TJSONObject;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+begin
+  TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+  TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+  try
+    lForm := BuildFlatGeometryMapForm(cControlCount, True);
+    try
+      lMap := MapForm(lForm, False, True, 'geometry');
+      try
+        AssertOk(lMap);
+      finally
+        lMap.Free;
+      end;
+
+      lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+      Assert.AreEqual(1, lMetrics.AgentBridgeChildClientOriginProbeCount,
+        'Leaf windowed controls should not compute child client origins beyond the form root.');
+    finally
+      lForm.Free;
+    end;
+
+  finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.FormMapGeometryReadsFocusedHandleOnceForFlatWindowedControls;
+const
+  cControlCount = 700;
+var
+  lForm: TForm;
+  lMap: TJSONObject;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+begin
+  TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+  TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+  try
+    lForm := BuildFlatGeometryMapForm(cControlCount, True);
+    try
+      lMap := MapForm(lForm, False, True, 'geometry');
+      try
+        AssertOk(lMap);
+      finally
+        lMap.Free;
+      end;
+
+      lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+      Assert.AreEqual(1, lMetrics.AgentBridgeFocusProbeCount,
+        'Flat windowed geometry maps should read the focused HWND once, not once per control.');
+    finally
+      lForm.Free;
+    end;
+
+  finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.FormMapFullCachesRepeatedRttiPropertyLookups;
+const
+  cControlCount = 150;
+  cMaxRttiLookups = 6;
+var
+  lForm: TForm;
+  lMap: TJSONObject;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+begin
+  TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+  TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+  try
+    lForm := BuildFallbackTextMapForm(cControlCount);
+    try
+      lMap := MapForm(lForm, False, False);
+      try
+        AssertOk(lMap);
+      finally
+        lMap.Free;
+      end;
+
+      lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+      Assert.IsTrue(lMetrics.AgentBridgeRttiPropertyLookupCount <= cMaxRttiLookups,
+        Format('Full bridge map should cache RTTI property lookups by class/property; got %d lookups for %d controls.',
+        [lMetrics.AgentBridgeRttiPropertyLookupCount, cControlCount]));
+    finally
+      lForm.Free;
+    end;
+  finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.FormMapFullAvoidsRttiForStandardVclStringProperties;
+var
+  lForm: TForm;
+  lMap: TJSONObject;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+begin
+  TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+  TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+  try
+    lForm := BuildStandardNativeStringMapForm;
+    try
+      lMap := MapForm(lForm, False, True);
+      try
+        AssertOk(lMap);
+      finally
+        lMap.Free;
+      end;
+
+      lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+      Assert.AreEqual(0, lMetrics.AgentBridgeRttiPropertyLookupCount,
+        'Standard VCL bridge maps should use typed VCL access or known-empty string fast paths, not RTTI misses.');
+    finally
+      lForm.Free;
+    end;
+  finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.FormMapDoesNotAllocateHiddenControlHandles;
+var
+  lActivePage: TTabSheet;
+  lForm: TForm;
+  lHiddenEdit: TEdit;
+  lHiddenEditEntry: TJSONObject;
+  lHiddenPage: TTabSheet;
+  lMap: TJSONObject;
+  lPageControl: TPageControl;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lForm.Name := 'HandleLazyMapForm';
+    lForm.SetBounds(220, 180, 420, 260);
+
+    lPageControl := TPageControl.Create(lForm);
+    lPageControl.Name := 'Pages';
+    lPageControl.SetBounds(16, 16, 360, 180);
+    lPageControl.Parent := lForm;
+
+    lActivePage := TTabSheet.Create(lForm);
+    lActivePage.Name := 'ActivePage';
+    lActivePage.Caption := 'Active';
+    lActivePage.PageControl := lPageControl;
+
+    lHiddenPage := TTabSheet.Create(lForm);
+    lHiddenPage.Name := 'HiddenPage';
+    lHiddenPage.Caption := 'Hidden';
+    lHiddenPage.PageControl := lPageControl;
+
+    lHiddenEdit := TEdit.Create(lForm);
+    lHiddenEdit.Name := 'HiddenEdit';
+    lHiddenEdit.Text := 'Inactive value';
+    lHiddenEdit.SetBounds(20, 24, 160, 24);
+    lHiddenEdit.Parent := lHiddenPage;
+
+    lPageControl.ActivePage := lActivePage;
+    lForm.HandleNeeded;
+    Assert.IsFalse(lHiddenEdit.HandleAllocated, 'Test setup should keep the inactive edit handle lazy.');
+
+    lMap := MapForm(lForm, False, False, 'geometry');
+    try
+      AssertOk(lMap);
+      lHiddenEditEntry := ControlByName(lMap, 'HiddenEdit');
+      Assert.AreEqual('0', JsonText(lHiddenEditEntry, 'handle'));
+      Assert.IsFalse(lHiddenEdit.HandleAllocated, 'form.map should not allocate HWNDs for hidden controls.');
+    finally
+      lMap.Free;
+    end;
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.ControlInfoEnrichesOneSnapshotRefWithoutFullMapScan;
+var
+  lButton: TButton;
+  lButtonRef: string;
+  lControl: TJSONObject;
+  lEdit: TEdit;
+  lForm: TForm;
+  lMap: TJSONObject;
+  lResponse: TJSONObject;
+begin
+  BuildBridgeTestForm(lForm, lEdit, lButton);
+  try
+    lMap := MapForm(lForm, False, True, 'geometry');
+    try
+      lButtonRef := ControlRefByName(lMap, 'ApplyButton');
+      Assert.IsFalse(JsonHasValue(ControlByName(lMap, 'ApplyButton'), 'caption'),
+        'Geometry map should not read caption text for every control.');
+    finally
+      lMap.Free;
+    end;
+
+    lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+      '{"cmd":"control.info","ref":"' + lButtonRef + '"}'));
+    try
+      AssertOk(lResponse);
+      Assert.AreEqual('control.info', JsonText(lResponse, 'cmd'));
+      Assert.AreEqual('full', JsonText(lResponse, 'detail'));
+      Assert.AreEqual('false', JsonText(lResponse, 'includeAccessibility'));
+
+      lControl := JsonObjectValue(lResponse, 'control');
+      Assert.AreEqual(lButtonRef, JsonText(lControl, 'ref'));
+      Assert.AreEqual('ApplyButton', JsonText(lControl, 'name'));
+      Assert.AreEqual('Apply', JsonText(lControl, 'caption'));
+      Assert.AreEqual('', JsonText(lControl, 'accessibleName'));
+      Assert.AreEqual('', JsonText(lControl, 'helpText'));
+    finally
+      lResponse.Free;
+    end;
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.ControlInfoReusesSnapshotRectangleForMappedControl;
+var
+  lButton: TButton;
+  lButtonRef: string;
+  lEdit: TEdit;
+  lForm: TForm;
+  lMap: TJSONObject;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+  lResponse: TJSONObject;
+begin
+  TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+  TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+  BuildBridgeTestForm(lForm, lEdit, lButton);
+  try
+    lMap := MapForm(lForm, False, True, 'geometry');
+    try
+      AssertOk(lMap);
+      lButtonRef := ControlRefByName(lMap, 'ApplyButton');
+    finally
+      lMap.Free;
+    end;
+
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+    lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+      '{"cmd":"control.info","ref":"' + lButtonRef + '"}'));
+    try
+      AssertOk(lResponse);
+      Assert.AreEqual('ApplyButton', JsonText(JsonObjectValue(lResponse, 'control'), 'name'));
+    finally
+      lResponse.Free;
+    end;
+
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+    Assert.AreEqual(0, lMetrics.AgentBridgeScreenRectProbeCount,
+      'control.info should reuse screen rectangles from the current form.map snapshot.');
+  finally
+    lForm.Free;
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.ControlsInfoBatchesSnapshotRefsWithOneFocusProbe;
+var
+  lButton: TButton;
+  lButtonRef: string;
+  lControls: TJSONArray;
+  lEdit: TEdit;
+  lEditRef: string;
+  lForm: TForm;
+  lMap: TJSONObject;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+  lResponse: TJSONObject;
+begin
+  TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+  TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+  BuildBridgeTestForm(lForm, lEdit, lButton);
+  try
+    lMap := MapForm(lForm, False, True, 'geometry');
+    try
+      AssertOk(lMap);
+      lEditRef := ControlRefByName(lMap, 'SearchEdit');
+      lButtonRef := ControlRefByName(lMap, 'ApplyButton');
+    finally
+      lMap.Free;
+    end;
+
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+    lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+      '{"cmd":"controls.info","refs":["' + lEditRef + '","' + lButtonRef + '"]}'));
+    try
+      AssertOk(lResponse);
+      Assert.AreEqual('controls.info', JsonText(lResponse, 'cmd'));
+      Assert.AreEqual('full', JsonText(lResponse, 'detail'));
+      Assert.AreEqual('false', JsonText(lResponse, 'includeAccessibility'));
+      lControls := JsonArrayValue(lResponse, 'controls');
+      Assert.AreEqual(2, lControls.Count);
+      Assert.AreEqual('SearchEdit', JsonText(TJSONObject(lControls.Items[0]), 'name'));
+      Assert.AreEqual('ApplyButton', JsonText(TJSONObject(lControls.Items[1]), 'name'));
+      Assert.AreEqual('Apply', JsonText(TJSONObject(lControls.Items[1]), 'caption'));
+    finally
+      lResponse.Free;
+    end;
+
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+    Assert.AreEqual(1, lMetrics.AgentBridgeFocusProbeCount,
+      'controls.info should read the focused HWND once for the whole batch.');
+    Assert.AreEqual(0, lMetrics.AgentBridgeScreenRectProbeCount,
+      'controls.info should reuse screen rectangles from the current form.map snapshot.');
+  finally
+    lForm.Free;
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
   end;
 end;
 
@@ -294,6 +1567,143 @@ begin
   finally
     lForm.Free;
   end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.HitTestUsesSnapshotRectanglesForMappedControls;
+var
+  lButton: TButton;
+  lEdit: TEdit;
+  lForm: TForm;
+  lHit: TJSONObject;
+  lMap: TJSONObject;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+  lPoint: TPoint;
+begin
+  TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+  TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+  BuildBridgeTestForm(lForm, lEdit, lButton);
+  try
+    lMap := MapForm(lForm, False, True, 'geometry');
+    try
+      AssertOk(lMap);
+    finally
+      lMap.Free;
+    end;
+
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+    lPoint := lEdit.ClientToScreen(Point(lEdit.Width div 2, lEdit.Height div 2));
+    lHit := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+      Format('{"cmd":"hitTest","x":%d,"y":%d}', [lPoint.X, lPoint.Y])));
+    try
+      AssertOk(lHit);
+      Assert.AreEqual('SearchEdit', JsonText(lHit, 'name'));
+    finally
+      lHit.Free;
+    end;
+
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+    Assert.AreEqual(0, lMetrics.AgentBridgeScreenRectProbeCount,
+      'hitTest should reuse screen rectangles from the current form.map snapshot.');
+  finally
+    lForm.Free;
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.HitTestSkipsSubtreesOutsideTheTargetPoint;
+const
+  cSmallDepth = 30;
+  cLargeDepth = 600;
+  cMaxTickGrowth = 6;
+  cSampleCount = 3;
+var
+  lLargeTicks: Int64;
+  lSmallTicks: Int64;
+begin
+  lSmallTicks := MeasureBestHitTestTicks(cSmallDepth, cSampleCount);
+  lLargeTicks := MeasureBestHitTestTicks(cLargeDepth, cSampleCount);
+
+  Assert.IsTrue(lLargeTicks <= lSmallTicks * cMaxTickGrowth,
+    Format('hitTest should reject off-point child branches before descending. small=%d large=%d',
+    [lSmallTicks, lLargeTicks]));
+end;
+
+procedure TAccessibilityAgentBridgeTests.DiagnosticsCommandsExposeProviderHotspotMetrics;
+var
+  lMetrics: TJSONObject;
+  lResponse: TJSONObject;
+begin
+  TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+  try
+    lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+      '{"cmd":"diagnostics.providerHotspots.enable"}'));
+    try
+      AssertOk(lResponse);
+      Assert.AreEqual('diagnostics.providerHotspots.enable', JsonText(lResponse, 'cmd'));
+    finally
+      lResponse.Free;
+    end;
+
+    lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+      '{"cmd":"diagnostics.providerHotspots.reset"}'));
+    try
+      AssertOk(lResponse);
+      Assert.AreEqual('diagnostics.providerHotspots.reset', JsonText(lResponse, 'cmd'));
+    finally
+      lResponse.Free;
+    end;
+
+    TAccessibilityDiagnostics.RecordProviderBoundaryCall(pbcNavigate);
+    TAccessibilityDiagnostics.RecordProviderBoundaryCall(pbcGetPropertyValue);
+    TAccessibilityDiagnostics.RecordAgentBridgeChildClientOriginProbe;
+    TAccessibilityDiagnostics.RecordAgentBridgeFocusProbe;
+    TAccessibilityDiagnostics.RecordAgentBridgeRttiPropertyLookup;
+    TAccessibilityDiagnostics.RecordAgentBridgeScreenRectProbe;
+    TAccessibilityDiagnostics.RecordManagerRetainedHookPassivation(7);
+    TAccessibilityDiagnostics.RecordProviderRuntimeIdBlockCopy(3);
+    TAccessibilityDiagnostics.RecordProviderRuntimeIdElementCopy(5);
+
+    lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute('{"cmd":"diagnostics.providerHotspots"}'));
+    try
+      AssertOk(lResponse);
+      Assert.AreEqual('diagnostics.providerHotspots', JsonText(lResponse, 'cmd'));
+      lMetrics := JsonObjectValue(lResponse, 'metrics');
+      Assert.AreEqual('true', JsonText(lMetrics, 'enabled'));
+      Assert.AreEqual(1, JsonInt(lMetrics, 'providerNavigateCount'));
+      Assert.AreEqual(1, JsonInt(lMetrics, 'providerGetPropertyValueCount'));
+      Assert.AreEqual(1, JsonInt(lMetrics, 'agentBridgeChildClientOriginProbeCount'));
+      Assert.AreEqual(1, JsonInt(lMetrics, 'agentBridgeFocusProbeCount'));
+      Assert.AreEqual(1, JsonInt(lMetrics, 'agentBridgeRttiPropertyLookupCount'));
+      Assert.AreEqual(1, JsonInt(lMetrics, 'agentBridgeScreenRectProbeCount'));
+      Assert.AreEqual(1, JsonInt(lMetrics, 'managerRetainedHookPassivateCount'));
+      Assert.AreEqual(7, JsonInt(lMetrics, 'managerRetainedHookLinearScanCount'));
+      Assert.AreEqual(1, JsonInt(lMetrics, 'providerRuntimeIdBlockCopyCount'));
+      Assert.AreEqual(3, JsonInt(lMetrics, 'providerRuntimeIdBlockCopyElementCount'));
+      Assert.AreEqual(5, JsonInt(lMetrics, 'providerRuntimeIdElementCopyCount'));
+    finally
+      lResponse.Free;
+    end;
+  finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.KeyboardTabScalesWithTabStopCount;
+const
+  cSmallControlCount = 160;
+  cLargeControlCount = 800;
+  cMaxTickGrowth = 4;
+  cSampleCount = 3;
+var
+  lLargeTicks: Int64;
+  lSmallTicks: Int64;
+begin
+  lSmallTicks := MeasureBestKeyboardTabTicks(cSmallControlCount, cSampleCount);
+  lLargeTicks := MeasureBestKeyboardTabTicks(cLargeControlCount, cSampleCount);
+
+  Assert.IsTrue(lLargeTicks <= lSmallTicks * cMaxTickGrowth,
+    Format('keyboard.tab should not rescan tab siblings quadratically; %d controls=%d ticks, %d controls=%d ticks.',
+    [cSmallControlCount, lSmallTicks, cLargeControlCount, lLargeTicks]));
 end;
 
 procedure TAccessibilityAgentBridgeTests.MutationsAreGatedAndOperateOnLastSnapshotRefs;

@@ -11,6 +11,10 @@ type
   TAccessibilityAgentBridgePipeServerTests = class
   public
     [Test]
+    procedure LargeRequestReadDoesNotResizeBufferPerByte;
+    [Test]
+    procedure PipeConnectionAcceptsSequentialRequests;
+    [Test]
     procedure PipeRoundTripExecutesBridgeOnMainThread;
   end;
 
@@ -18,7 +22,7 @@ implementation
 
 uses
   System.Classes, System.Diagnostics, System.JSON, System.SyncObjs, System.SysUtils, Winapi.Windows,
-  MaxLogic.Accessibility.AgentBridge.PipeServer;
+  MaxLogic.Accessibility.AgentBridge.PipeServer, MaxLogic.Accessibility.Diagnostics;
 
 function JsonObjectFrom(const aText: string): TJSONObject;
 var
@@ -101,6 +105,216 @@ begin
     Result := ReadPipeLine(lPipe);
   finally
     CloseHandle(lPipe);
+  end;
+end;
+
+function RequestPipeLines(const aPipeName: string; const aRequests: array of string): TArray<string>;
+var
+  i: Integer;
+  lBytes: TBytes;
+  lBytesWritten: DWORD;
+  lPipe: THandle;
+  lPipePath: string;
+begin
+  lPipePath := TAccessibilityAgentBridgePipeServer.PipePath(aPipeName);
+  if not WaitNamedPipe(PChar(lPipePath), 5000) then
+  begin
+    RaiseLastOSError;
+  end;
+
+  lPipe := CreateFile(PChar(lPipePath), GENERIC_READ or GENERIC_WRITE, 0, nil, OPEN_EXISTING,
+    FILE_ATTRIBUTE_NORMAL, 0);
+  if lPipe = INVALID_HANDLE_VALUE then
+  begin
+    RaiseLastOSError;
+  end;
+
+  try
+    SetLength(Result, Length(aRequests));
+    for i := 0 to Pred(Length(aRequests)) do
+    begin
+      lBytes := TEncoding.UTF8.GetBytes(aRequests[i] + #10);
+      if (Length(lBytes) > 0) and not WriteFile(lPipe, lBytes[0], DWORD(Length(lBytes)), lBytesWritten, nil) then
+      begin
+        RaiseLastOSError;
+      end;
+      Result[i] := ReadPipeLine(lPipe);
+    end;
+  finally
+    CloseHandle(lPipe);
+  end;
+end;
+
+function RequestPipeLineFromWorker(const aPipeName: string; const aRequest: string): string;
+var
+  lDone: TEvent;
+  lError: string;
+  lResponse: string;
+  lStopwatch: TStopwatch;
+  lThread: TThread;
+begin
+  lDone := TEvent.Create(nil, True, False, '');
+  try
+    lThread := TThread.CreateAnonymousThread(
+      procedure
+      begin
+        try
+          lResponse := RequestPipeLine(aPipeName, aRequest);
+        except
+          on lException: Exception do
+          begin
+            lError := lException.ClassName + ': ' + lException.Message;
+          end;
+        end;
+        lDone.SetEvent;
+      end);
+    lThread.FreeOnTerminate := False;
+    try
+      lThread.Start;
+      lStopwatch := TStopwatch.StartNew;
+      while lDone.WaitFor(10) = TWaitResult.wrTimeout do
+      begin
+        CheckSynchronize(10);
+        if lStopwatch.ElapsedMilliseconds > 5000 then
+        begin
+          Assert.Fail('Timed out waiting for named pipe response.');
+        end;
+      end;
+      CheckSynchronize(10);
+      lThread.WaitFor;
+    finally
+      lThread.Free;
+    end;
+
+    Assert.AreEqual('', lError);
+    Result := lResponse;
+  finally
+    lDone.Free;
+  end;
+end;
+
+function RequestPipeLinesFromWorker(const aPipeName: string; const aRequests: array of string): TArray<string>;
+var
+  i: Integer;
+  lDone: TEvent;
+  lError: string;
+  lRequests: TArray<string>;
+  lResponses: TArray<string>;
+  lStopwatch: TStopwatch;
+  lThread: TThread;
+begin
+  SetLength(lRequests, Length(aRequests));
+  for i := 0 to Pred(Length(aRequests)) do
+  begin
+    lRequests[i] := aRequests[i];
+  end;
+
+  lDone := TEvent.Create(nil, True, False, '');
+  try
+    lThread := TThread.CreateAnonymousThread(
+      procedure
+      begin
+        try
+          lResponses := RequestPipeLines(aPipeName, lRequests);
+        except
+          on lException: Exception do
+          begin
+            lError := lException.ClassName + ': ' + lException.Message;
+          end;
+        end;
+        lDone.SetEvent;
+      end);
+    lThread.FreeOnTerminate := False;
+    try
+      lThread.Start;
+      lStopwatch := TStopwatch.StartNew;
+      while lDone.WaitFor(10) = TWaitResult.wrTimeout do
+      begin
+        CheckSynchronize(10);
+        if lStopwatch.ElapsedMilliseconds > 5000 then
+        begin
+          Assert.Fail('Timed out waiting for named pipe responses.');
+        end;
+      end;
+      CheckSynchronize(10);
+      lThread.WaitFor;
+    finally
+      lThread.Free;
+    end;
+
+    Assert.AreEqual('', lError);
+    Result := lResponses;
+  finally
+    lDone.Free;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgePipeServerTests.LargeRequestReadDoesNotResizeBufferPerByte;
+const
+  cPaddingLength = 32768;
+var
+  lMetrics: TAccessibilityAgentBridgePipeMetrics;
+  lPipeName: string;
+  lRequest: string;
+  lResponse: string;
+  lResponseJson: TJSONObject;
+begin
+  lPipeName := Format('MaxLogicA11yBridgeLargeRequestTest.%d.%d', [GetCurrentProcessId, GetTickCount]);
+  TAccessibilityDiagnostics.EnableAgentBridgePipeMetrics;
+  TAccessibilityDiagnostics.ResetAgentBridgePipeMetrics;
+  try
+    TAccessibilityAgentBridgePipeServer.Start(lPipeName);
+    try
+      lRequest := '{"cmd":"hello","padding":"' + StringOfChar('x', cPaddingLength) + '"}';
+      lResponse := RequestPipeLineFromWorker(lPipeName, lRequest);
+      lResponseJson := JsonObjectFrom(lResponse);
+      try
+        Assert.AreEqual('true', JsonText(lResponseJson, 'ok'), lResponse);
+        Assert.AreEqual('hello', JsonText(lResponseJson, 'cmd'));
+      finally
+        lResponseJson.Free;
+      end;
+
+      lMetrics := TAccessibilityDiagnostics.AgentBridgePipeMetrics;
+      Assert.IsTrue(lMetrics.Enabled);
+      Assert.AreEqual(1, lMetrics.RequestReadCount);
+      Assert.IsTrue(lMetrics.RequestReadByteCount >= cPaddingLength,
+        'Pipe read metrics did not capture the large request payload.');
+      Assert.IsTrue(lMetrics.RequestReadResizeCount <= 16,
+        Format('Pipe request read resized the request buffer %d times for %d bytes; expected chunked growth.',
+        [lMetrics.RequestReadResizeCount, lMetrics.RequestReadByteCount]));
+    finally
+      TAccessibilityAgentBridgePipeServer.Stop;
+    end;
+  finally
+    TAccessibilityDiagnostics.DisableAgentBridgePipeMetrics;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgePipeServerTests.PipeConnectionAcceptsSequentialRequests;
+var
+  i: Integer;
+  lPipeName: string;
+  lResponseJson: TJSONObject;
+  lResponses: TArray<string>;
+begin
+  lPipeName := Format('MaxLogicA11yBridgeSequenceTest.%d.%d', [GetCurrentProcessId, GetTickCount]);
+  TAccessibilityAgentBridgePipeServer.Start(lPipeName);
+  try
+    lResponses := RequestPipeLinesFromWorker(lPipeName, ['{"cmd":"hello"}', '{"cmd":"hello"}']);
+    Assert.AreEqual(2, Length(lResponses));
+    for i := 0 to Pred(Length(lResponses)) do
+    begin
+      lResponseJson := JsonObjectFrom(lResponses[i]);
+      try
+        Assert.AreEqual('true', JsonText(lResponseJson, 'ok'), lResponses[i]);
+        Assert.AreEqual('hello', JsonText(lResponseJson, 'cmd'));
+      finally
+        lResponseJson.Free;
+      end;
+    end;
+  finally
+    TAccessibilityAgentBridgePipeServer.Stop;
   end;
 end;
 

@@ -13,11 +13,30 @@ type
 implementation
 
 uses
-  System.Classes, System.Generics.Collections, System.JSON, System.SysUtils, System.Types, System.TypInfo,
-  Winapi.Messages, Winapi.Windows, Vcl.Controls, Vcl.Forms, Vcl.StdCtrls,
-  MaxLogic.Accessibility.Framework, MaxLogic.Accessibility.Scanner, MaxLogic.Accessibility.Text;
+  System.Classes, System.Diagnostics, System.Generics.Collections, System.Generics.Defaults, System.JSON,
+  System.SysUtils, System.Types, System.TypInfo, System.Variants,
+  Winapi.Messages, Winapi.Windows, Vcl.Buttons, Vcl.ComCtrls, Vcl.Controls, Vcl.ExtCtrls, Vcl.Forms, Vcl.Grids,
+  Vcl.StdCtrls,
+  MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.Framework, MaxLogic.Accessibility.Manager,
+  MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.Scanner, MaxLogic.Accessibility.Text, MaxLogic.Accessibility.UIAutomationCore,
+  MaxLogic.Accessibility.VclAdapters;
 
 type
+  TAccessibilityAgentBridgeMapDetail = (abmdFull, abmdGeometry);
+
+  TAgentBridgeCheckBoxAccess = class(TCustomCheckBox);
+  TAgentBridgeControlAccess = class(TControl);
+  TAgentBridgeWinControlAccess = class(TWinControl);
+
+  TAgentBridgeRttiPropertyCache = class
+  private
+    fPropsByClass: TObjectDictionary<NativeUInt, TDictionary<string, PPropInfo>>;
+  public
+    constructor Create;
+    destructor Destroy; override;
+    function Lookup(aObject: TObject; const aPropertyName: string): PPropInfo;
+  end;
+
   TAccessibilityAgentBridgeState = class(TComponent)
   private
     fControlsByRef: TDictionary<string, TControl>;
@@ -25,37 +44,57 @@ type
     fNextRefIndex: Integer;
     fObservedControls: TList<TComponent>;
     fRefsByControl: TDictionary<TControl, string>;
+    fScreenRectsByControl: TDictionary<TControl, TRect>;
     fSnapshotId: Integer;
-    function BuildFormMap(aForm: TCustomForm): string;
-    function ControlCanUseTab(aControl: TWinControl): Boolean;
+    function BuildControlInfo(aControl: TControl; aIncludeAccessibility: Boolean;
+      aDetail: TAccessibilityAgentBridgeMapDetail): string;
+    function BuildControlsInfo(aRefs: TJSONArray; aIncludeAccessibility: Boolean;
+      aDetail: TAccessibilityAgentBridgeMapDetail): string;
+    function BuildFormMap(aForm: TCustomForm; aIncludeAccessibility: Boolean; aVisibleOnly: Boolean;
+      aDetail: TAccessibilityAgentBridgeMapDetail): string;
+    function BuildProviderMap(aForm: TCustomForm; aDetail: TAccessibilityAgentBridgeMapDetail; aMaxDepth: Integer;
+      aMaxChildren: Integer): string;
     function ControlAtScreenPoint(aParent: TWinControl; const aPoint: TPoint): TControl;
     function ControlJson(aControl: TControl; const aParentRef: string; aDepth: Integer;
-      const aTree: IAccessibilityScanTree; out aRef: string): TJSONObject;
+      const aScreenRect: TRect; const aTree: IAccessibilityScanTree; aDetail: TAccessibilityAgentBridgeMapDetail;
+      aFocusedHandle: HWND; aRttiCache: TAgentBridgeRttiPropertyCache; out aRef: string): TJSONObject;
+    function ControlClientOriginForChildren(aControl: TControl; const aScreenRect: TRect): TPoint;
+    function ControlIsVisibleChildInActivePage(aControl: TControl): Boolean;
     function ControlScreenRect(aControl: TControl): TRect;
+    function ControlScreenRectFromParentOrigin(aControl: TControl; const aParentClientOrigin: TPoint): TRect;
+    function ControlScreenRectFromSnapshot(aControl: TControl): TRect;
     function ExecuteClick(aRequest: TJSONObject): string;
+    function ExecuteControlInfo(aRequest: TJSONObject): string;
+    function ExecuteControlsInfo(aRequest: TJSONObject): string;
     function ExecuteFocus(aRequest: TJSONObject): string;
     function ExecuteFormMap(aRequest: TJSONObject): string;
     function ExecuteFormsList: string;
     function ExecuteHello: string;
     function ExecuteHitTest(aRequest: TJSONObject): string;
     function ExecuteKeyboardTab(aRequest: TJSONObject): string;
+    function ExecuteProviderHotspots: string;
+    function ExecuteProviderMap(aRequest: TJSONObject): string;
     function ExecuteSetText(aRequest: TJSONObject; aAppend: Boolean): string;
     function ExecuteWindowInfo(aRequest: TJSONObject): string;
     function Failure(const aErrorCode: string; const aMessage: string): string;
     function FormSummaryJson(aForm: TCustomForm): TJSONObject;
     function HitControlAt(const aPoint: TPoint): TControl;
     procedure AddChildControls(aParent: TWinControl; const aParentRef: string; aDepth: Integer;
-      aControls: TJSONArray; const aTree: IAccessibilityScanTree);
-    procedure AddControlState(aJson: TJSONObject; aControl: TControl; const aTree: IAccessibilityScanTree);
+      const aParentClientOrigin: TPoint; aControls: TJSONArray; const aTree: IAccessibilityScanTree; aVisibleOnly: Boolean;
+      aDetail: TAccessibilityAgentBridgeMapDetail; aFocusedHandle: HWND; aRttiCache: TAgentBridgeRttiPropertyCache);
+    procedure AddControlState(aJson: TJSONObject; aControl: TControl; const aTree: IAccessibilityScanTree;
+      aRttiCache: TAgentBridgeRttiPropertyCache);
+    procedure AddControlTargeting(aJson: TJSONObject; aControl: TControl; const aScreenRect: TRect;
+      aFocusedHandle: HWND);
     procedure ClearSnapshot;
     procedure Notification(aComponent: TComponent; aOperation: TOperation); override;
     function RefForControl(aControl: TControl; out aRef: string): Boolean;
     function RegisterControl(aControl: TControl): string;
     function ResolveControl(aRequest: TJSONObject; out aControl: TControl): Boolean;
     function ResolveForm(aRequest: TJSONObject): TCustomForm;
+    function SuccessCommand(const aCommand: string): string;
     function SuccessMutation: string;
     function WindowInfoJson(aForm: TCustomForm): TJSONObject;
-    procedure CollectTabControls(aParent: TWinControl; aControls: TList<TWinControl>);
     procedure FocusWinControl(aControl: TWinControl);
   public
     constructor Create; reintroduce;
@@ -66,6 +105,51 @@ type
 var
   gBridgeState: TAccessibilityAgentBridgeState;
   gMutationEnabled: Boolean;
+
+constructor TAgentBridgeRttiPropertyCache.Create;
+begin
+  inherited Create;
+  fPropsByClass := TObjectDictionary<NativeUInt, TDictionary<string, PPropInfo>>.Create([doOwnsValues]);
+end;
+
+destructor TAgentBridgeRttiPropertyCache.Destroy;
+begin
+  fPropsByClass.Free;
+  inherited Destroy;
+end;
+
+function TAgentBridgeRttiPropertyCache.Lookup(aObject: TObject; const aPropertyName: string): PPropInfo;
+var
+  lClassInfo: PTypeInfo;
+  lClassKey: NativeUInt;
+  lProperties: TDictionary<string, PPropInfo>;
+begin
+  Result := nil;
+  if aObject = nil then
+  begin
+    Exit;
+  end;
+
+  lClassInfo := aObject.ClassInfo;
+  if lClassInfo = nil then
+  begin
+    Exit;
+  end;
+
+  lClassKey := NativeUInt(lClassInfo);
+  if not fPropsByClass.TryGetValue(lClassKey, lProperties) then
+  begin
+    lProperties := TDictionary<string, PPropInfo>.Create;
+    fPropsByClass.Add(lClassKey, lProperties);
+  end;
+
+  if not lProperties.TryGetValue(aPropertyName, Result) then
+  begin
+    TAccessibilityDiagnostics.RecordAgentBridgeRttiPropertyLookup;
+    Result := GetPropInfo(lClassInfo, aPropertyName);
+    lProperties.Add(aPropertyName, Result);
+  end;
+end;
 
 function AddBool(aObject: TJSONObject; const aName: string; aValue: Boolean): TJSONObject;
 begin
@@ -132,6 +216,43 @@ begin
   end;
 end;
 
+function RequestArray(aRequest: TJSONObject; const aName: string): TJSONArray;
+var
+  lValue: TJSONValue;
+begin
+  lValue := aRequest.GetValue(aName);
+  if lValue is TJSONArray then
+  begin
+    Exit(TJSONArray(lValue));
+  end;
+
+  Result := nil;
+end;
+
+function RequestBool(aRequest: TJSONObject; const aName: string; aDefault: Boolean): Boolean;
+var
+  lText: string;
+  lValue: TJSONValue;
+begin
+  Result := aDefault;
+  lValue := aRequest.GetValue(aName);
+  if lValue = nil then
+  begin
+    Exit;
+  end;
+
+  lText := lValue.Value;
+  if SameText(lText, 'true') then
+  begin
+    Exit(True);
+  end;
+
+  if SameText(lText, 'false') then
+  begin
+    Exit(False);
+  end;
+end;
+
 function RequestInt(aRequest: TJSONObject; const aName: string; out aValue: Integer): Boolean;
 var
   lValue: TJSONValue;
@@ -150,15 +271,209 @@ begin
   Result := (lValue <> nil) and TryStrToUInt64(lValue.Value, aValue);
 end;
 
-function ReadStringProperty(aObject: TObject; const aPropertyName: string): string;
+function RequestMapDetail(aRequest: TJSONObject): TAccessibilityAgentBridgeMapDetail;
+var
+  lDetail: string;
+begin
+  lDetail := RequestString(aRequest, 'detail');
+  if SameText(lDetail, 'geometry') then
+  begin
+    Exit(abmdGeometry);
+  end;
+
+  Result := abmdFull;
+end;
+
+function RequestBoundedInt(aRequest: TJSONObject; const aName: string; aDefault: Integer; aMin: Integer;
+  aMax: Integer): Integer;
+var
+  lValue: Integer;
+begin
+  Result := aDefault;
+  if RequestInt(aRequest, aName, lValue) then
+  begin
+    Result := lValue;
+  end;
+
+  if Result < aMin then
+  begin
+    Result := aMin;
+  end else if Result > aMax then
+  begin
+    Result := aMax;
+  end;
+end;
+
+function MapDetailName(aDetail: TAccessibilityAgentBridgeMapDetail): string;
+begin
+  case aDetail of
+    abmdGeometry:
+      Result := 'geometry';
+  else
+    Result := 'full';
+  end;
+end;
+
+function ControlHasDirectCaption(aControl: TControl): Boolean;
+begin
+  Result := (aControl is TCustomForm) or (aControl is TCustomLabel) or (aControl is TStaticText) or
+    (aControl is TCustomButton) or (aControl is TCustomCheckBox) or (aControl is TRadioButton) or
+    (aControl is TCustomGroupBox) or (aControl is TCustomPanel) or (aControl is TTabSheet) or
+    (aControl is TSpeedButton) or (aControl is TToolButton);
+end;
+
+function ControlHasKnownEmptyCaption(aControl: TControl): Boolean;
+begin
+  Result := (aControl is TCustomEdit) or (aControl is TCustomComboBox) or (aControl is TCustomListBox) or
+    (aControl is TPageControl) or (aControl is TToolBar) or (aControl is TCustomStatusBar) or
+    (aControl is TStringGrid) or (aControl is TSplitter);
+end;
+
+function ControlHasKnownEmptyText(aControl: TControl): Boolean;
+begin
+  Result := ControlHasDirectCaption(aControl) or (aControl is TCustomListBox) or (aControl is TPageControl) or
+    (aControl is TToolBar) or (aControl is TCustomStatusBar) or (aControl is TStringGrid) or (aControl is TSplitter);
+end;
+
+function TryReadDirectStringProperty(aObject: TObject; const aPropertyName: string; out aValue: string): Boolean;
+var
+  lControl: TControl;
+begin
+  Result := False;
+  aValue := '';
+  if not (aObject is TControl) then
+  begin
+    Exit;
+  end;
+
+  lControl := TControl(aObject);
+  if (aPropertyName = 'Caption') and ControlHasDirectCaption(lControl) then
+  begin
+    aValue := TAccessibilityText.Clean(TAgentBridgeControlAccess(lControl).Caption);
+    Exit(True);
+  end;
+
+  if (aPropertyName = 'Caption') and ControlHasKnownEmptyCaption(lControl) then
+  begin
+    Exit(True);
+  end;
+
+  if (aPropertyName = 'Text') and
+    ((lControl is TCustomEdit) or (lControl is TCustomMemo) or (lControl is TCustomComboBox)) then
+  begin
+    aValue := TAccessibilityText.Clean(TAgentBridgeControlAccess(lControl).Text);
+    Exit(True);
+  end;
+
+  if (aPropertyName = 'Text') and ControlHasKnownEmptyText(lControl) then
+  begin
+    Exit(True);
+  end;
+
+  if aPropertyName = 'Hint' then
+  begin
+    aValue := TAccessibilityText.Clean(lControl.Hint);
+    Exit(True);
+  end;
+
+  if aPropertyName = 'TextHint' then
+  begin
+    if lControl is TCustomEdit then
+    begin
+      aValue := TAccessibilityText.Clean(TCustomEdit(lControl).TextHint);
+      Exit(True);
+    end;
+
+    if lControl is TCustomComboBox then
+    begin
+      aValue := TAccessibilityText.Clean(TCustomComboBox(lControl).TextHint);
+      Exit(True);
+    end;
+  end;
+end;
+
+function ReadStringProperty(aObject: TObject; const aPropertyName: string;
+  aRttiCache: TAgentBridgeRttiPropertyCache): string;
 var
   lPropInfo: PPropInfo;
 begin
   Result := '';
-  lPropInfo := GetPropInfo(aObject.ClassInfo, aPropertyName);
+  if TryReadDirectStringProperty(aObject, aPropertyName, Result) then
+  begin
+    Exit;
+  end;
+
+  if aRttiCache <> nil then
+  begin
+    lPropInfo := aRttiCache.Lookup(aObject, aPropertyName);
+  end else begin
+    TAccessibilityDiagnostics.RecordAgentBridgeRttiPropertyLookup;
+    lPropInfo := GetPropInfo(aObject.ClassInfo, aPropertyName);
+  end;
   if (lPropInfo <> nil) and (lPropInfo.PropType^.Kind in [tkString, tkLString, tkWString, tkUString]) then
   begin
     Result := TAccessibilityText.Clean(GetStrProp(aObject, lPropInfo));
+  end;
+end;
+
+function TryReadBooleanProperty(aObject: TObject; const aPropertyName: string; out aValue: Boolean;
+  aRttiCache: TAgentBridgeRttiPropertyCache): Boolean;
+var
+  lPropInfo: PPropInfo;
+begin
+  aValue := False;
+  if aPropertyName = 'Checked' then
+  begin
+    if aObject is TCustomCheckBox then
+    begin
+      aValue := TAgentBridgeCheckBoxAccess(aObject).Checked;
+      Exit(True);
+    end;
+
+    if aObject is TRadioButton then
+    begin
+      aValue := TRadioButton(aObject).Checked;
+      Exit(True);
+    end;
+  end;
+
+  if aRttiCache <> nil then
+  begin
+    lPropInfo := aRttiCache.Lookup(aObject, aPropertyName);
+  end else begin
+    TAccessibilityDiagnostics.RecordAgentBridgeRttiPropertyLookup;
+    lPropInfo := GetPropInfo(aObject.ClassInfo, aPropertyName);
+  end;
+  Result := (lPropInfo <> nil) and (lPropInfo.PropType^.Kind = tkEnumeration);
+  if Result then
+  begin
+    aValue := GetOrdProp(aObject, lPropInfo) <> 0;
+  end;
+end;
+
+function TryReadOrdinalProperty(aObject: TObject; const aPropertyName: string; out aValue: Integer;
+  aRttiCache: TAgentBridgeRttiPropertyCache): Boolean;
+var
+  lPropInfo: PPropInfo;
+begin
+  aValue := 0;
+  if (aPropertyName = 'State') and (aObject is TCustomCheckBox) then
+  begin
+    aValue := Ord(TAgentBridgeCheckBoxAccess(aObject).State);
+    Exit(True);
+  end;
+
+  if aRttiCache <> nil then
+  begin
+    lPropInfo := aRttiCache.Lookup(aObject, aPropertyName);
+  end else begin
+    TAccessibilityDiagnostics.RecordAgentBridgeRttiPropertyLookup;
+    lPropInfo := GetPropInfo(aObject.ClassInfo, aPropertyName);
+  end;
+  Result := (lPropInfo <> nil) and (lPropInfo.PropType^.Kind in [tkInteger, tkEnumeration]);
+  if Result then
+  begin
+    aValue := GetOrdProp(aObject, lPropInfo);
   end;
 end;
 
@@ -167,12 +482,482 @@ var
   lPropInfo: PPropInfo;
 begin
   Result := False;
+  if (aPropertyName = 'Text') and (aObject is TControl) and
+    ((aObject is TCustomEdit) or (aObject is TCustomMemo) or (aObject is TCustomComboBox)) then
+  begin
+    TAgentBridgeControlAccess(aObject).Text := aValue;
+    Exit(True);
+  end;
+
+  TAccessibilityDiagnostics.RecordAgentBridgeRttiPropertyLookup;
   lPropInfo := GetPropInfo(aObject.ClassInfo, aPropertyName);
   if (lPropInfo <> nil) and (lPropInfo.PropType^.Kind in [tkString, tkLString, tkWString, tkUString]) then
   begin
     SetStrProp(aObject, lPropInfo, aValue);
     Result := True;
   end;
+end;
+
+function NativeUiaControlTypeId(aControl: TControl): Integer;
+begin
+  if aControl is TCustomForm then
+  begin
+    Exit(UIA_WindowControlTypeId);
+  end;
+
+  if aControl is TRadioButton then
+  begin
+    Exit(UIA_RadioButtonControlTypeId);
+  end;
+
+  if aControl is TCustomCheckBox then
+  begin
+    Exit(UIA_CheckBoxControlTypeId);
+  end;
+
+  if aControl is TCustomComboBox then
+  begin
+    Exit(UIA_ComboBoxControlTypeId);
+  end;
+
+  if aControl is TCustomListBox then
+  begin
+    Exit(UIA_ListControlTypeId);
+  end;
+
+  if aControl is TCustomStatusBar then
+  begin
+    Exit(UIA_StatusBarControlTypeId);
+  end;
+
+  if aControl is TCustomEdit then
+  begin
+    Exit(UIA_EditControlTypeId);
+  end;
+
+  if (aControl is TSpeedButton) or (aControl is TCustomButton) or (aControl is TToolButton) then
+  begin
+    Exit(UIA_ButtonControlTypeId);
+  end;
+
+  if aControl is TToolBar then
+  begin
+    Exit(UIA_ToolBarControlTypeId);
+  end;
+
+  if aControl is TPageControl then
+  begin
+    Exit(UIA_TabControlTypeId);
+  end;
+
+  if aControl is TCustomGroupBox then
+  begin
+    Exit(UIA_GroupControlTypeId);
+  end;
+
+  if aControl is TStringGrid then
+  begin
+    Exit(UIA_DataGridControlTypeId);
+  end;
+
+  if aControl is TCustomPanel then
+  begin
+    Exit(UIA_PaneControlTypeId);
+  end;
+
+  if aControl is TTabSheet then
+  begin
+    Exit(UIA_TabItemControlTypeId);
+  end;
+
+  Result := UIA_TextControlTypeId;
+end;
+
+function NativeUiaControlTypeName(aControlTypeId: Integer): string;
+begin
+  case aControlTypeId of
+    UIA_ButtonControlTypeId:
+      Result := 'Button';
+    UIA_CheckBoxControlTypeId:
+      Result := 'CheckBox';
+    UIA_ComboBoxControlTypeId:
+      Result := 'ComboBox';
+    UIA_DataGridControlTypeId:
+      Result := 'DataGrid';
+    UIA_EditControlTypeId:
+      Result := 'Edit';
+    UIA_GroupControlTypeId:
+      Result := 'Group';
+    UIA_ListControlTypeId:
+      Result := 'List';
+    UIA_ListItemControlTypeId:
+      Result := 'ListItem';
+    UIA_PaneControlTypeId:
+      Result := 'Pane';
+    UIA_RadioButtonControlTypeId:
+      Result := 'RadioButton';
+    UIA_StatusBarControlTypeId:
+      Result := 'StatusBar';
+    UIA_TabControlTypeId:
+      Result := 'Tab';
+    UIA_TabItemControlTypeId:
+      Result := 'TabItem';
+    UIA_TextControlTypeId:
+      Result := 'Text';
+    UIA_ToolBarControlTypeId:
+      Result := 'ToolBar';
+    UIA_WindowControlTypeId:
+      Result := 'Window';
+  else
+    Result := 'Custom';
+  end;
+end;
+
+function UiaRectJson(const aRect: UiaRect): TJSONObject;
+var
+  lHeight: Integer;
+  lLeft: Integer;
+  lTop: Integer;
+  lWidth: Integer;
+begin
+  lLeft := Round(aRect.Left);
+  lTop := Round(aRect.Top);
+  lWidth := Round(aRect.Width);
+  lHeight := Round(aRect.Height);
+
+  Result := TJSONObject.Create;
+  AddInt(Result, 'left', lLeft);
+  AddInt(Result, 'top', lTop);
+  AddInt(Result, 'right', lLeft + lWidth);
+  AddInt(Result, 'bottom', lTop + lHeight);
+  AddInt(Result, 'width', lWidth);
+  AddInt(Result, 'height', lHeight);
+end;
+
+function TryVariantToInteger(const aValue: OleVariant; out aInteger: Integer): Boolean;
+begin
+  aInteger := 0;
+  Result := (not VarIsEmpty(aValue)) and (not VarIsNull(aValue)) and TryStrToInt(VarToStr(aValue), aInteger);
+end;
+
+function TryProviderStringProperty(const aProvider: IRawElementProviderSimple; aPropertyId: PROPERTYID;
+  out aValue: string): Boolean;
+var
+  lDirectAccess: IAccessibilityProviderDirectAccess;
+  lValue: OleVariant;
+begin
+  aValue := '';
+  if aProvider = nil then
+  begin
+    Exit(False);
+  end;
+
+  if Supports(aProvider, IAccessibilityProviderDirectAccess, lDirectAccess) then
+  begin
+    Exit(lDirectAccess.TryGetStringProperty(aPropertyId, aValue));
+  end;
+
+  if aProvider.GetPropertyValue(aPropertyId, lValue) <> S_OK then
+  begin
+    Exit(False);
+  end;
+
+  Result := (not VarIsEmpty(lValue)) and (not VarIsNull(lValue));
+  if Result then
+  begin
+    aValue := VarToStr(lValue);
+  end;
+end;
+
+function TryProviderIntegerProperty(const aProvider: IRawElementProviderSimple; aPropertyId: PROPERTYID;
+  out aValue: Integer): Boolean;
+var
+  lDirectAccess: IAccessibilityProviderDirectAccess;
+  lValue: OleVariant;
+begin
+  aValue := 0;
+  if aProvider = nil then
+  begin
+    Exit(False);
+  end;
+
+  if Supports(aProvider, IAccessibilityProviderDirectAccess, lDirectAccess) then
+  begin
+    Exit(lDirectAccess.TryGetIntegerProperty(aPropertyId, aValue));
+  end;
+
+  if aProvider.GetPropertyValue(aPropertyId, lValue) <> S_OK then
+  begin
+    Exit(False);
+  end;
+
+  Result := TryVariantToInteger(lValue, aValue);
+end;
+
+function TryProviderNativeWindowHandle(const aProvider: IRawElementProviderSimple; out aValue: HWND): Boolean;
+var
+  lDirectAccess: IAccessibilityProviderDirectAccess;
+begin
+  aValue := 0;
+  Result := Supports(aProvider, IAccessibilityProviderDirectAccess, lDirectAccess) and
+    lDirectAccess.TryGetNativeWindowHandle(aValue);
+end;
+
+function TryProviderValueText(const aProvider: IRawElementProviderSimple; out aValue: string): Boolean;
+var
+  lDirectAccess: IAccessibilityProviderDirectAccess;
+begin
+  aValue := '';
+  Result := Supports(aProvider, IAccessibilityProviderDirectAccess, lDirectAccess) and
+    lDirectAccess.TryGetValueText(aValue);
+end;
+
+function TryProviderBoundingRectangle(const aProvider: IRawElementProviderSimple; out aValue: UiaRect): Boolean;
+var
+  lFragment: IRawElementProviderFragment;
+  lGeometryAccess: IAccessibilityProviderGeometryAccess;
+begin
+  aValue := Default(UiaRect);
+  if aProvider = nil then
+  begin
+    Exit(False);
+  end;
+
+  if Supports(aProvider, IAccessibilityProviderGeometryAccess, lGeometryAccess) and
+    lGeometryAccess.TryGetBoundingRectangle(aValue) then
+  begin
+    Exit(True);
+  end;
+
+  Result := Supports(aProvider, IRawElementProviderFragment, lFragment) and
+    (lFragment.Get_BoundingRectangle(aValue) = S_OK);
+end;
+
+procedure AddProviderVclInfo(aJson: TJSONObject; const aProvider: IRawElementProviderSimple);
+var
+  lControl: TControl;
+  lInfo: IAccessibilityVclControlProviderInfo;
+begin
+  if not Supports(aProvider, IAccessibilityVclControlProviderInfo, lInfo) then
+  begin
+    Exit;
+  end;
+
+  lControl := lInfo.Control;
+  if lControl = nil then
+  begin
+    Exit;
+  end;
+
+  aJson.AddPair('vclName', lControl.Name);
+  aJson.AddPair('vclClassName', lControl.ClassName);
+end;
+
+function ProviderNodeJson(const aProvider: IRawElementProviderSimple; aDepth: Integer; aMaxDepth: Integer;
+  aMaxChildren: Integer; aDetail: TAccessibilityAgentBridgeMapDetail; var aNodeCount: Integer): TJSONObject;
+var
+  i: Integer;
+  lChild: IRawElementProviderSimple;
+  lChildAccess: IAccessibilityProviderChildAccess;
+  lChildCount: Integer;
+  lChildren: TJSONArray;
+  lControlTypeId: Integer;
+  lHwnd: HWND;
+  lRect: UiaRect;
+  lText: string;
+begin
+  Inc(aNodeCount);
+  Result := TJSONObject.Create;
+  AddInt(Result, 'depth', aDepth);
+
+  if TryProviderBoundingRectangle(aProvider, lRect) then
+  begin
+    Result.AddPair('screenRect', UiaRectJson(lRect));
+  end else begin
+    Result.AddPair('screenRect', RectJson(Rect(0, 0, 0, 0)));
+  end;
+
+  if TryProviderIntegerProperty(aProvider, UIA_ControlTypePropertyId, lControlTypeId) then
+  begin
+    AddInt(Result, 'uiaControlTypeId', lControlTypeId);
+    Result.AddPair('uiaControlType', NativeUiaControlTypeName(lControlTypeId));
+  end else begin
+    AddInt(Result, 'uiaControlTypeId', UIA_CustomControlTypeId);
+    Result.AddPair('uiaControlType', NativeUiaControlTypeName(UIA_CustomControlTypeId));
+  end;
+
+  if TryProviderNativeWindowHandle(aProvider, lHwnd) then
+  begin
+    AddUInt(Result, 'handle', UInt64(NativeUInt(lHwnd)));
+  end else begin
+    AddUInt(Result, 'handle', 0);
+  end;
+
+  if aDetail = abmdFull then
+  begin
+    if TryProviderStringProperty(aProvider, UIA_NamePropertyId, lText) then
+    begin
+      Result.AddPair('name', lText);
+    end else begin
+      Result.AddPair('name', '');
+    end;
+
+    if TryProviderStringProperty(aProvider, UIA_AutomationIdPropertyId, lText) then
+    begin
+      Result.AddPair('automationId', lText);
+    end else begin
+      Result.AddPair('automationId', '');
+    end;
+
+    if TryProviderStringProperty(aProvider, UIA_ClassNamePropertyId, lText) then
+    begin
+      Result.AddPair('className', lText);
+    end else begin
+      Result.AddPair('className', '');
+    end;
+
+    if TryProviderStringProperty(aProvider, UIA_FrameworkIdPropertyId, lText) then
+    begin
+      Result.AddPair('frameworkId', lText);
+    end else begin
+      Result.AddPair('frameworkId', '');
+    end;
+
+    if TryProviderStringProperty(aProvider, UIA_HelpTextPropertyId, lText) then
+    begin
+      Result.AddPair('helpText', lText);
+    end else begin
+      Result.AddPair('helpText', '');
+    end;
+
+    if TryProviderValueText(aProvider, lText) then
+    begin
+      Result.AddPair('value', lText);
+    end else begin
+      Result.AddPair('value', '');
+    end;
+
+    AddProviderVclInfo(Result, aProvider);
+  end;
+
+  lChildren := TJSONArray.Create;
+  Result.AddPair('children', lChildren);
+  AddInt(Result, 'childCount', 0);
+  AddBool(Result, 'childrenTruncated', False);
+  if aDepth >= aMaxDepth then
+  begin
+    AddBool(Result, 'depthTruncated', True);
+    Exit;
+  end;
+
+  if not Supports(aProvider, IAccessibilityProviderChildAccess, lChildAccess) or
+    (lChildAccess.DirectChildCount(lChildCount) <> S_OK) then
+  begin
+    Exit;
+  end;
+
+  Result.RemovePair('childCount').Free;
+  Result.RemovePair('childrenTruncated').Free;
+  AddInt(Result, 'childCount', lChildCount);
+  AddBool(Result, 'childrenTruncated', lChildCount > aMaxChildren);
+
+  for i := 0 to Pred(lChildCount) do
+  begin
+    if i >= aMaxChildren then
+    begin
+      Break;
+    end;
+
+    if (lChildAccess.DirectChildAt(i, lChild) = S_OK) and (lChild <> nil) then
+    begin
+      lChildren.AddElement(ProviderNodeJson(lChild, Succ(aDepth), aMaxDepth, aMaxChildren, aDetail, aNodeCount));
+    end;
+  end;
+end;
+
+function CheckBoxStateName(aState: Integer; aChecked: Boolean): string;
+begin
+  case aState of
+    1:
+      Result := 'on';
+    2:
+      Result := 'indeterminate';
+  else
+    if aChecked then
+    begin
+      Result := 'on';
+    end else begin
+      Result := 'off';
+    end;
+  end;
+end;
+
+procedure AddNativeControlState(aJson: TJSONObject; aControl: TControl; aRttiCache: TAgentBridgeRttiPropertyCache);
+var
+  lChecked: Boolean;
+  lCheckBox: TCustomCheckBox;
+  lComboBox: TCustomComboBox;
+  lListBox: TCustomListBox;
+  lPageControl: TPageControl;
+  lRadioButton: TRadioButton;
+  lSelected: Boolean;
+  lState: TJSONObject;
+  lStateValue: Integer;
+begin
+  lState := TJSONObject.Create;
+  if aControl is TCustomCheckBox then
+  begin
+    lCheckBox := TCustomCheckBox(aControl);
+    TryReadBooleanProperty(lCheckBox, 'Checked', lChecked, aRttiCache);
+    if not TryReadOrdinalProperty(lCheckBox, 'State', lStateValue, aRttiCache) then
+    begin
+      lStateValue := -1;
+    end;
+
+    AddBool(lState, 'checked', lChecked);
+    lState.AddPair('toggleState', CheckBoxStateName(lStateValue, lChecked));
+  end else if aControl is TRadioButton then
+  begin
+    lRadioButton := TRadioButton(aControl);
+    TryReadBooleanProperty(lRadioButton, 'Checked', lSelected, aRttiCache);
+    AddBool(lState, 'selected', lSelected);
+  end else if aControl is TCustomListBox then
+  begin
+    lListBox := TCustomListBox(aControl);
+    AddInt(lState, 'itemCount', lListBox.Items.Count);
+    AddInt(lState, 'itemIndex', lListBox.ItemIndex);
+    if (lListBox.ItemIndex >= 0) and (lListBox.ItemIndex < lListBox.Items.Count) then
+    begin
+      lState.AddPair('selectedText', TAccessibilityText.Clean(lListBox.Items[lListBox.ItemIndex]));
+    end else begin
+      lState.AddPair('selectedText', '');
+    end;
+  end else if aControl is TCustomComboBox then
+  begin
+    lComboBox := TCustomComboBox(aControl);
+    AddInt(lState, 'itemCount', lComboBox.Items.Count);
+    AddInt(lState, 'itemIndex', lComboBox.ItemIndex);
+    if (lComboBox.ItemIndex >= 0) and (lComboBox.ItemIndex < lComboBox.Items.Count) then
+    begin
+      lState.AddPair('selectedText', TAccessibilityText.Clean(lComboBox.Items[lComboBox.ItemIndex]));
+    end else begin
+      lState.AddPair('selectedText', TAccessibilityText.Clean(ReadStringProperty(lComboBox, 'Text', aRttiCache)));
+    end;
+  end else if aControl is TPageControl then
+  begin
+    lPageControl := TPageControl(aControl);
+    AddInt(lState, 'activePageIndex', lPageControl.ActivePageIndex);
+    if lPageControl.ActivePage <> nil then
+    begin
+      lState.AddPair('activePageName', lPageControl.ActivePage.Name);
+      lState.AddPair('activePageCaption', TAccessibilityText.Clean(lPageControl.ActivePage.Caption));
+    end else begin
+      lState.AddPair('activePageName', '');
+      lState.AddPair('activePageCaption', '');
+    end;
+  end;
+
+  aJson.AddPair('state', lState);
 end;
 
 function BridgeState: TAccessibilityAgentBridgeState;
@@ -184,17 +969,160 @@ begin
   Result := gBridgeState;
 end;
 
+function TAccessibilityAgentBridgeState.BuildControlInfo(aControl: TControl; aIncludeAccessibility: Boolean;
+  aDetail: TAccessibilityAgentBridgeMapDetail): string;
+var
+  lControl: TJSONObject;
+  lFocusedHandle: HWND;
+  lForm: TCustomForm;
+  lIncludeAccessibility: Boolean;
+  lRect: TRect;
+  lResponse: TJSONObject;
+  lRttiCache: TAgentBridgeRttiPropertyCache;
+  lTree: IAccessibilityScanTree;
+  lRef: string;
+begin
+  lRttiCache := TAgentBridgeRttiPropertyCache.Create;
+  try
+    lTree := nil;
+    lIncludeAccessibility := aIncludeAccessibility and (aDetail = abmdFull);
+    if lIncludeAccessibility then
+    begin
+      if aControl is TCustomForm then
+      begin
+        lForm := TCustomForm(aControl);
+      end else begin
+        lForm := GetParentForm(aControl, False);
+      end;
+
+      if lForm <> nil then
+      begin
+        lTree := TAccessibilityScanner.ScanForm(lForm);
+      end else begin
+        lIncludeAccessibility := False;
+      end;
+    end;
+
+    lRect := ControlScreenRectFromSnapshot(aControl);
+    TAccessibilityDiagnostics.RecordAgentBridgeFocusProbe;
+    lFocusedHandle := GetFocus;
+    lControl := ControlJson(aControl, '', 0, lRect, lTree, aDetail, lFocusedHandle, lRttiCache, lRef);
+    lResponse := TJSONObject.Create;
+    AddBool(lResponse, 'ok', True);
+    lResponse.AddPair('cmd', 'control.info');
+    AddInt(lResponse, 'protocolVersion', 1);
+    AddBool(lResponse, 'includeAccessibility', lIncludeAccessibility);
+    lResponse.AddPair('detail', MapDetailName(aDetail));
+    AddInt(lResponse, 'snapshotId', fSnapshotId);
+    lResponse.AddPair('control', lControl);
+    Result := JsonObjectToString(lResponse);
+  finally
+    lRttiCache.Free;
+  end;
+end;
+
+function TAccessibilityAgentBridgeState.BuildControlsInfo(aRefs: TJSONArray; aIncludeAccessibility: Boolean;
+  aDetail: TAccessibilityAgentBridgeMapDetail): string;
+var
+  i: Integer;
+  lControl: TControl;
+  lControls: TJSONArray;
+  lForm: TCustomForm;
+  lFocusedHandle: HWND;
+  lIgnoredRef: string;
+  lIncludeAccessibility: Boolean;
+  lRect: TRect;
+  lRef: string;
+  lResolvedControls: TList<TControl>;
+  lResponse: TJSONObject;
+  lRttiCache: TAgentBridgeRttiPropertyCache;
+  lTree: IAccessibilityScanTree;
+begin
+  if (aRefs = nil) or (aRefs.Count = 0) then
+  begin
+    Exit(Failure('invalid_request', 'controls.info requires at least one ref.'));
+  end;
+
+  lResolvedControls := TList<TControl>.Create;
+  try
+    for i := 0 to Pred(aRefs.Count) do
+    begin
+      lRef := aRefs.Items[i].Value;
+      if (lRef = '') or (not fControlsByRef.TryGetValue(lRef, lControl)) or (lControl = nil) or
+        (csDestroying in lControl.ComponentState) then
+      begin
+        Exit(Failure('stale_ref', 'Control ref is unknown or no longer alive: ' + lRef));
+      end;
+      lResolvedControls.Add(lControl);
+    end;
+
+    lRttiCache := TAgentBridgeRttiPropertyCache.Create;
+    try
+      lTree := nil;
+      lIncludeAccessibility := aIncludeAccessibility and (aDetail = abmdFull);
+      if lIncludeAccessibility then
+      begin
+        lForm := fForm;
+        if lForm = nil then
+        begin
+          lControl := lResolvedControls[0];
+          if lControl is TCustomForm then
+          begin
+            lForm := TCustomForm(lControl);
+          end else begin
+            lForm := GetParentForm(lControl, False);
+          end;
+        end;
+
+        if lForm <> nil then
+        begin
+          lTree := TAccessibilityScanner.ScanForm(lForm);
+        end else begin
+          lIncludeAccessibility := False;
+        end;
+      end;
+
+      TAccessibilityDiagnostics.RecordAgentBridgeFocusProbe;
+      lFocusedHandle := GetFocus;
+      lControls := TJSONArray.Create;
+      for i := 0 to Pred(lResolvedControls.Count) do
+      begin
+        lControl := lResolvedControls[i];
+        lRect := ControlScreenRectFromSnapshot(lControl);
+        lControls.AddElement(ControlJson(lControl, '', 0, lRect, lTree, aDetail, lFocusedHandle, lRttiCache,
+          lIgnoredRef));
+      end;
+
+      lResponse := TJSONObject.Create;
+      AddBool(lResponse, 'ok', True);
+      lResponse.AddPair('cmd', 'controls.info');
+      AddInt(lResponse, 'protocolVersion', 1);
+      AddBool(lResponse, 'includeAccessibility', lIncludeAccessibility);
+      lResponse.AddPair('detail', MapDetailName(aDetail));
+      AddInt(lResponse, 'snapshotId', fSnapshotId);
+      lResponse.AddPair('controls', lControls);
+      Result := JsonObjectToString(lResponse);
+    finally
+      lRttiCache.Free;
+    end;
+  finally
+    lResolvedControls.Free;
+  end;
+end;
+
 constructor TAccessibilityAgentBridgeState.Create;
 begin
   inherited Create(nil);
   fControlsByRef := TDictionary<string, TControl>.Create;
   fObservedControls := TList<TComponent>.Create;
   fRefsByControl := TDictionary<TControl, string>.Create;
+  fScreenRectsByControl := TDictionary<TControl, TRect>.Create;
 end;
 
 destructor TAccessibilityAgentBridgeState.Destroy;
 begin
   ClearSnapshot;
+  fScreenRectsByControl.Free;
   fRefsByControl.Free;
   fObservedControls.Free;
   fControlsByRef.Free;
@@ -202,49 +1130,49 @@ begin
 end;
 
 procedure TAccessibilityAgentBridgeState.AddChildControls(aParent: TWinControl; const aParentRef: string;
-  aDepth: Integer; aControls: TJSONArray; const aTree: IAccessibilityScanTree);
+  aDepth: Integer; const aParentClientOrigin: TPoint; aControls: TJSONArray; const aTree: IAccessibilityScanTree;
+  aVisibleOnly: Boolean; aDetail: TAccessibilityAgentBridgeMapDetail; aFocusedHandle: HWND;
+  aRttiCache: TAgentBridgeRttiPropertyCache);
 var
   i: Integer;
   lChild: TControl;
+  lChildClientOrigin: TPoint;
   lChildRef: string;
+  lChildRect: TRect;
+  lWinControl: TWinControl;
 begin
   for i := 0 to Pred(aParent.ControlCount) do
   begin
     lChild := aParent.Controls[i];
-    aControls.AddElement(ControlJson(lChild, aParentRef, aDepth, aTree, lChildRef));
+    if aVisibleOnly and not ControlIsVisibleChildInActivePage(lChild) then
+    begin
+      Continue;
+    end;
+
+    lChildRect := ControlScreenRectFromParentOrigin(lChild, aParentClientOrigin);
+    aControls.AddElement(ControlJson(lChild, aParentRef, aDepth, lChildRect, aTree, aDetail, aFocusedHandle,
+      aRttiCache, lChildRef));
     if lChild is TWinControl then
     begin
-      AddChildControls(TWinControl(lChild), lChildRef, Succ(aDepth), aControls, aTree);
+      lWinControl := TWinControl(lChild);
+      if lWinControl.ControlCount > 0 then
+      begin
+        lChildClientOrigin := ControlClientOriginForChildren(lWinControl, lChildRect);
+        AddChildControls(lWinControl, lChildRef, Succ(aDepth), lChildClientOrigin, aControls, aTree, aVisibleOnly,
+          aDetail, aFocusedHandle, aRttiCache);
+      end;
     end;
   end;
 end;
 
 procedure TAccessibilityAgentBridgeState.AddControlState(aJson: TJSONObject; aControl: TControl;
-  const aTree: IAccessibilityScanTree);
+  const aTree: IAccessibilityScanTree; aRttiCache: TAgentBridgeRttiPropertyCache);
 var
   lNode: IAccessibilityScanNode;
-  lRect: TRect;
-  lTargetPoints: TJSONObject;
 begin
-  aJson.AddPair('name', aControl.Name);
-  aJson.AddPair('className', aControl.ClassName);
-  aJson.AddPair('caption', ReadStringProperty(aControl, 'Caption'));
-  aJson.AddPair('value', ReadStringProperty(aControl, 'Text'));
+  aJson.AddPair('caption', ReadStringProperty(aControl, 'Caption', aRttiCache));
+  aJson.AddPair('value', ReadStringProperty(aControl, 'Text', aRttiCache));
   aJson.AddPair('hint', TAccessibilityText.Clean(aControl.Hint));
-  AddBool(aJson, 'visible', aControl.Visible);
-  AddBool(aJson, 'enabled', aControl.Enabled);
-  AddBool(aJson, 'focused', (aControl is TWinControl) and TWinControl(aControl).Focused);
-
-  if aControl is TWinControl then
-  begin
-    AddBool(aJson, 'tabStop', TWinControl(aControl).TabStop);
-    AddInt(aJson, 'tabOrder', TWinControl(aControl).TabOrder);
-    AddUInt(aJson, 'handle', UInt64(NativeUInt(TWinControl(aControl).Handle)));
-  end else begin
-    AddBool(aJson, 'tabStop', False);
-    AddInt(aJson, 'tabOrder', -1);
-    AddUInt(aJson, 'handle', 0);
-  end;
 
   lNode := nil;
   if aTree <> nil then
@@ -260,41 +1188,157 @@ begin
     aJson.AddPair('helpText', '');
   end;
 
-  lRect := ControlScreenRect(aControl);
-  aJson.AddPair('screenRect', RectJson(lRect));
+  AddNativeControlState(aJson, aControl, aRttiCache);
+end;
+
+procedure TAccessibilityAgentBridgeState.AddControlTargeting(aJson: TJSONObject; aControl: TControl;
+  const aScreenRect: TRect; aFocusedHandle: HWND);
+var
+  lControlTypeId: Integer;
+  lTargetPoints: TJSONObject;
+  lWindowHandle: HWND;
+begin
+  aJson.AddPair('name', aControl.Name);
+  aJson.AddPair('className', aControl.ClassName);
+  lControlTypeId := NativeUiaControlTypeId(aControl);
+  AddInt(aJson, 'uiaControlTypeId', lControlTypeId);
+  aJson.AddPair('uiaControlType', NativeUiaControlTypeName(lControlTypeId));
+  AddBool(aJson, 'visible', aControl.Visible);
+  AddBool(aJson, 'enabled', aControl.Enabled);
+
+  lWindowHandle := 0;
+  if aControl is TWinControl then
+  begin
+    if TWinControl(aControl).HandleAllocated then
+    begin
+      lWindowHandle := TAgentBridgeWinControlAccess(aControl).WindowHandle;
+    end;
+    AddBool(aJson, 'focused', (lWindowHandle <> 0) and (lWindowHandle = aFocusedHandle));
+    AddBool(aJson, 'tabStop', TWinControl(aControl).TabStop);
+    AddInt(aJson, 'tabOrder', TWinControl(aControl).TabOrder);
+    AddUInt(aJson, 'handle', UInt64(NativeUInt(lWindowHandle)));
+  end else begin
+    AddBool(aJson, 'focused', False);
+    AddBool(aJson, 'tabStop', False);
+    AddInt(aJson, 'tabOrder', -1);
+    AddUInt(aJson, 'handle', 0);
+  end;
+
+  aJson.AddPair('screenRect', RectJson(aScreenRect));
 
   lTargetPoints := TJSONObject.Create;
-  lTargetPoints.AddPair('center', PointJson(Point(lRect.Left + (lRect.Width div 2), lRect.Top + (lRect.Height div 2))));
+  lTargetPoints.AddPair('center',
+    PointJson(Point(aScreenRect.Left + (aScreenRect.Width div 2), aScreenRect.Top + (aScreenRect.Height div 2))));
   aJson.AddPair('targetPoints', lTargetPoints);
 end;
 
-function TAccessibilityAgentBridgeState.BuildFormMap(aForm: TCustomForm): string;
+function TAccessibilityAgentBridgeState.BuildFormMap(aForm: TCustomForm; aIncludeAccessibility: Boolean;
+  aVisibleOnly: Boolean; aDetail: TAccessibilityAgentBridgeMapDetail): string;
 var
   lControls: TJSONArray;
+  lFocusedHandle: HWND;
+  lFormClientOrigin: TPoint;
+  lIncludeAccessibility: Boolean;
   lFormRef: string;
   lResponse: TJSONObject;
+  lRttiCache: TAgentBridgeRttiPropertyCache;
   lRoot: TJSONObject;
+  lRootRect: TRect;
+  lStopwatch: TStopwatch;
   lTree: IAccessibilityScanTree;
 begin
-  ClearSnapshot;
-  Inc(fSnapshotId);
-  fForm := aForm;
-  fNextRefIndex := 0;
-  lTree := TAccessibilityScanner.ScanForm(aForm);
+  lRttiCache := TAgentBridgeRttiPropertyCache.Create;
+  try
+    lStopwatch := TStopwatch.StartNew;
+    ClearSnapshot;
+    Inc(fSnapshotId);
+    fForm := aForm;
+    fNextRefIndex := 0;
+    lTree := nil;
+    lIncludeAccessibility := aIncludeAccessibility and (aDetail = abmdFull);
+    if lIncludeAccessibility then
+    begin
+      lTree := TAccessibilityScanner.ScanForm(aForm);
+    end;
 
-  lRoot := ControlJson(aForm, '', 0, lTree, lFormRef);
-  lControls := TJSONArray.Create;
-  AddChildControls(aForm, lFormRef, 1, lControls, lTree);
+    lRootRect := ControlScreenRect(aForm);
+    TAccessibilityDiagnostics.RecordAgentBridgeFocusProbe;
+    lFocusedHandle := GetFocus;
+    lRoot := ControlJson(aForm, '', 0, lRootRect, lTree, aDetail, lFocusedHandle, lRttiCache, lFormRef);
+    lFormClientOrigin := ControlClientOriginForChildren(aForm, lRootRect);
+    lControls := TJSONArray.Create;
+    AddChildControls(aForm, lFormRef, 1, lFormClientOrigin, lControls, lTree, aVisibleOnly, aDetail,
+      lFocusedHandle, lRttiCache);
 
-  lResponse := TJSONObject.Create;
-  AddBool(lResponse, 'ok', True);
-  lResponse.AddPair('cmd', 'form.map');
-  AddInt(lResponse, 'protocolVersion', 1);
-  AddInt(lResponse, 'snapshotId', fSnapshotId);
-  lResponse.AddPair('refModel', 'snapshot');
-  lResponse.AddPair('form', lRoot);
-  lResponse.AddPair('controls', lControls);
-  Result := JsonObjectToString(lResponse);
+    lResponse := TJSONObject.Create;
+    AddBool(lResponse, 'ok', True);
+    lResponse.AddPair('cmd', 'form.map');
+    AddInt(lResponse, 'protocolVersion', 1);
+    AddBool(lResponse, 'includeAccessibility', lIncludeAccessibility);
+    AddBool(lResponse, 'visibleOnly', aVisibleOnly);
+    lResponse.AddPair('detail', MapDetailName(aDetail));
+    AddInt(lResponse, 'snapshotId', fSnapshotId);
+    lResponse.AddPair('refModel', 'snapshot');
+    AddInt(lResponse, 'elapsedMs', lStopwatch.ElapsedMilliseconds);
+    AddInt(lResponse, 'elapsedTicks', lStopwatch.ElapsedTicks);
+    AddInt(lResponse, 'stopwatchFrequency', TStopwatch.Frequency);
+    lResponse.AddPair('form', lRoot);
+    lResponse.AddPair('controls', lControls);
+    Result := JsonObjectToString(lResponse);
+  finally
+    lRttiCache.Free;
+  end;
+end;
+
+function TAccessibilityAgentBridgeState.BuildProviderMap(aForm: TCustomForm; aDetail: TAccessibilityAgentBridgeMapDetail;
+  aMaxDepth: Integer; aMaxChildren: Integer): string;
+var
+  lNodeCount: Integer;
+  lOwnsProvider: Boolean;
+  lProvider: IAccessibilityProviderNode;
+  lProviderSource: string;
+  lRawProvider: IRawElementProviderSimple;
+  lResponse: TJSONObject;
+  lRoot: TJSONObject;
+  lStopwatch: TStopwatch;
+begin
+  lStopwatch := TStopwatch.StartNew;
+  lProvider := nil;
+  lOwnsProvider := False;
+  if TAccessibilityManagerInternals.TryGetInstalledFormProvider(aForm, lRawProvider) then
+  begin
+    lProviderSource := 'installed';
+  end else begin
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(aForm);
+    lRawProvider := lProvider.RawElementProvider;
+    lProviderSource := 'transient';
+    lOwnsProvider := True;
+  end;
+  try
+    lNodeCount := 0;
+    lRoot := ProviderNodeJson(lRawProvider, 0, aMaxDepth, aMaxChildren, aDetail, lNodeCount);
+
+    lResponse := TJSONObject.Create;
+    AddBool(lResponse, 'ok', True);
+    lResponse.AddPair('cmd', 'provider.map');
+    AddInt(lResponse, 'protocolVersion', 1);
+    lResponse.AddPair('source', 'maxlogic-provider');
+    lResponse.AddPair('providerTreeSource', lProviderSource);
+    lResponse.AddPair('detail', MapDetailName(aDetail));
+    AddInt(lResponse, 'maxDepth', aMaxDepth);
+    AddInt(lResponse, 'maxChildren', aMaxChildren);
+    AddInt(lResponse, 'nodeCount', lNodeCount);
+    AddInt(lResponse, 'elapsedMs', lStopwatch.ElapsedMilliseconds);
+    AddInt(lResponse, 'elapsedTicks', lStopwatch.ElapsedTicks);
+    AddInt(lResponse, 'stopwatchFrequency', TStopwatch.Frequency);
+    lResponse.AddPair('root', lRoot);
+    Result := JsonObjectToString(lResponse);
+  finally
+    if lOwnsProvider and (lProvider <> nil) then
+    begin
+      lProvider.Disconnect;
+    end;
+  end;
 end;
 
 procedure TAccessibilityAgentBridgeState.ClearSnapshot;
@@ -309,59 +1353,16 @@ begin
   fObservedControls.Clear;
   fControlsByRef.Clear;
   fRefsByControl.Clear;
+  fScreenRectsByControl.Clear;
   fForm := nil;
   fNextRefIndex := 0;
-end;
-
-procedure TAccessibilityAgentBridgeState.CollectTabControls(aParent: TWinControl; aControls: TList<TWinControl>);
-var
-  i: Integer;
-  lBestIndex: Integer;
-  lBestTabOrder: Integer;
-  lChild: TControl;
-  lUsed: TArray<Boolean>;
-  lWinControl: TWinControl;
-begin
-  SetLength(lUsed, aParent.ControlCount);
-  while True do
-  begin
-    lBestIndex := -1;
-    lBestTabOrder := MaxInt;
-    for i := 0 to Pred(aParent.ControlCount) do
-    begin
-      if lUsed[i] or not (aParent.Controls[i] is TWinControl) then
-      begin
-        Continue;
-      end;
-
-      lWinControl := TWinControl(aParent.Controls[i]);
-      if lWinControl.TabOrder < lBestTabOrder then
-      begin
-        lBestTabOrder := lWinControl.TabOrder;
-        lBestIndex := i;
-      end;
-    end;
-
-    if lBestIndex < 0 then
-    begin
-      Break;
-    end;
-
-    lUsed[lBestIndex] := True;
-    lChild := aParent.Controls[lBestIndex];
-    lWinControl := TWinControl(lChild);
-    if ControlCanUseTab(lWinControl) then
-    begin
-      aControls.Add(lWinControl);
-    end;
-    CollectTabControls(lWinControl, aControls);
-  end;
 end;
 
 function TAccessibilityAgentBridgeState.ControlAtScreenPoint(aParent: TWinControl; const aPoint: TPoint): TControl;
 var
   i: Integer;
   lChild: TControl;
+  lChildRect: TRect;
   lNested: TControl;
 begin
   Result := nil;
@@ -378,6 +1379,12 @@ begin
       Continue;
     end;
 
+    lChildRect := ControlScreenRectFromSnapshot(lChild);
+    if not lChildRect.Contains(aPoint) then
+    begin
+      Continue;
+    end;
+
     if lChild is TWinControl then
     begin
       lNested := ControlAtScreenPoint(TWinControl(lChild), aPoint);
@@ -387,45 +1394,50 @@ begin
       end;
     end;
 
-    if ControlScreenRect(lChild).Contains(aPoint) then
-    begin
-      Exit(lChild);
-    end;
+    Exit(lChild);
   end;
 
-  if ControlScreenRect(aParent).Contains(aPoint) then
+  if ControlScreenRectFromSnapshot(aParent).Contains(aPoint) then
   begin
     Result := aParent;
   end;
 end;
 
-function TAccessibilityAgentBridgeState.ControlCanUseTab(aControl: TWinControl): Boolean;
+function TAccessibilityAgentBridgeState.ControlIsVisibleChildInActivePage(aControl: TControl): Boolean;
 var
-  lControl: TControl;
+  lTabSheet: TTabSheet;
 begin
   Result := False;
-  if (aControl = nil) or (not aControl.TabStop) or (not aControl.Enabled) or (not aControl.Visible) then
+
+  if aControl = nil then
   begin
     Exit;
   end;
 
-  lControl := aControl.Parent;
-  while lControl <> nil do
+  if not (aControl is TCustomForm) and not aControl.Visible then
   begin
-    if not (lControl is TCustomForm) and ((not lControl.Visible) or (not lControl.Enabled)) then
+    Exit;
+  end;
+
+  if aControl is TTabSheet then
+  begin
+    lTabSheet := TTabSheet(aControl);
+    if (lTabSheet.PageControl <> nil) and (lTabSheet.PageControl.ActivePage <> lTabSheet) then
     begin
       Exit;
     end;
-    lControl := lControl.Parent;
   end;
 
   Result := True;
 end;
 
 function TAccessibilityAgentBridgeState.ControlJson(aControl: TControl; const aParentRef: string; aDepth: Integer;
-  const aTree: IAccessibilityScanTree; out aRef: string): TJSONObject;
+  const aScreenRect: TRect; const aTree: IAccessibilityScanTree; aDetail: TAccessibilityAgentBridgeMapDetail;
+  aFocusedHandle: HWND; aRttiCache: TAgentBridgeRttiPropertyCache; out aRef: string): TJSONObject;
 begin
   aRef := RegisterControl(aControl);
+  fScreenRectsByControl.Remove(aControl);
+  fScreenRectsByControl.Add(aControl, aScreenRect);
   Result := TJSONObject.Create;
   Result.AddPair('ref', aRef);
   if aParentRef <> '' then
@@ -433,12 +1445,90 @@ begin
     Result.AddPair('parentRef', aParentRef);
   end;
   AddInt(Result, 'depth', aDepth);
-  AddControlState(Result, aControl, aTree);
+  AddControlTargeting(Result, aControl, aScreenRect, aFocusedHandle);
+  if aDetail = abmdFull then
+  begin
+    AddControlState(Result, aControl, aTree, aRttiCache);
+  end;
+end;
+
+function TAccessibilityAgentBridgeState.ControlClientOriginForChildren(aControl: TControl;
+  const aScreenRect: TRect): TPoint;
+begin
+  if aControl is TCustomPanel then
+  begin
+    Exit(aScreenRect.TopLeft);
+  end;
+
+  if (aControl is TWinControl) and TWinControl(aControl).HandleAllocated then
+  begin
+    TAccessibilityDiagnostics.RecordAgentBridgeChildClientOriginProbe;
+    Exit(aControl.ClientToScreen(Point(0, 0)));
+  end;
+
+  Result := aScreenRect.TopLeft;
 end;
 
 function TAccessibilityAgentBridgeState.ControlScreenRect(aControl: TControl): TRect;
+var
+  lControl: TControl;
+  lForm: TCustomForm;
+  lLeft: Integer;
+  lOrigin: TPoint;
+  lTop: Integer;
 begin
-  Result := aControl.ClientToScreen(Rect(0, 0, aControl.Width, aControl.Height));
+  if aControl = nil then
+  begin
+    Exit(Rect(0, 0, 0, 0));
+  end;
+
+  TAccessibilityDiagnostics.RecordAgentBridgeScreenRectProbe;
+  if (aControl is TCustomForm) or ((aControl is TWinControl) and TWinControl(aControl).HandleAllocated) then
+  begin
+    Exit(aControl.ClientToScreen(Rect(0, 0, aControl.Width, aControl.Height)));
+  end;
+
+  lForm := GetParentForm(aControl, False);
+  if (lForm = nil) or not lForm.HandleAllocated then
+  begin
+    Exit(Rect(aControl.Left, aControl.Top, aControl.Left + aControl.Width, aControl.Top + aControl.Height));
+  end;
+
+  lLeft := 0;
+  lTop := 0;
+  lControl := aControl;
+  while (lControl <> nil) and (lControl <> lForm) do
+  begin
+    Inc(lLeft, lControl.Left);
+    Inc(lTop, lControl.Top);
+    lControl := lControl.Parent;
+  end;
+
+  lOrigin := lForm.ClientToScreen(Point(0, 0));
+  Result := Rect(lOrigin.X + lLeft, lOrigin.Y + lTop, lOrigin.X + lLeft + aControl.Width,
+    lOrigin.Y + lTop + aControl.Height);
+end;
+
+function TAccessibilityAgentBridgeState.ControlScreenRectFromParentOrigin(aControl: TControl;
+  const aParentClientOrigin: TPoint): TRect;
+begin
+  if aControl = nil then
+  begin
+    Exit(Rect(0, 0, 0, 0));
+  end;
+
+  Result := Rect(aParentClientOrigin.X + aControl.Left, aParentClientOrigin.Y + aControl.Top,
+    aParentClientOrigin.X + aControl.Left + aControl.Width, aParentClientOrigin.Y + aControl.Top + aControl.Height);
+end;
+
+function TAccessibilityAgentBridgeState.ControlScreenRectFromSnapshot(aControl: TControl): TRect;
+begin
+  if (aControl <> nil) and fScreenRectsByControl.TryGetValue(aControl, Result) then
+  begin
+    Exit;
+  end;
+
+  Result := ControlScreenRect(aControl);
 end;
 
 function TAccessibilityAgentBridgeState.Execute(aRequest: TJSONObject): string;
@@ -458,6 +1548,15 @@ begin
   end else if lCommand = 'form.map' then
   begin
     Result := ExecuteFormMap(aRequest);
+  end else if lCommand = 'provider.map' then
+  begin
+    Result := ExecuteProviderMap(aRequest);
+  end else if lCommand = 'control.info' then
+  begin
+    Result := ExecuteControlInfo(aRequest);
+  end else if lCommand = 'controls.info' then
+  begin
+    Result := ExecuteControlsInfo(aRequest);
   end else if lCommand = 'hitTest' then
   begin
     Result := ExecuteHitTest(aRequest);
@@ -476,6 +1575,21 @@ begin
   end else if lCommand = 'keyboard.tab' then
   begin
     Result := ExecuteKeyboardTab(aRequest);
+  end else if lCommand = 'diagnostics.providerHotspots' then
+  begin
+    Result := ExecuteProviderHotspots;
+  end else if lCommand = 'diagnostics.providerHotspots.enable' then
+  begin
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    Result := SuccessCommand(lCommand);
+  end else if lCommand = 'diagnostics.providerHotspots.reset' then
+  begin
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+    Result := SuccessCommand(lCommand);
+  end else if lCommand = 'diagnostics.providerHotspots.disable' then
+  begin
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+    Result := SuccessCommand(lCommand);
   end else begin
     Result := Failure('unknown_command', 'Unknown agent bridge command: ' + lCommand);
   end;
@@ -518,6 +1632,25 @@ begin
   Result := SuccessMutation;
 end;
 
+function TAccessibilityAgentBridgeState.ExecuteControlInfo(aRequest: TJSONObject): string;
+var
+  lControl: TControl;
+begin
+  if not ResolveControl(aRequest, lControl) then
+  begin
+    Exit(Failure('stale_ref', 'Control ref is unknown or no longer alive.'));
+  end;
+
+  Result := BuildControlInfo(lControl, RequestBool(aRequest, 'includeAccessibility', False),
+    RequestMapDetail(aRequest));
+end;
+
+function TAccessibilityAgentBridgeState.ExecuteControlsInfo(aRequest: TJSONObject): string;
+begin
+  Result := BuildControlsInfo(RequestArray(aRequest, 'refs'), RequestBool(aRequest, 'includeAccessibility', False),
+    RequestMapDetail(aRequest));
+end;
+
 function TAccessibilityAgentBridgeState.ExecuteFocus(aRequest: TJSONObject): string;
 var
   lControl: TControl;
@@ -554,7 +1687,22 @@ begin
     Exit(Failure('form_not_found', 'Requested form was not found.'));
   end;
 
-  Result := BuildFormMap(lForm);
+  Result := BuildFormMap(lForm, RequestBool(aRequest, 'includeAccessibility', True),
+    RequestBool(aRequest, 'visibleOnly', False), RequestMapDetail(aRequest));
+end;
+
+function TAccessibilityAgentBridgeState.ExecuteProviderMap(aRequest: TJSONObject): string;
+var
+  lForm: TCustomForm;
+begin
+  lForm := ResolveForm(aRequest);
+  if lForm = nil then
+  begin
+    Exit(Failure('form_not_found', 'Requested form was not found.'));
+  end;
+
+  Result := BuildProviderMap(lForm, RequestMapDetail(aRequest), RequestBoundedInt(aRequest, 'maxDepth', 3, 0, 16),
+    RequestBoundedInt(aRequest, 'maxChildren', 200, 1, 2000));
 end;
 
 function TAccessibilityAgentBridgeState.ExecuteFormsList: string;
@@ -632,13 +1780,9 @@ end;
 
 function TAccessibilityAgentBridgeState.ExecuteKeyboardTab(aRequest: TJSONObject): string;
 var
-  i: Integer;
   lForm: TCustomForm;
   lForward: Boolean;
-  lIndex: Integer;
   lShift: string;
-  lTabControls: TList<TWinControl>;
-  lTarget: TWinControl;
 begin
   if not gMutationEnabled then
   begin
@@ -657,48 +1801,34 @@ begin
 
   lShift := LowerCase(RequestString(aRequest, 'shift'));
   lForward := not ((lShift = 'true') or (lShift = '1'));
-  lTabControls := TList<TWinControl>.Create;
-  try
-    CollectTabControls(lForm, lTabControls);
-    if lTabControls.Count = 0 then
-    begin
-      Exit(Failure('no_tab_target', 'No tab-stop controls were found.'));
-    end;
-
-    lIndex := -1;
-    for i := 0 to Pred(lTabControls.Count) do
-    begin
-      if lTabControls[i] = lForm.ActiveControl then
-      begin
-        lIndex := i;
-        Break;
-      end;
-    end;
-
-    if lIndex < 0 then
-    begin
-      if lForward then
-      begin
-        lIndex := 0;
-      end else begin
-        lIndex := Pred(lTabControls.Count);
-      end;
-    end else begin
-      if lForward then
-      begin
-        lIndex := Succ(lIndex) mod lTabControls.Count;
-      end else begin
-        lIndex := (lIndex + Pred(lTabControls.Count)) mod lTabControls.Count;
-      end;
-    end;
-
-    lTarget := lTabControls[lIndex];
-    FocusWinControl(lTarget);
-  finally
-    lTabControls.Free;
+  TAgentBridgeWinControlAccess(lForm).SelectNext(lForm.ActiveControl, lForward, True);
+  if lForm.ActiveControl = nil then
+  begin
+    Exit(Failure('no_tab_target', 'No tab-stop controls were found.'));
   end;
 
   Result := SuccessMutation;
+end;
+
+function TAccessibilityAgentBridgeState.ExecuteProviderHotspots: string;
+var
+  lMetrics: TJSONValue;
+  lResponse: TJSONObject;
+begin
+  lMetrics := TJSONObject.ParseJSONValue(
+    TAccessibilityDiagnostics.ProviderHotspotMetrics.ToJson('agent-bridge', 'diagnostics'), True, True);
+  if not (lMetrics is TJSONObject) then
+  begin
+    lMetrics.Free;
+    Exit(Failure('metrics_json_error', 'Provider hotspot metrics could not be serialized.'));
+  end;
+
+  lResponse := TJSONObject.Create;
+  AddBool(lResponse, 'ok', True);
+  lResponse.AddPair('cmd', 'diagnostics.providerHotspots');
+  AddInt(lResponse, 'protocolVersion', 1);
+  lResponse.AddPair('metrics', lMetrics);
+  Result := JsonObjectToString(lResponse);
 end;
 
 function TAccessibilityAgentBridgeState.ExecuteSetText(aRequest: TJSONObject; aAppend: Boolean): string;
@@ -720,7 +1850,7 @@ begin
   lText := RequestString(aRequest, 'text');
   if aAppend then
   begin
-    lCurrentText := ReadStringProperty(lControl, 'Text');
+    lCurrentText := ReadStringProperty(lControl, 'Text', nil);
     lText := lCurrentText + lText;
   end;
 
@@ -831,6 +1961,7 @@ begin
   begin
     fRefsByControl.Remove(lControl);
     fControlsByRef.Remove(lRef);
+    fScreenRectsByControl.Remove(lControl);
   end;
   fObservedControls.Remove(aComponent);
 
@@ -848,7 +1979,12 @@ end;
 
 function TAccessibilityAgentBridgeState.RegisterControl(aControl: TControl): string;
 begin
-  Result := Format('@a%d', [fNextRefIndex]);
+  if fRefsByControl.TryGetValue(aControl, Result) then
+  begin
+    Exit;
+  end;
+
+  Result := '@a' + IntToStr(fNextRefIndex);
   Inc(fNextRefIndex);
   fControlsByRef.Add(Result, aControl);
   fRefsByControl.Add(aControl, Result);
@@ -915,6 +2051,17 @@ begin
   begin
     Result := Application.MainForm;
   end;
+end;
+
+function TAccessibilityAgentBridgeState.SuccessCommand(const aCommand: string): string;
+var
+  lResponse: TJSONObject;
+begin
+  lResponse := TJSONObject.Create;
+  AddBool(lResponse, 'ok', True);
+  lResponse.AddPair('cmd', aCommand);
+  AddInt(lResponse, 'protocolVersion', 1);
+  Result := JsonObjectToString(lResponse);
 end;
 
 function TAccessibilityAgentBridgeState.SuccessMutation: string;

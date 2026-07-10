@@ -49,9 +49,19 @@ type
     [Test]
     procedure FormInstallHandlesChildUiaGetObjectThroughFrameworkProvider;
     [Test]
+    procedure FormInstallWalksFrameworkProviderChildrenWithoutProviderNavigation;
+    [Test]
+    procedure FormInstallChildHookLookupScalesWithHookCount;
+    [Test]
+    procedure UninstallRetainsLaterHookedControlsWithoutLinearRetainedListScans;
+    [Test]
+    procedure FormInstallSkipsChildUiaGetObjectForUnpublishedLayoutProvider;
+    [Test]
     procedure FormInstallHandlesChildContainerHitTestingForNonWindowedLabel;
     [Test]
     procedure FormInstallLeavesCheckBoxAndRadioButtonNativeGetObject;
+    [Test]
+    procedure FormInstallLeavesListBoxNativeGetObjectForNativeHwndSpeech;
     [Test]
     procedure FormInstallLeavesUnsupportedFocusableControlNativeGetObject;
     [Test]
@@ -79,17 +89,27 @@ type
     [Test]
     procedure FormInstallRaisesInputFocusAnnouncementMatchingMouseOverSurface;
     [Test]
+    procedure FormInstallSkipsDuplicateFocusAnnouncementBuildForPairedFocusMessages;
+    [Test]
+    procedure FormInstallFocusAnnouncementUsesInProcessProviderProperties;
+    [Test]
     procedure FormInstallRaisesInputMsaaFocusWinEventWithDefaultApi;
     [Test]
     procedure FormInstallRaisesPageControlTabHoverNotification;
     [Test]
     procedure FormInstallRaisesPageControlTabHoverNotificationFromFormMouseMove;
     [Test]
+    procedure FormInstallSkipsPageControlHoverHitTestingWhenNoUiaClients;
+    [Test]
     procedure FormInstallRaisesActiveTabSheetLabelHoverNotification;
     [Test]
     procedure FormInstallRaisesActiveTabSheetPanelLabelHoverNotification;
     [Test]
     procedure FormInstallRaisesMemoListBoxAndStatusBarHoverNotifications;
+    [Test]
+    procedure FormInstallCachesRepeatedLeafHoverHitTesting;
+    [Test]
+    procedure FormInstallHoverUsesVclLookupForSimpleLeafProviders;
     [Test]
     procedure FormInstallRaisesWindowedButtonHoverNotificationAndKeepsCheckBoxNative;
     [Test]
@@ -115,6 +135,8 @@ type
     [Test]
     procedure FormInstallRaisesGroupedRadioButtonArrowNavigationNotificationWithFrameworkProvider;
     [Test]
+    procedure FormInstallSkipsGroupedRadioSelectionScanWhenNoUiaClients;
+    [Test]
     procedure FormInstallRaisesRadioGroupItemArrowNavigationNotificationFromButtonWindow;
     [Test]
     procedure FormInstallReturnsGroupedRadioButtonProviderFromGroupBoxRadioWindow;
@@ -128,6 +150,10 @@ type
     procedure DemoFormInstallReturnsRadioGroupItemProviderFromButtonWindow;
     [Test]
     procedure FormInstallRaisesLazyRadioGroupItemHoverFromButtonWindow;
+    [Test]
+    procedure FormInstallCheckBoxHoverWithoutUiaClientsSkipsProviderBatch;
+    [Test]
+    procedure FormInstallCheckBoxHoverSkipsUnusedAnnouncementTextBuild;
     [Test]
     procedure FormInstallRaisesCheckBoxHoverNativeWinEventsWithoutProviderReplacement;
     [Test]
@@ -147,7 +173,9 @@ type
     [Test]
     procedure FormInstallRaisesStringGridRowFocusNotificationForRowSelect;
     [Test]
-    procedure FormInstallRaisesListBoxItemFocusEventAfterArrowKey;
+    procedure FormInstallSkipsStringGridFocusTextWhenNoUiaClients;
+    [Test]
+    procedure FormInstallLeavesListBoxArrowKeySpeechToNativeWindow;
     [Test]
     procedure FormInstallDoesNotRaiseGridMsaaFocusWinEventAfterCellNotification;
     [Test]
@@ -172,8 +200,9 @@ uses
   System.Classes, System.Generics.Collections, System.SysUtils, System.Types, System.Variants, Winapi.ActiveX,
   Winapi.Messages, Winapi.oleacc, Winapi.Windows, Vcl.Buttons, Vcl.ComCtrls, Vcl.Controls, Vcl.ExtCtrls, Vcl.Forms,
   Vcl.Grids, Vcl.StdCtrls, AdvGrid, AccessibilityDemoMainForm, MaxLogic.Accessibility.Manager,
-  MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.Scanner, MaxLogic.Accessibility.TmsAdvStringGridAdapters,
-  MaxLogic.Accessibility.UIAutomationCore, MaxLogic.Accessibility.VclAdapters;
+  MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.Scanner,
+  MaxLogic.Accessibility.TmsAdvStringGridAdapters, MaxLogic.Accessibility.UIAutomationCore,
+  MaxLogic.Accessibility.VclAdapters;
 
 type
   IFormInstallRecorder = interface(IAccessibilityFormInstaller)
@@ -184,12 +213,14 @@ type
 
   IManagerTestUiaApi = interface(IAccessibilityUiaApi)
     ['{40F38FD9-3290-4894-A855-082E2884C0C1}']
+    function ClientsAreListeningCalls: Integer;
     function DisconnectCalls: Integer;
     function EventCalls: Integer;
     function LastHwnd: HWND;
     function LastEventId: EVENTID;
     function LastEventProvider: IRawElementProviderSimple;
     function LastLParam: LPARAM;
+    function LastNotificationProcessing: NotificationProcessing;
     function LastNotificationProvider: IRawElementProviderSimple;
     function LastNotificationText: string;
     function LastPropertyChangedNewValue: OleVariant;
@@ -200,18 +231,21 @@ type
     function NotificationCalls: Integer;
     function PropertyChangedCalls: Integer;
     function ReturnCalls: Integer;
+    procedure ResetClientsAreListeningCalls;
     procedure SetClientsAreListening(aValue: Boolean);
   end;
 
   TManagerTestUiaApi = class(TInterfacedObject, IManagerTestUiaApi)
   private
     fClientsAreListening: Boolean;
+    fClientsAreListeningCalls: Integer;
     fDisconnectCalls: Integer;
     fEventCalls: Integer;
     fLastEventId: EVENTID;
     fLastEventProvider: IRawElementProviderSimple;
     fLastHwnd: HWND;
     fLastLParam: LPARAM;
+    fLastNotificationProcessing: NotificationProcessing;
     fLastNotificationProvider: IRawElementProviderSimple;
     fLastNotificationText: string;
     fLastPropertyChangedNewValue: OleVariant;
@@ -224,6 +258,7 @@ type
     fReturnCalls: Integer;
   public
     function ClientsAreListening: Boolean;
+    function ClientsAreListeningCalls: Integer;
     function DisconnectProvider(const aProvider: IRawElementProviderSimple): HRESULT;
     function DisconnectCalls: Integer;
     function EventCalls: Integer;
@@ -232,6 +267,7 @@ type
     function LastEventProvider: IRawElementProviderSimple;
     function LastHwnd: HWND;
     function LastLParam: LPARAM;
+    function LastNotificationProcessing: NotificationProcessing;
     function LastNotificationProvider: IRawElementProviderSimple;
     function LastNotificationText: string;
     function LastPropertyChangedNewValue: OleVariant;
@@ -249,6 +285,7 @@ type
       const aActivityId: WideString): HRESULT;
     function RaiseStructureChanged(const aProvider: IRawElementProviderSimple; aStructureChangeType: StructureChangeType;
       const aRuntimeId: TArray<Integer>): HRESULT;
+    procedure ResetClientsAreListeningCalls;
     function ReturnCalls: Integer;
     function ReturnRawElementProvider(aHwnd: HWND; aWParam: WPARAM; aLParam: LPARAM;
       const aProvider: IRawElementProviderSimple): LRESULT;
@@ -339,6 +376,26 @@ type
   end;
 
   TNativeAccessibleProbeRadioButton = class(TRadioButton)
+  private
+    fGetObjectCalls: Integer;
+  protected
+    procedure WndProc(var aMessage: TMessage); override;
+  public
+    property GetObjectCalls: Integer read fGetObjectCalls;
+  end;
+
+  TCheckedReadProbeRadioButton = class(TRadioButton)
+  private
+    class var fCheckedReadCount: Integer;
+  protected
+    function GetChecked: Boolean; override;
+    procedure WndProc(var aMessage: TMessage); override;
+  public
+    class function CheckedReadCount: Integer; static;
+    class procedure ResetCheckedReadCount; static;
+  end;
+
+  TNativeAccessibleProbeListBox = class(TListBox)
   private
     fGetObjectCalls: Integer;
   protected
@@ -487,6 +544,45 @@ begin
   inherited WndProc(aMessage);
 end;
 
+class function TCheckedReadProbeRadioButton.CheckedReadCount: Integer;
+begin
+  Result := fCheckedReadCount;
+end;
+
+function TCheckedReadProbeRadioButton.GetChecked: Boolean;
+begin
+  Inc(fCheckedReadCount);
+  Result := inherited GetChecked;
+end;
+
+procedure TCheckedReadProbeRadioButton.WndProc(var aMessage: TMessage);
+begin
+  if aMessage.Msg = WM_KEYDOWN then
+  begin
+    aMessage.Result := 0;
+    Exit;
+  end;
+
+  inherited WndProc(aMessage);
+end;
+
+class procedure TCheckedReadProbeRadioButton.ResetCheckedReadCount;
+begin
+  fCheckedReadCount := 0;
+end;
+
+procedure TNativeAccessibleProbeListBox.WndProc(var aMessage: TMessage);
+begin
+  if aMessage.Msg = WM_GETOBJECT then
+  begin
+    Inc(fGetObjectCalls);
+    aMessage.Result := 86420;
+    Exit;
+  end;
+
+  inherited WndProc(aMessage);
+end;
+
 function TestProviderWindowHandle(aControl: TControl): HWND;
 begin
   Result := 0;
@@ -585,7 +681,13 @@ end;
 
 function TManagerTestUiaApi.ClientsAreListening: Boolean;
 begin
+  Inc(fClientsAreListeningCalls);
   Result := fClientsAreListening;
+end;
+
+function TManagerTestUiaApi.ClientsAreListeningCalls: Integer;
+begin
+  Result := fClientsAreListeningCalls;
 end;
 
 function TManagerTestUiaApi.DisconnectProvider(const aProvider: IRawElementProviderSimple): HRESULT;
@@ -628,6 +730,11 @@ end;
 function TManagerTestUiaApi.LastLParam: LPARAM;
 begin
   Result := fLastLParam;
+end;
+
+function TManagerTestUiaApi.LastNotificationProcessing: NotificationProcessing;
+begin
+  Result := fLastNotificationProcessing;
 end;
 
 function TManagerTestUiaApi.LastNotificationProvider: IRawElementProviderSimple;
@@ -700,6 +807,7 @@ function TManagerTestUiaApi.RaiseNotification(const aProvider: IRawElementProvid
   const aActivityId: WideString): HRESULT;
 begin
   Inc(fNotificationCalls);
+  fLastNotificationProcessing := aNotificationProcessing;
   fLastNotificationProvider := aProvider;
   fLastNotificationText := aDisplayString;
   Result := S_OK;
@@ -709,6 +817,11 @@ function TManagerTestUiaApi.RaiseStructureChanged(const aProvider: IRawElementPr
   aStructureChangeType: StructureChangeType; const aRuntimeId: TArray<Integer>): HRESULT;
 begin
   Result := S_OK;
+end;
+
+procedure TManagerTestUiaApi.ResetClientsAreListeningCalls;
+begin
+  fClientsAreListeningCalls := 0;
 end;
 
 function TManagerTestUiaApi.ReturnCalls: Integer;
@@ -807,6 +920,14 @@ var
 begin
   Assert.AreEqual(S_OK, SimpleProvider(aFragment).GetPropertyValue(aPropertyId, lValue));
   Result := Integer(lValue);
+end;
+
+function ProviderNativeWindowHandle(const aFragment: IRawElementProviderFragment): HWND;
+var
+  lNativeWindow: IAccessibilityProviderNativeWindow;
+begin
+  Assert.IsTrue(Supports(aFragment, IAccessibilityProviderNativeWindow, lNativeWindow));
+  Result := lNativeWindow.NativeWindowHandle;
 end;
 
 function ProviderStringProperty(const aFragment: IRawElementProviderFragment; aPropertyId: PROPERTYID): string;
@@ -1560,20 +1681,20 @@ end;
 procedure TAccessibilityManagerTests.FormInstallHandlesChildUiaGetObjectThroughFrameworkProvider;
 var
   lApi: IManagerTestUiaApi;
-  lEdit: TLabeledEdit;
   lForm: TForm;
   lMessage: TMessage;
+  lStatusBar: TStatusBar;
 begin
   ResetManager;
   lApi := TManagerTestUiaApi.Create;
   TAccessibilityManagerInternals.SetUiaApi(lApi);
   lForm := TForm.Create(nil);
   try
-    lEdit := TLabeledEdit.Create(lForm);
-    lEdit.Parent := lForm;
-    lEdit.EditLabel.Caption := 'Reference number';
-    lEdit.Text := 'REF-1042';
-    lEdit.HandleNeeded;
+    lStatusBar := TStatusBar.Create(lForm);
+    lStatusBar.Parent := lForm;
+    lStatusBar.SimplePanel := True;
+    lStatusBar.SimpleText := 'Ready';
+    lStatusBar.HandleNeeded;
 
     TAccessibilityManager.Install(lForm);
 
@@ -1581,13 +1702,213 @@ begin
     lMessage.Msg := WM_GETOBJECT;
     lMessage.WParam := 11;
     lMessage.LParam := UiaRootObjectId;
-    lEdit.WindowProc(lMessage);
+    lStatusBar.WindowProc(lMessage);
 
     Assert.AreEqual(2468, lMessage.Result);
-    Assert.AreEqual(lEdit.Handle, lApi.LastHwnd);
+    Assert.AreEqual(lStatusBar.Handle, lApi.LastHwnd);
     Assert.IsNotNull(lApi.ReturnedProvider);
-    Assert.AreEqual('Reference number',
-      ProviderStringProperty(FragmentFromSimple(lApi.ReturnedProvider), UIA_NamePropertyId));
+    Assert.AreEqual(UIA_StatusBarControlTypeId, ProviderIntProperty(FragmentFromSimple(lApi.ReturnedProvider),
+      UIA_ControlTypePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallWalksFrameworkProviderChildrenWithoutProviderNavigation;
+var
+  i: Integer;
+  lApi: IManagerTestUiaApi;
+  lEdit: TEdit;
+  lForm: TForm;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+  lPanel: TPanel;
+begin
+  ResetManager;
+  TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+  TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+  lApi := TManagerTestUiaApi.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 420, 360);
+
+    lPanel := TPanel.Create(lForm);
+    lPanel.Parent := lForm;
+    lPanel.Caption := 'Settings';
+    lPanel.SetBounds(16, 16, 260, 300);
+    lPanel.HandleNeeded;
+
+    for i := 0 to 11 do
+    begin
+      lEdit := TEdit.Create(lForm);
+      lEdit.Parent := lPanel;
+      lEdit.Text := 'Value';
+      lEdit.SetBounds(12, 16 + i * 23, 180, 21);
+      lEdit.HandleNeeded;
+    end;
+
+    TAccessibilityManager.Install(lForm);
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+
+    Assert.AreEqual(0, lMetrics.ProviderNavigateCount,
+      'Form install should walk framework-owned provider children through direct in-process child access.');
+  finally
+    lForm.Free;
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallChildHookLookupScalesWithHookCount;
+const
+  cControlCount = 120;
+var
+  i: Integer;
+  lButton: TButton;
+  lForm: TForm;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+begin
+  ResetManager;
+  lForm := TForm.Create(nil);
+  try
+    for i := 0 to Pred(cControlCount) do
+    begin
+      lButton := TButton.Create(lForm);
+      lButton.Parent := lForm;
+      lButton.Name := 'Button' + IntToStr(i);
+      lButton.Caption := 'Button ' + IntToStr(i);
+    end;
+
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+    TAccessibilityManager.Install(lForm);
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+
+    Assert.IsTrue(lMetrics.ManagerHookLookupCount >= cControlCount,
+      'The fixture must exercise child hook lookup during install.');
+    Assert.IsTrue(lMetrics.ManagerHookLookupProbeCount <= lMetrics.ManagerHookLookupCount + cControlCount,
+      Format('Child hook lookup should stay linear on large forms; %d lookups used %d probes.',
+      [lMetrics.ManagerHookLookupCount, lMetrics.ManagerHookLookupProbeCount]));
+  finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.UninstallRetainsLaterHookedControlsWithoutLinearRetainedListScans;
+const
+  cControlCount = 80;
+var
+  i: Integer;
+  lButton: TButton;
+  lControl: TWinControl;
+  lControls: TList<TWinControl>;
+  lForm: TForm;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+  lOriginalControlWindowProcs: TArray<TWndMethod>;
+  lOriginalFormWindowProc: TWndMethod;
+  lProbe: TWindowProcProbe;
+  lWindowProcsReplaced: Boolean;
+begin
+  ResetManager;
+  lControls := TList<TWinControl>.Create;
+  lForm := TForm.Create(nil);
+  lProbe := TWindowProcProbe.Create;
+  lOriginalControlWindowProcs := nil;
+  lOriginalFormWindowProc := nil;
+  lWindowProcsReplaced := False;
+  try
+    for i := 0 to Pred(cControlCount) do
+    begin
+      lButton := TButton.Create(lForm);
+      lButton.Parent := lForm;
+      lButton.Name := 'Button' + IntToStr(i);
+      lButton.Caption := 'Button ' + IntToStr(i);
+      lButton.HandleNeeded;
+      lControls.Add(lButton);
+    end;
+
+    lOriginalFormWindowProc := lForm.WindowProc;
+    SetLength(lOriginalControlWindowProcs, lControls.Count);
+    for i := 0 to Pred(lControls.Count) do
+    begin
+      lOriginalControlWindowProcs[i] := lControls[i].WindowProc;
+    end;
+
+    TAccessibilityManager.Install(lForm);
+    lForm.WindowProc := lProbe.WindowProc;
+    for lControl in lControls do
+    begin
+      lControl.WindowProc := lProbe.WindowProc;
+    end;
+    lWindowProcsReplaced := True;
+
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+    TAccessibilityManager.Uninstall;
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+    lForm.WindowProc := lOriginalFormWindowProc;
+    for i := 0 to Pred(lControls.Count) do
+    begin
+      lControls[i].WindowProc := lOriginalControlWindowProcs[i];
+    end;
+    lWindowProcsReplaced := False;
+
+    Assert.IsTrue(lMetrics.ManagerRetainedHookPassivateCount >= cControlCount,
+      'The fixture must passivate later-hooked child controls.');
+    Assert.AreEqual(0, lMetrics.ManagerRetainedHookLinearScanCount,
+      'Retaining passivated hooks should be idempotent without scanning the retained hook list per control.');
+  finally
+    if lWindowProcsReplaced then
+    begin
+      lForm.WindowProc := lOriginalFormWindowProc;
+      for i := 0 to Pred(lControls.Count) do
+      begin
+        lControls[i].WindowProc := lOriginalControlWindowProcs[i];
+      end;
+    end;
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+    lProbe.Free;
+    lForm.Free;
+    lControls.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallSkipsChildUiaGetObjectForUnpublishedLayoutProvider;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lLabel: TLabel;
+  lMessage: TMessage;
+  lPanel: TPanel;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lPanel := TPanel.Create(lForm);
+    lPanel.Parent := lForm;
+    lPanel.Caption := 'Layout panel';
+    lPanel.HandleNeeded;
+
+    lLabel := TLabel.Create(lForm);
+    lLabel.Parent := lPanel;
+    lLabel.Caption := 'Nested label';
+
+    TAccessibilityManager.Install(lForm);
+
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.WParam := 13;
+    lMessage.LParam := UiaRootObjectId;
+    lPanel.WindowProc(lMessage);
+
+    Assert.AreEqual(0, Integer(lMessage.Result));
+    Assert.AreEqual(0, lApi.ReturnCalls);
   finally
     lForm.Free;
     ResetManager;
@@ -1629,10 +1950,10 @@ begin
     lMessage.Msg := WM_GETOBJECT;
     lMessage.WParam := 13;
     lMessage.LParam := UiaRootObjectId;
-    lPanel.WindowProc(lMessage);
+    lForm.WindowProc(lMessage);
 
     Assert.AreEqual(2468, lMessage.Result);
-    Assert.AreEqual(lPanel.Handle, lApi.LastHwnd);
+    Assert.AreEqual(lForm.Handle, lApi.LastHwnd);
     Assert.IsTrue(Supports(lApi.ReturnedProvider, IRawElementProviderFragmentRoot, lRoot));
     lPoint := ControlScreenCenter(lLabel);
     Assert.AreEqual(S_OK, lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit));
@@ -1693,6 +2014,57 @@ begin
 
     Assert.AreEqual(97531, lMessage.Result);
     Assert.AreEqual(1, lRadioButton.GetObjectCalls);
+    Assert.AreEqual(0, lApi.ReturnCalls);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallLeavesListBoxNativeGetObjectForNativeHwndSpeech;
+const
+  cObjIdClient = LPARAM(OBJID_CLIENT);
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lListBox: TNativeAccessibleProbeListBox;
+  lMessage: TMessage;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 320, 200);
+
+    lListBox := TNativeAccessibleProbeListBox.Create(lForm);
+    lListBox.Parent := lForm;
+    lListBox.Name := 'Events';
+    lListBox.Items.Add('Queued order');
+    lListBox.Items.Add('Completed action');
+    lListBox.SetBounds(24, 24, 220, 80);
+    lListBox.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.WParam := 19;
+    lMessage.LParam := UiaRootObjectId;
+    lListBox.WindowProc(lMessage);
+
+    Assert.AreEqual(86420, Integer(lMessage.Result));
+    Assert.AreEqual(1, lListBox.GetObjectCalls);
+    Assert.AreEqual(0, lApi.ReturnCalls);
+
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.WParam := 19;
+    lMessage.LParam := cObjIdClient;
+    lListBox.WindowProc(lMessage);
+
+    Assert.AreEqual(86420, Integer(lMessage.Result));
+    Assert.AreEqual(2, lListBox.GetObjectCalls);
     Assert.AreEqual(0, lApi.ReturnCalls);
   finally
     lForm.Free;
@@ -2109,8 +2481,8 @@ begin
 
     Assert.AreEqual(1, lApi.NotificationCalls);
     Assert.AreEqual('Search demo orders and audit findings', lApi.LastNotificationText);
-    Assert.AreEqual(Integer(lEdit.Handle), ProviderIntProperty(FragmentFromSimple(lApi.LastNotificationProvider),
-      UIA_NativeWindowHandlePropertyId));
+    Assert.AreEqual(Integer(lEdit.Handle), Integer(ProviderNativeWindowHandle(FragmentFromSimple(
+      lApi.LastNotificationProvider))));
   finally
     lForm.Free;
     ResetManager;
@@ -2139,8 +2511,8 @@ begin
 
     Assert.AreEqual(1, lApi.EventCalls);
     Assert.AreEqual(UIA_AutomationFocusChangedEventId, lApi.LastEventId);
-    Assert.AreEqual(Integer(lEdit.Handle), ProviderIntProperty(FragmentFromSimple(lApi.LastEventProvider),
-      UIA_NativeWindowHandlePropertyId));
+    Assert.AreEqual(Integer(lEdit.Handle), Integer(ProviderNativeWindowHandle(FragmentFromSimple(
+      lApi.LastEventProvider))));
   finally
     lForm.Free;
     ResetManager;
@@ -2170,8 +2542,8 @@ begin
 
     Assert.AreEqual(1, lApi.EventCalls);
     Assert.AreEqual(UIA_AutomationFocusChangedEventId, lApi.LastEventId);
-    Assert.AreEqual(Integer(lCombo.Handle), ProviderIntProperty(FragmentFromSimple(lApi.LastEventProvider),
-      UIA_NativeWindowHandlePropertyId));
+    Assert.AreEqual(Integer(lCombo.Handle), Integer(ProviderNativeWindowHandle(FragmentFromSimple(
+      lApi.LastEventProvider))));
   finally
     lForm.Free;
     ResetManager;
@@ -2201,8 +2573,8 @@ begin
 
     Assert.AreEqual(1, lApi.EventCalls);
     Assert.AreEqual(UIA_AutomationFocusChangedEventId, lApi.LastEventId);
-    Assert.AreEqual(Integer(lLabeledEdit.Handle), ProviderIntProperty(FragmentFromSimple(lApi.LastEventProvider),
-      UIA_NativeWindowHandlePropertyId));
+    Assert.AreEqual(Integer(lLabeledEdit.Handle), Integer(ProviderNativeWindowHandle(FragmentFromSimple(
+      lApi.LastEventProvider))));
   finally
     lForm.Free;
     ResetManager;
@@ -2232,8 +2604,8 @@ begin
 
     Assert.AreEqual(1, lApi.NotificationCalls);
     Assert.AreEqual('customer, order, or finding', lApi.LastNotificationText);
-    Assert.AreEqual(Integer(lEdit.Handle), ProviderIntProperty(FragmentFromSimple(lApi.LastNotificationProvider),
-      UIA_NativeWindowHandlePropertyId));
+    Assert.AreEqual(Integer(lEdit.Handle), Integer(ProviderNativeWindowHandle(FragmentFromSimple(
+      lApi.LastNotificationProvider))));
   finally
     lForm.Free;
     ResetManager;
@@ -2304,6 +2676,104 @@ begin
     Assert.AreEqual('Reference number REF-1042', lApi.LastNotificationText);
   finally
     lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallSkipsDuplicateFocusAnnouncementBuildForPairedFocusMessages;
+var
+  lApi: IManagerTestUiaApi;
+  lEdit: TEdit;
+  lEditLabel: TLabel;
+  lForm: TForm;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+begin
+  ResetManager;
+  TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 420, 140);
+
+    lEditLabel := TLabel.Create(lForm);
+    lEditLabel.Caption := 'Customer';
+    lEditLabel.Parent := lForm;
+    lEditLabel.SetBounds(12, 18, 90, 20);
+
+    lEdit := TEdit.Create(lForm);
+    lEdit.Parent := lForm;
+    lEdit.Text := 'Alice';
+    lEdit.Hint := 'Search demo orders and audit findings';
+    lEdit.SetBounds(112, 14, 160, 23);
+    lEdit.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+
+    lEdit.Perform(CM_ENTER, 0, 0);
+    lEdit.Perform(WM_SETFOCUS, 0, 0);
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('Customer Alice. Search demo orders and audit findings', lApi.LastNotificationText);
+    Assert.AreEqual(1, lMetrics.ProviderFocusAnnouncementTextCount,
+      'Paired focus messages should not rebuild the same speech text after the first notification was cached.');
+  finally
+    lForm.Free;
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallFocusAnnouncementUsesInProcessProviderProperties;
+var
+  lApi: IManagerTestUiaApi;
+  lEdit: TEdit;
+  lEditLabel: TLabel;
+  lForm: TForm;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+begin
+  ResetManager;
+  TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 420, 140);
+
+    lEditLabel := TLabel.Create(lForm);
+    lEditLabel.Caption := 'Customer';
+    lEditLabel.Parent := lForm;
+    lEditLabel.SetBounds(12, 18, 90, 20);
+
+    lEdit := TEdit.Create(lForm);
+    lEdit.Parent := lForm;
+    lEdit.Text := 'Alice';
+    lEdit.Hint := 'Search demo orders and audit findings';
+    lEdit.SetBounds(112, 14, 160, 23);
+    lEdit.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+
+    lEdit.Perform(CM_ENTER, 0, 0);
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('Customer Alice. Search demo orders and audit findings', lApi.LastNotificationText);
+    Assert.AreEqual(1, lMetrics.ProviderFocusAnnouncementTextCount);
+    Assert.AreEqual(1, lMetrics.ProviderFocusAnnouncementDetailProbeCount,
+      'Focus speech should read provider speech properties through one in-process batch.');
+    Assert.AreEqual(0, lMetrics.ProviderGetPropertyValueCount,
+      'Focus speech should read our in-process provider properties directly.');
+    Assert.AreEqual(0, lMetrics.ProviderGetPatternProviderCount,
+      'Focus speech should read our in-process provider patterns directly.');
+  finally
+    lForm.Free;
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
     ResetManager;
   end;
 end;
@@ -2431,6 +2901,61 @@ begin
     Assert.AreEqual('TMS grid', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
       UIA_NamePropertyId));
   finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallSkipsPageControlHoverHitTestingWhenNoUiaClients;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+  lPageControl: TPageControl;
+  lPoint: TPoint;
+  lTabOrders: TTabSheet;
+  lTabRect: TRect;
+  lTabTms: TTabSheet;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(False);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 420, 260);
+
+    lPageControl := TPageControl.Create(lForm);
+    lPageControl.Parent := lForm;
+    lPageControl.SetBounds(12, 12, 360, 200);
+
+    lTabOrders := TTabSheet.Create(lForm);
+    lTabOrders.Caption := 'Orders';
+    lTabOrders.PageControl := lPageControl;
+
+    lTabTms := TTabSheet.Create(lForm);
+    lTabTms.Caption := 'TMS grid';
+    lTabTms.PageControl := lPageControl;
+
+    lPageControl.ActivePage := lTabOrders;
+    lPageControl.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+
+    lTabRect := lPageControl.TabRect(lTabTms.TabIndex);
+    lPoint := lTabRect.CenterPoint;
+    lPageControl.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+
+    Assert.AreEqual(0, lApi.EventCalls);
+    Assert.AreEqual(0, lApi.NotificationCalls);
+    Assert.AreEqual(0, lMetrics.ProviderRootElementProviderFromPointCount,
+      'Hover should skip provider hit-testing when no UIA clients are listening.');
+    Assert.AreEqual(0, lMetrics.ProviderEventBatchCount,
+      'Silent hover should not open provider event batches when no UIA clients are listening.');
+  finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
     lForm.Free;
     ResetManager;
   end;
@@ -2566,6 +3091,7 @@ var
   lLinePoint: TPoint;
   lListBox: TListBox;
   lMemo: TMemo;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
   lMouseParam: LPARAM;
   lPoint: TPoint;
   lProviderName: string;
@@ -2603,6 +3129,8 @@ begin
     lStatusBar.HandleNeeded;
 
     TAccessibilityManager.Install(lForm);
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
 
     lCharIndex := lMemo.Perform(EM_LINEINDEX, 1, 0);
     lLinePoint := PointFromMessageResult(lMemo.Perform(EM_POSFROMCHAR, lCharIndex, 0));
@@ -2628,8 +3156,133 @@ begin
     Assert.AreEqual('Ready. High severity checks: 4', lApi.LastNotificationText);
     lProviderName := ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider), UIA_NamePropertyId);
     Assert.AreEqual('Ready. High severity checks: 4', lProviderName);
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+    Assert.AreEqual(0, lMetrics.ProviderGetBoundingRectangleCount,
+      'Virtual hover cache bounds should use direct provider geometry, not UIA bounding rectangle callbacks.');
+  finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallCachesRepeatedLeafHoverHitTesting;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lLabel: TLabel;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+  lMouseParam: LPARAM;
+  lNextLabel: TLabel;
+  lNextMouseParam: LPARAM;
+  lPoint: TPoint;
+begin
+  ResetManager;
+  TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+  TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 180);
+
+    lLabel := TLabel.Create(lForm);
+    lLabel.Parent := lForm;
+    lLabel.Caption := 'Audit warning';
+    lLabel.SetBounds(20, 20, 180, 24);
+
+    lNextLabel := TLabel.Create(lForm);
+    lNextLabel.Parent := lForm;
+    lNextLabel.Caption := 'Completed action';
+    lNextLabel.SetBounds(20, 60, 180, 24);
+
+    TAccessibilityManager.Install(lForm);
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+    lApi.ResetClientsAreListeningCalls;
+
+    lPoint := lForm.ScreenToClient(ControlScreenCenter(lLabel));
+    lMouseParam := PointToLParam(lPoint);
+    lForm.Perform(WM_MOUSEMOVE, 0, lMouseParam);
+    lForm.Perform(WM_MOUSEMOVE, 0, lMouseParam);
+    lForm.Perform(WM_MOUSEMOVE, 0, lMouseParam);
+    lForm.Perform(WM_MOUSEMOVE, 0, lMouseParam);
+
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('Audit warning', lApi.LastNotificationText);
+
+    lPoint := lForm.ScreenToClient(ControlScreenCenter(lNextLabel));
+    lNextMouseParam := PointToLParam(lPoint);
+    lForm.Perform(WM_MOUSEMOVE, 0, lNextMouseParam);
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+
+    Assert.AreEqual(2, lApi.NotificationCalls);
+    Assert.AreEqual('Completed action', lApi.LastNotificationText);
+    Assert.AreEqual(2, lApi.ClientsAreListeningCalls,
+      'Repeated form-level hover should probe UIA client-listening state only for actual hover announcements.');
+    Assert.IsTrue(lMetrics.ProviderRootElementProviderFromPointCount <= 2,
+      Format('Repeated hover should not re-hit-test the same leaf provider; root hit tests=%d.',
+      [lMetrics.ProviderRootElementProviderFromPointCount]));
   finally
     lForm.Free;
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallHoverUsesVclLookupForSimpleLeafProviders;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lLabel: TLabel;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+  lMouseParam: LPARAM;
+  lNextLabel: TLabel;
+  lPoint: TPoint;
+begin
+  ResetManager;
+  TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+  TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 180);
+
+    lLabel := TLabel.Create(lForm);
+    lLabel.Parent := lForm;
+    lLabel.Caption := 'Audit warning';
+    lLabel.SetBounds(20, 20, 180, 24);
+
+    lNextLabel := TLabel.Create(lForm);
+    lNextLabel.Parent := lForm;
+    lNextLabel.Caption := 'Completed action';
+    lNextLabel.SetBounds(20, 60, 180, 24);
+
+    TAccessibilityManager.Install(lForm);
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+
+    lPoint := lForm.ScreenToClient(ControlScreenCenter(lLabel));
+    lMouseParam := PointToLParam(lPoint);
+    lForm.Perform(WM_MOUSEMOVE, 0, lMouseParam);
+
+    lPoint := lForm.ScreenToClient(ControlScreenCenter(lNextLabel));
+    lMouseParam := PointToLParam(lPoint);
+    lForm.Perform(WM_MOUSEMOVE, 0, lMouseParam);
+
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+    Assert.AreEqual(2, lApi.NotificationCalls);
+    Assert.AreEqual('Completed action', lApi.LastNotificationText);
+    Assert.AreEqual(0, lMetrics.ProviderRootElementProviderFromPointCount,
+      'Simple leaf hover should use the VCL control-provider lookup instead of root provider hit testing.');
+    Assert.AreEqual(0, lMetrics.ProviderNavigateCount,
+      'Simple leaf hover should use VCL geometry for cache bounds, not provider child navigation.');
+    Assert.AreEqual(0, lMetrics.ProviderGetBoundingRectangleCount,
+      'Simple leaf hover should use VCL geometry for cache bounds, not provider bounding-rectangle callbacks.');
+  finally
+    lForm.Free;
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
     ResetManager;
   end;
 end;
@@ -3160,6 +3813,7 @@ var
   lForm: TForm;
   lGroupBox: TGroupBox;
   lHandler: TRadioNavigationTestHandler;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
   lSecondRadio: TRadioButton;
 begin
   ResetManager;
@@ -3199,17 +3853,89 @@ begin
     TAccessibilityManager.Install(lForm);
     lFirstRadio.SetFocus;
     Application.ProcessMessages;
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+    lApi.ResetClientsAreListeningCalls;
 
     lFirstRadio.Perform(WM_KEYDOWN, VK_DOWN, 0);
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
     Application.ProcessMessages;
 
     Assert.IsTrue(lSecondRadio.Checked);
+    Assert.AreEqual(1, lApi.ClientsAreListeningCalls,
+      'Grouped radio arrow speech should probe UIA client-listening state once for the event burst.');
+    Assert.AreEqual(0, lMetrics.ProviderGetPatternProviderCount,
+      'Grouped radio state capture should read in-process provider state directly, not call GetPatternProvider.');
     Assert.AreEqual('Detailed. Use the detailed view mode', lApi.LastNotificationText);
     Assert.AreEqual('Detailed', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
       UIA_NamePropertyId));
   finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
     lForm.Free;
     lHandler.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallSkipsGroupedRadioSelectionScanWhenNoUiaClients;
+var
+  lApi: IManagerTestUiaApi;
+  lFirstRadio: TCheckedReadProbeRadioButton;
+  lForm: TForm;
+  lGroupBox: TGroupBox;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+  lSecondRadio: TCheckedReadProbeRadioButton;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(False);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 180);
+
+    lGroupBox := TGroupBox.Create(lForm);
+    lGroupBox.Parent := lForm;
+    lGroupBox.Caption := 'View mode';
+    lGroupBox.SetBounds(24, 24, 220, 86);
+
+    lFirstRadio := TCheckedReadProbeRadioButton.Create(lForm);
+    lFirstRadio.Parent := lGroupBox;
+    lFirstRadio.Caption := 'Compact';
+    lFirstRadio.Checked := True;
+    lFirstRadio.SetBounds(12, 28, 120, 22);
+
+    lSecondRadio := TCheckedReadProbeRadioButton.Create(lForm);
+    lSecondRadio.Parent := lGroupBox;
+    lSecondRadio.Caption := 'Detailed';
+    lSecondRadio.SetBounds(12, 54, 120, 22);
+
+    lForm.Show;
+    lFirstRadio.HandleNeeded;
+    lSecondRadio.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    lFirstRadio.SetFocus;
+    Application.ProcessMessages;
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+    TCheckedReadProbeRadioButton.ResetCheckedReadCount;
+    lApi.ResetClientsAreListeningCalls;
+
+    lFirstRadio.Perform(WM_KEYDOWN, VK_DOWN, 0);
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+    Application.ProcessMessages;
+
+    Assert.AreEqual(1, lApi.ClientsAreListeningCalls,
+      'Silent grouped radio arrow handling should ask UIA listener state once.');
+    Assert.AreEqual(0, lApi.EventCalls);
+    Assert.AreEqual(0, lApi.NotificationCalls);
+    Assert.AreEqual(0, lMetrics.ProviderEventBatchCount,
+      'Silent grouped radio arrow handling should not open provider event batches.');
+    Assert.AreEqual(0, TCheckedReadProbeRadioButton.CheckedReadCount,
+      'Silent grouped radio arrow handling should not scan checked radio state for skipped announcements.');
+  finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+    lForm.Free;
     ResetManager;
   end;
 end;
@@ -3323,10 +4049,13 @@ var
   lButton: TRadioButton;
   lForm: TForm;
   lMessage: TMessage;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
   lRadioGroup: TRadioGroup;
   lRegistry: IAccessibilityAdapterRegistry;
 begin
   ResetManager;
+  TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+  TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
   lApi := TManagerTestUiaApi.Create;
   TAccessibilityManagerInternals.SetUiaApi(lApi);
   lRegistry := TAccessibilityVclAdapters.CreateDefaultRegistry;
@@ -3347,6 +4076,7 @@ begin
     lButton := lRadioGroup.Buttons[0];
 
     TAccessibilityManager.Install(lForm, lRegistry);
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
 
     lMessage := Default(TMessage);
     lMessage.Msg := WM_GETOBJECT;
@@ -3359,10 +4089,13 @@ begin
     Assert.AreEqual(lButton.Handle, lApi.LastHwnd);
     Assert.AreEqual('Comfortable', ProviderStringProperty(FragmentFromSimple(lApi.ReturnedProvider),
       UIA_NamePropertyId));
-    Assert.AreEqual(Integer(lButton.Handle), ProviderIntProperty(FragmentFromSimple(lApi.ReturnedProvider),
-      UIA_NativeWindowHandlePropertyId));
+    Assert.AreEqual(Integer(lButton.Handle), Integer(ProviderNativeWindowHandle(FragmentFromSimple(
+      lApi.ReturnedProvider))));
+    Assert.AreEqual(0, lMetrics.ProviderNavigateCount,
+      'RadioGroup child-window binding should use direct in-process child access, not UIA Navigate.');
   finally
     lForm.Free;
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
     ResetManager;
   end;
 end;
@@ -3407,8 +4140,8 @@ begin
     Assert.AreEqual(lButton.Handle, lApi.LastHwnd);
     Assert.AreEqual('Comfortable', ProviderStringProperty(FragmentFromSimple(lApi.ReturnedProvider),
       UIA_NamePropertyId));
-    Assert.AreEqual(Integer(lButton.Handle), ProviderIntProperty(FragmentFromSimple(lApi.ReturnedProvider),
-      UIA_NativeWindowHandlePropertyId));
+    Assert.AreEqual(Integer(lButton.Handle), Integer(ProviderNativeWindowHandle(FragmentFromSimple(
+      lApi.ReturnedProvider))));
   finally
     lForm.Free;
     ResetManager;
@@ -3478,8 +4211,8 @@ begin
     Assert.AreEqual(lButton.Handle, lApi.LastHwnd);
     Assert.AreEqual('Comfortable', ProviderStringProperty(FragmentFromSimple(lApi.ReturnedProvider),
       UIA_NamePropertyId));
-    Assert.AreEqual(Integer(lButton.Handle), ProviderIntProperty(FragmentFromSimple(lApi.ReturnedProvider),
-      UIA_NativeWindowHandlePropertyId));
+    Assert.AreEqual(Integer(lButton.Handle), Integer(ProviderNativeWindowHandle(FragmentFromSimple(
+      lApi.ReturnedProvider))));
   finally
     lForm.Free;
     ResetManager;
@@ -3583,11 +4316,12 @@ begin
   end;
 end;
 
-procedure TAccessibilityManagerTests.FormInstallRaisesCheckBoxFocusNativeWinEventsWithoutProviderReplacement;
+procedure TAccessibilityManagerTests.FormInstallCheckBoxHoverSkipsUnusedAnnouncementTextBuild;
 var
   lApi: IManagerTestUiaApi;
   lCheckBox: TCheckBox;
   lForm: TForm;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
   lWinEvents: TWinEventRecorder;
 begin
   ResetManager;
@@ -3609,17 +4343,115 @@ begin
     lCheckBox.HandleNeeded;
 
     TAccessibilityManager.Install(lForm);
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+
+    lCheckBox.Perform(WM_MOUSEMOVE, 0, PointToLParam(Point(lCheckBox.Width div 2, lCheckBox.Height div 2)));
+
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+    Assert.AreEqual(0, lApi.NotificationCalls);
+    Assert.AreEqual(1, lApi.EventCalls);
+    Assert.AreEqual(2, lWinEvents.Calls);
+    Assert.AreEqual(0, lMetrics.ProviderFocusAnnouncementTextCount);
+    Assert.AreEqual(0, lMetrics.ProviderFocusAnnouncementDetailProbeCount);
+  finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallCheckBoxHoverWithoutUiaClientsSkipsProviderBatch;
+var
+  lApi: IManagerTestUiaApi;
+  lCheckBox: TCheckBox;
+  lForm: TForm;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+  lWinEvents: TWinEventRecorder;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(False);
+  lWinEvents := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 140);
+
+    lCheckBox := TCheckBox.Create(lForm);
+    lCheckBox.Parent := lForm;
+    lCheckBox.Caption := 'Include archived rows';
+    lCheckBox.Hint := 'Includes archived rows in the demo grids';
+    lCheckBox.Checked := True;
+    lCheckBox.SetBounds(24, 24, 220, 24);
+    lCheckBox.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+
+    lCheckBox.Perform(WM_MOUSEMOVE, 0, PointToLParam(Point(lCheckBox.Width div 2, lCheckBox.Height div 2)));
+
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+    Assert.AreEqual(0, lApi.NotificationCalls);
+    Assert.AreEqual(0, lApi.EventCalls);
+    Assert.AreEqual(2, lWinEvents.Calls);
+    Assert.AreEqual(0, lMetrics.ProviderEventBatchCount,
+      'Native checkbox hover should not open a provider UIA event batch when no UIA clients are listening.');
+    Assert.AreEqual(EVENT_OBJECT_STATECHANGE, lWinEvents.LastEvent);
+    Assert.AreEqual(lCheckBox.Handle, lWinEvents.LastHwnd);
+  finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallRaisesCheckBoxFocusNativeWinEventsWithoutProviderReplacement;
+var
+  lApi: IManagerTestUiaApi;
+  lCheckBox: TCheckBox;
+  lForm: TForm;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+  lWinEvents: TWinEventRecorder;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  lWinEvents := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 140);
+
+    lCheckBox := TCheckBox.Create(lForm);
+    lCheckBox.Parent := lForm;
+    lCheckBox.Caption := 'Include archived rows';
+    lCheckBox.Hint := 'Includes archived rows in the demo grids';
+    lCheckBox.Checked := True;
+    lCheckBox.SetBounds(24, 24, 220, 24);
+    lCheckBox.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
 
     lCheckBox.Perform(CM_ENTER, 0, 0);
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
 
     Assert.AreEqual(0, lApi.NotificationCalls);
     Assert.AreEqual(0, lApi.EventCalls);
+    Assert.AreEqual(0, lMetrics.ProviderEventBatchCount,
+      'Native checkbox focus should not open a provider UIA event batch when native WinEvents own speech.');
     Assert.AreEqual(2, lWinEvents.Calls);
     Assert.AreEqual(EVENT_OBJECT_STATECHANGE, lWinEvents.LastEvent);
     Assert.AreEqual(lCheckBox.Handle, lWinEvents.LastHwnd);
     Assert.AreEqual(Cardinal($FFFFFFFC), lWinEvents.LastObjectId);
     Assert.AreEqual(Cardinal(CHILDID_SELF), lWinEvents.LastChildId);
   finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
     lForm.Free;
     ResetManager;
   end;
@@ -3861,6 +4693,7 @@ var
   lApi: IManagerTestUiaApi;
   lForm: TForm;
   lGrid: TStringGrid;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
 begin
   ResetManager;
   lApi := TManagerTestUiaApi.Create;
@@ -3881,6 +4714,8 @@ begin
     lForm.ActiveControl := lGrid;
 
     TAccessibilityManager.Install(lForm);
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
     lGrid.Perform(WM_KEYDOWN, VK_DOWN, 0);
 
     Assert.AreEqual(2, lGrid.Row);
@@ -3888,10 +4723,18 @@ begin
     Assert.AreEqual(UIA_SelectionItem_ElementSelectedEventId, lApi.LastEventId);
     Assert.AreEqual(1, lApi.NotificationCalls);
     Assert.AreEqual('Contoso', lApi.LastNotificationText);
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+    Assert.AreEqual(0, lMetrics.StringGridRefreshCount,
+      'Grid keyboard speech should use the provider native focused-item path, not refresh visible cells.');
     Assert.AreEqual('Contoso', ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider), UIA_NamePropertyId));
     Assert.AreEqual('Contoso', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
       UIA_NamePropertyId));
+    Assert.AreEqual(0, lMetrics.ProviderRootGetFocusCount,
+      'Grid keyboard speech should use the provider native focused-item path, not root GetFocus traversal.');
+    Assert.AreEqual(0, lMetrics.ProviderGetPatternProviderCount,
+      'Grid keyboard speech should not probe generic toggle/selection patterns on the grid provider.');
   finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
     lForm.Free;
     ResetManager;
   end;
@@ -3933,9 +4776,12 @@ begin
       sLineBreak + 'Status: Waiting';
 
     TAccessibilityManager.Install(lForm);
+    lApi.ResetClientsAreListeningCalls;
     lGrid.Perform(WM_KEYDOWN, VK_DOWN, 0);
 
     Assert.AreEqual(2, lGrid.Row);
+    Assert.AreEqual(1, lApi.ClientsAreListeningCalls,
+      'Grid keyboard speech should probe UIA client-listening state once for the event burst.');
     Assert.AreEqual(2, lApi.EventCalls);
     Assert.AreEqual(UIA_SelectionItem_ElementSelectedEventId, lApi.LastEventId);
     Assert.AreEqual(1, lApi.NotificationCalls);
@@ -3950,11 +4796,65 @@ begin
   end;
 end;
 
-procedure TAccessibilityManagerTests.FormInstallRaisesListBoxItemFocusEventAfterArrowKey;
+procedure TAccessibilityManagerTests.FormInstallSkipsStringGridFocusTextWhenNoUiaClients;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lGrid: TStringGrid;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(False);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lGrid := TStringGrid.Create(lForm);
+    lGrid.Parent := lForm;
+    lGrid.ColCount := 3;
+    lGrid.RowCount := 3;
+    lGrid.FixedRows := 1;
+    lGrid.Options := lGrid.Options + [goRowSelect];
+    lGrid.Cells[0, 0] := 'Order';
+    lGrid.Cells[1, 0] := 'Customer';
+    lGrid.Cells[2, 0] := 'Status';
+    lGrid.Cells[0, 1] := '#24018';
+    lGrid.Cells[1, 1] := 'Northwind';
+    lGrid.Cells[2, 1] := 'Packed';
+    lGrid.Cells[0, 2] := '#24019';
+    lGrid.Cells[1, 2] := 'Contoso';
+    lGrid.Cells[2, 2] := 'Waiting';
+    lGrid.Col := 0;
+    lGrid.Row := 1;
+    lGrid.HandleNeeded;
+    lForm.ActiveControl := lGrid;
+
+    TAccessibilityManager.Install(lForm);
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+    lGrid.Perform(WM_KEYDOWN, VK_DOWN, 0);
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+
+    Assert.AreEqual(2, lGrid.Row);
+    Assert.AreEqual(0, lApi.EventCalls);
+    Assert.AreEqual(0, lApi.NotificationCalls);
+    Assert.AreEqual(0, lMetrics.StringGridRowTextBuildCount,
+      'Grid keyboard path should not build row speech text when no UIA clients are listening.');
+    Assert.AreEqual(0, lMetrics.ProviderEventBatchCount,
+      'Grid keyboard path should not open a provider event batch when no UIA clients are listening.');
+  finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallLeavesListBoxArrowKeySpeechToNativeWindow;
 var
   lApi: IManagerTestUiaApi;
   lForm: TForm;
   lListBox: TListBox;
+  lMetrics: TAccessibilityListBoxFocusMetrics;
 begin
   ResetManager;
   lApi := TManagerTestUiaApi.Create;
@@ -3972,15 +4872,24 @@ begin
     lForm.ActiveControl := lListBox;
 
     TAccessibilityManager.Install(lForm);
+    TAccessibilityDiagnostics.EnableListBoxFocusMetrics;
+    TAccessibilityDiagnostics.ResetListBoxFocusMetrics;
+    lApi.ResetClientsAreListeningCalls;
     lListBox.Perform(WM_KEYDOWN, VK_DOWN, 0);
+    lMetrics := TAccessibilityDiagnostics.ListBoxFocusMetrics;
 
     Assert.AreEqual(2, lListBox.ItemIndex);
-    Assert.AreEqual(2, lApi.EventCalls);
-    Assert.AreEqual(UIA_SelectionItem_ElementSelectedEventId, lApi.LastEventId);
+    Assert.AreEqual(0, lApi.EventCalls);
     Assert.AreEqual(0, lApi.NotificationCalls);
-    Assert.AreEqual('Completed action', ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider),
-      UIA_NamePropertyId));
+    Assert.AreEqual('', lApi.LastNotificationText);
+    Assert.AreEqual(0, lApi.ClientsAreListeningCalls,
+      'Native-listbox arrow-key handling should not ask UIA listener state when native HWND speech owns it.');
+    Assert.AreEqual(0, lMetrics.NativeHandlePublicationCheckCount,
+      'Native-listbox arrow-key handling should not re-check framework HWND publication on the key path.');
+    Assert.AreEqual(0, lMetrics.ItemIndexProbeCount,
+      'Native-listbox arrow-key handling should not probe framework item state on the key path.');
   finally
+    TAccessibilityDiagnostics.DisableListBoxFocusMetrics;
     lForm.Free;
     ResetManager;
   end;
@@ -4067,6 +4976,7 @@ var
   lApi: IManagerTestUiaApi;
   lForm: TForm;
   lGrid: TAdvStringGrid;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
 begin
   ResetManager;
   lApi := TManagerTestUiaApi.Create;
@@ -4087,6 +4997,8 @@ begin
     lForm.ActiveControl := lGrid;
 
     TAccessibilityManager.Install(lForm, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
     lGrid.Perform(WM_KEYDOWN, VK_DOWN, 0);
 
     Assert.AreEqual(2, lGrid.Row);
@@ -4094,11 +5006,17 @@ begin
     Assert.AreEqual(UIA_SelectionItem_ElementSelectedEventId, lApi.LastEventId);
     Assert.AreEqual(1, lApi.NotificationCalls);
     Assert.AreEqual('Contoso TMS', lApi.LastNotificationText);
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+    Assert.AreEqual(0, lMetrics.TmsAdvStringGridRefreshCount,
+      'TMS grid keyboard speech should use the provider native focused-item path, not refresh visible cells.');
     Assert.AreEqual('Contoso TMS', ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider),
       UIA_NamePropertyId));
     Assert.AreEqual('Contoso TMS', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
       UIA_NamePropertyId));
+    Assert.AreEqual(0, lMetrics.ProviderGetPatternProviderCount,
+      'TMS grid keyboard speech should not probe generic toggle/selection patterns on the grid provider.');
   finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
     lForm.Free;
     ResetManager;
   end;

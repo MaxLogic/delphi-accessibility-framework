@@ -58,16 +58,32 @@ type
   end;
 
   TAccessibilityAdvStringGridProvider = class(TAccessibilityProviderNode, IAccessibilityVclControlProviderInfo,
-    IRawElementProviderFragmentRoot, IGridProvider, ISelectionProvider)
+    IAccessibilityFocusedItemProvider, IRawElementProviderFragmentRoot, IGridProvider, ISelectionProvider)
   private
     fCells: TDictionary<Int64, IAccessibilityProviderNode>;
     fGrid: TAdvStringGrid;
+    fPreparedClientHeight: Integer;
+    fPreparedClientWidth: Integer;
+    fPreparedColCount: Integer;
+    fPreparedFixedCols: Integer;
+    fPreparedFixedRows: Integer;
+    fPreparedHandle: HWND;
+    fPreparedLeftCol: Integer;
+    fPreparedRowCount: Integer;
+    fPreparedTopRow: Integer;
+    fPreparedValid: Boolean;
+    fPreparedVisibleColCount: Integer;
+    fPreparedVisibleRowCount: Integer;
     fRuntimeId: Integer;
     fUiaApi: IAccessibilityUiaApi;
     function CellProvider(aCol: Integer; aRow: Integer): IAccessibilityProviderNode;
     function CellText(aCol: Integer; aRow: Integer): string;
+    function ChildrenPreparationIsCurrent: Boolean;
     function CreateSelectionArray(const aProvider: IRawElementProviderSimple): PSafeArray;
     function EnsureCellProvider(aCol: Integer; aRow: Integer): IAccessibilityProviderNode;
+    function EnsureCellProviderDirect(aCol: Integer; aRow: Integer): IAccessibilityProviderNode;
+    procedure EnsureVisibleCellProvider(aCol: Integer; aRow: Integer; aMetricsEnabled: Boolean;
+      var aCellProbeCount: Integer; var aCreatedCount: Integer);
     function GridOwnsFocus: Boolean;
     function IsAccessibleCell(aCol: Integer; aRow: Integer): Boolean;
     function IsVisibleCell(aCol: Integer; aRow: Integer): Boolean;
@@ -78,7 +94,9 @@ type
     function VisibleColumnSpan(aCol: Integer; aRow: Integer): Integer;
     function VisibleRowSpan(aCol: Integer; aRow: Integer): Integer;
     procedure RefreshVisibleCells;
+    procedure RememberChildrenPreparation;
   protected
+    function CanUsePreparedSiblingNavigation(aChild: TAccessibilityProviderNode): Boolean; override;
     function DoGetBoundingRectangle(out aValue: UiaRect): Boolean; override;
     function DoGetPatternProvider(aPatternId: PATTERNID): IUnknown; override;
     function DoGetPropertyValue(aPropertyId: PROPERTYID; out aValue: OleVariant): Boolean; override;
@@ -97,6 +115,7 @@ type
     function Get_IsSelectionRequired(out aRetVal: BOOL): HResult; stdcall;
     function Get_RowCount(out aRetVal: Integer): HResult; stdcall;
     function GetSelection(out aRetVal: PSafeArray): HResult; stdcall;
+    function TryGetFocusedItem(out aProvider: IRawElementProviderSimple; out aName: string): Boolean;
   end;
 
 function CellKey(aCol: Integer; aRow: Integer): Int64;
@@ -124,6 +143,7 @@ var
   lControl: TControl;
   lTabSheet: TTabSheet;
 begin
+  TAccessibilityDiagnostics.RecordActiveVisibleTreeProbe;
   Result := False;
   lControl := aControl;
   while lControl <> nil do
@@ -417,6 +437,7 @@ constructor TAccessibilityAdvStringGridProvider.Create(aGrid: TAdvStringGrid; aR
   const aName: string; const aHelpText: string; const aApi: IAccessibilityUiaApi);
 begin
   inherited CreateNode([aRuntimeId], aGrid.Handle, aApi, aGrid);
+  SetPublishNativeWindowHandle(True);
   fCells := TDictionary<Int64, IAccessibilityProviderNode>.Create;
   fGrid := aGrid;
   fRuntimeId := aRuntimeId;
@@ -426,12 +447,35 @@ begin
   SetProperty(UIA_ClassNamePropertyId, aGrid.ClassName);
   SetProperty(UIA_HelpTextPropertyId, aHelpText);
   RefreshVisibleCells;
+  RememberChildrenPreparation;
+end;
+
+function TAccessibilityAdvStringGridProvider.CanUsePreparedSiblingNavigation(aChild: TAccessibilityProviderNode):
+  Boolean;
+begin
+  Result := ChildrenPreparationIsCurrent and HasCurrentChildIndex(aChild);
+end;
+
+function TAccessibilityAdvStringGridProvider.ChildrenPreparationIsCurrent: Boolean;
+begin
+  Result := False;
+  if (fGrid = nil) or (not fPreparedValid) or IsDisconnected or not ControlIsInActiveVisibleTree(fGrid) then
+  begin
+    Exit;
+  end;
+
+  Result := (fPreparedHandle = fGrid.Handle) and (fPreparedClientWidth = fGrid.ClientWidth) and
+    (fPreparedClientHeight = fGrid.ClientHeight) and (fPreparedColCount = fGrid.ColCount) and
+    (fPreparedRowCount = fGrid.RowCount) and (fPreparedFixedCols = fGrid.FixedCols) and
+    (fPreparedFixedRows = fGrid.FixedRows) and (fPreparedLeftCol = fGrid.LeftCol) and
+    (fPreparedTopRow = fGrid.TopRow) and (fPreparedVisibleColCount = fGrid.VisibleColCount) and
+    (fPreparedVisibleRowCount = fGrid.VisibleRowCount);
 end;
 
 function TAccessibilityAdvStringGridProvider.CreateSelectionArray(
   const aProvider: IRawElementProviderSimple): PSafeArray;
 var
-  lIndex: Integer;
+  lData: Pointer;
   lUnknown: IUnknown;
 begin
   if aProvider = nil then
@@ -445,12 +489,20 @@ begin
     Exit;
   end;
 
-  lIndex := 0;
   lUnknown := aProvider as IUnknown;
-  if SafeArrayPutElement(Result, lIndex, lUnknown) <> S_OK then
+  lData := nil;
+  if (SafeArrayAccessData(Result, lData) <> S_OK) or (lData = nil) then
   begin
     SafeArrayDestroy(Result);
     Result := nil;
+    Exit;
+  end;
+
+  try
+    PPointer(lData)^ := Pointer(lUnknown);
+    lUnknown._AddRef;
+  finally
+    SafeArrayUnaccessData(Result);
   end;
 end;
 
@@ -563,15 +615,65 @@ function TAccessibilityAdvStringGridProvider.EnsureCellProvider(aCol: Integer; a
 var
   lCell: TPoint;
 begin
+  if (fGrid <> nil) and ChildrenPreparationIsCurrent then
+  begin
+    lCell := NormalizedCell(aCol, aRow);
+    Result := CellProvider(lCell.X, lCell.Y);
+    if Result <> nil then
+    begin
+      Exit;
+    end;
+  end;
+
   RefreshVisibleCells;
+  fPreparedValid := False;
+  Result := EnsureCellProviderDirect(aCol, aRow);
+end;
+
+function TAccessibilityAdvStringGridProvider.EnsureCellProviderDirect(aCol: Integer; aRow: Integer):
+  IAccessibilityProviderNode;
+var
+  lCell: TPoint;
+  lKey: Int64;
+begin
   lCell := NormalizedCell(aCol, aRow);
+  lKey := CellKey(lCell.X, lCell.Y);
   Result := CellProvider(lCell.X, lCell.Y);
+  if Result = nil then
+  begin
+    fCells.Remove(lKey);
+  end;
+
   if (Result = nil) and IsAccessibleCell(lCell.X, lCell.Y) then
   begin
     Result := TAccessibilityAdvStringGridCellProvider.Create(Self, fGrid, lCell.X, lCell.Y,
       [fRuntimeId, lCell.Y, lCell.X], fUiaApi) as IAccessibilityProviderNode;
     AddChild(Result);
-    fCells.Add(CellKey(lCell.X, lCell.Y), Result);
+    fCells.Add(lKey, Result);
+  end;
+end;
+
+procedure TAccessibilityAdvStringGridProvider.EnsureVisibleCellProvider(aCol: Integer; aRow: Integer;
+  aMetricsEnabled: Boolean; var aCellProbeCount: Integer; var aCreatedCount: Integer);
+var
+  lCell: IAccessibilityProviderNode;
+  lCellRect: TRect;
+begin
+  if aMetricsEnabled then
+  begin
+    Inc(aCellProbeCount);
+  end;
+
+  if VisibleCellRect(aCol, aRow, lCellRect) and (CellProvider(aCol, aRow) = nil) then
+  begin
+    lCell := TAccessibilityAdvStringGridCellProvider.Create(Self, fGrid, aCol, aRow,
+      [fRuntimeId, aRow, aCol], fUiaApi) as IAccessibilityProviderNode;
+    AddChild(lCell);
+    fCells.Add(CellKey(aCol, aRow), lCell);
+    if aMetricsEnabled then
+    begin
+      Inc(aCreatedCount);
+    end;
   end;
 end;
 
@@ -689,6 +791,30 @@ begin
   end else begin
     Result := S_OK;
   end;
+end;
+
+function TAccessibilityAdvStringGridProvider.TryGetFocusedItem(out aProvider: IRawElementProviderSimple;
+  out aName: string): Boolean;
+var
+  lItem: IAccessibilityProviderNode;
+begin
+  aProvider := nil;
+  aName := '';
+  Result := False;
+  if IsDisconnected or (fGrid = nil) or not ControlIsInActiveVisibleTree(fGrid) or not GridOwnsFocus then
+  begin
+    Exit;
+  end;
+
+  lItem := EnsureCellProviderDirect(fGrid.Col, fGrid.Row);
+  if lItem = nil then
+  begin
+    Exit;
+  end;
+
+  aName := CellText(fGrid.Col, fGrid.Row);
+  aProvider := lItem.RawElementProvider;
+  Result := aProvider <> nil;
 end;
 
 function TAccessibilityAdvStringGridProvider.GridOwnsFocus: Boolean;
@@ -935,16 +1061,24 @@ end;
 procedure TAccessibilityAdvStringGridProvider.PrepareChildrenForNavigation;
 begin
   inherited PrepareChildrenForNavigation;
+  if ChildrenPreparationIsCurrent then
+  begin
+    Exit;
+  end;
+
   RefreshVisibleCells;
+  RememberChildrenPreparation;
 end;
 
 procedure TAccessibilityAdvStringGridProvider.RefreshVisibleCells;
 var
   lCell: IAccessibilityProviderNode;
+  lCellRect: TRect;
   lCellProbeCount: Integer;
   lCol: Integer;
-  lCols: TList<Integer>;
   lCreatedCount: Integer;
+  lFixedColCount: Integer;
+  lFixedRowCount: Integer;
   lFirstScrollableCol: Integer;
   lFirstScrollableRow: Integer;
   lKey: Int64;
@@ -954,10 +1088,10 @@ var
   lMetricsEnabled: Boolean;
   lPair: TPair<Int64, IAccessibilityProviderNode>;
   lRow: Integer;
-  lRows: TList<Integer>;
   lStopwatch: TStopwatch;
 begin
-  if (fGrid = nil) or IsDisconnected or (fGrid.ColCount <= 0) or (fGrid.RowCount <= 0) then
+  if (fGrid = nil) or IsDisconnected or not ControlIsInActiveVisibleTree(fGrid) or (fGrid.ColCount <= 0) or
+    (fGrid.RowCount <= 0) then
   begin
     Exit;
   end;
@@ -970,86 +1104,79 @@ begin
     lStopwatch := TStopwatch.StartNew;
   end;
 
-  lKeysToRemove := TList<Int64>.Create;
+  lKeysToRemove := nil;
   try
     for lPair in fCells do
     begin
-      if lPair.Value.IsDisconnected or not IsVisibleCell(CellKeyCol(lPair.Key), CellKeyRow(lPair.Key)) then
+      if lPair.Value.IsDisconnected or not VisibleCellRect(CellKeyCol(lPair.Key), CellKeyRow(lPair.Key), lCellRect) then
       begin
+        if lKeysToRemove = nil then
+        begin
+          lKeysToRemove := TList<Int64>.Create;
+          if lMetricsEnabled then
+          begin
+            TAccessibilityDiagnostics.RecordTmsAdvStringGridRefreshScratchListAllocation(1);
+          end;
+        end;
         lKeysToRemove.Add(lPair.Key);
       end;
     end;
 
-    for lKey in lKeysToRemove do
+    if lKeysToRemove <> nil then
     begin
-      if fCells.TryGetValue(lKey, lCell) then
+      for lKey in lKeysToRemove do
       begin
-        RemoveChildNode(lCell, False);
-        fCells.Remove(lKey);
+        if fCells.TryGetValue(lKey, lCell) then
+        begin
+          RemoveChildNode(lCell, False);
+          fCells.Remove(lKey);
+        end;
       end;
     end;
   finally
     lKeysToRemove.Free;
   end;
 
-  lCols := TList<Integer>.Create;
-  lRows := TList<Integer>.Create;
-  try
-    for lCol := 0 to Pred(Min(fGrid.FixedCols, fGrid.ColCount)) do
+  lFixedColCount := Min(fGrid.FixedCols, fGrid.ColCount);
+  lFixedRowCount := Min(fGrid.FixedRows, fGrid.RowCount);
+  lFirstScrollableCol := EnsureRange(fGrid.LeftCol, 0, Pred(fGrid.ColCount));
+  lLastScrollableCol := Min(Pred(fGrid.ColCount), lFirstScrollableCol + Max(0, fGrid.VisibleColCount) + 1);
+  lFirstScrollableRow := EnsureRange(fGrid.TopRow, 0, Pred(fGrid.RowCount));
+  lLastScrollableRow := Min(Pred(fGrid.RowCount), lFirstScrollableRow + Max(0, fGrid.VisibleRowCount) + 1);
+
+  for lRow := 0 to Pred(lFixedRowCount) do
+  begin
+    for lCol := 0 to Pred(lFixedColCount) do
     begin
-      lCols.Add(lCol);
+      EnsureVisibleCellProvider(lCol, lRow, lMetricsEnabled, lCellProbeCount, lCreatedCount);
     end;
 
-    lFirstScrollableCol := EnsureRange(fGrid.LeftCol, 0, Pred(fGrid.ColCount));
-    lLastScrollableCol := Min(Pred(fGrid.ColCount), lFirstScrollableCol + Max(0, fGrid.VisibleColCount) + 1);
     for lCol := lFirstScrollableCol to lLastScrollableCol do
     begin
-      if not lCols.Contains(lCol) then
+      if lCol >= lFixedColCount then
       begin
-        lCols.Add(lCol);
+        EnsureVisibleCellProvider(lCol, lRow, lMetricsEnabled, lCellProbeCount, lCreatedCount);
       end;
     end;
+  end;
 
-    for lRow := 0 to Pred(Min(fGrid.FixedRows, fGrid.RowCount)) do
+  for lRow := lFirstScrollableRow to lLastScrollableRow do
+  begin
+    if lRow >= lFixedRowCount then
     begin
-      lRows.Add(lRow);
-    end;
-
-    lFirstScrollableRow := EnsureRange(fGrid.TopRow, 0, Pred(fGrid.RowCount));
-    lLastScrollableRow := Min(Pred(fGrid.RowCount), lFirstScrollableRow + Max(0, fGrid.VisibleRowCount) + 1);
-    for lRow := lFirstScrollableRow to lLastScrollableRow do
-    begin
-      if not lRows.Contains(lRow) then
+      for lCol := 0 to Pred(lFixedColCount) do
       begin
-        lRows.Add(lRow);
+        EnsureVisibleCellProvider(lCol, lRow, lMetricsEnabled, lCellProbeCount, lCreatedCount);
       end;
-    end;
 
-    for lRow in lRows do
-    begin
-      for lCol in lCols do
+      for lCol := lFirstScrollableCol to lLastScrollableCol do
       begin
-        if lMetricsEnabled then
+        if lCol >= lFixedColCount then
         begin
-          Inc(lCellProbeCount);
-        end;
-
-        if IsVisibleCell(lCol, lRow) and (CellProvider(lCol, lRow) = nil) then
-        begin
-          lCell := TAccessibilityAdvStringGridCellProvider.Create(Self, fGrid, lCol, lRow,
-            [fRuntimeId, lRow, lCol], fUiaApi) as IAccessibilityProviderNode;
-          AddChild(lCell);
-          fCells.Add(CellKey(lCol, lRow), lCell);
-          if lMetricsEnabled then
-          begin
-            Inc(lCreatedCount);
-          end;
+          EnsureVisibleCellProvider(lCol, lRow, lMetricsEnabled, lCellProbeCount, lCreatedCount);
         end;
       end;
     end;
-  finally
-    lRows.Free;
-    lCols.Free;
   end;
 
   if lMetricsEnabled then
@@ -1057,6 +1184,28 @@ begin
     TAccessibilityDiagnostics.RecordTmsAdvStringGridRefresh(lCellProbeCount, lCreatedCount,
       lStopwatch.ElapsedTicks);
   end;
+end;
+
+procedure TAccessibilityAdvStringGridProvider.RememberChildrenPreparation;
+begin
+  fPreparedValid := False;
+  if (fGrid = nil) or IsDisconnected or not ControlIsInActiveVisibleTree(fGrid) then
+  begin
+    Exit;
+  end;
+
+  fPreparedHandle := fGrid.Handle;
+  fPreparedClientWidth := fGrid.ClientWidth;
+  fPreparedClientHeight := fGrid.ClientHeight;
+  fPreparedColCount := fGrid.ColCount;
+  fPreparedRowCount := fGrid.RowCount;
+  fPreparedFixedCols := fGrid.FixedCols;
+  fPreparedFixedRows := fGrid.FixedRows;
+  fPreparedLeftCol := fGrid.LeftCol;
+  fPreparedTopRow := fGrid.TopRow;
+  fPreparedVisibleColCount := fGrid.VisibleColCount;
+  fPreparedVisibleRowCount := fGrid.VisibleRowCount;
+  fPreparedValid := True;
 end;
 
 class function TAccessibilityTmsAdvStringGridAdapters.CreateRegistry: IAccessibilityAdapterRegistry;

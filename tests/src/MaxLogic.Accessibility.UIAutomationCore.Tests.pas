@@ -71,6 +71,7 @@ begin
   Assert.AreEqual(50026, UIA_GroupControlTypeId);
   Assert.AreEqual(50028, UIA_DataGridControlTypeId);
   Assert.AreEqual(50029, UIA_DataItemControlTypeId);
+  Assert.AreEqual(50032, UIA_WindowControlTypeId);
   Assert.AreEqual(50033, UIA_PaneControlTypeId);
 
   Assert.AreEqual(10000, UIA_InvokePatternId);

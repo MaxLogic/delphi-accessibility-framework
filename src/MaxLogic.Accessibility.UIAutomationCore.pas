@@ -205,6 +205,7 @@ const
   UIA_DataGridControlTypeId = 50028;
   UIA_DataItemControlTypeId = 50029;
   UIA_DocumentControlTypeId = 50030;
+  UIA_WindowControlTypeId = 50032;
   UIA_PaneControlTypeId = 50033;
   UIA_HeaderControlTypeId = 50034;
   UIA_HeaderItemControlTypeId = 50035;

@@ -19,17 +19,36 @@ type
     [Test]
     procedure MsaaChildNavigationDoesNotAliasReceiverAndOutParameter;
     [Test]
+    procedure MsaaChildEnumerationUsesDirectProviderChildren;
+    [Test]
+    procedure MsaaFocusUsesDirectFocusedItemProvider;
+    [Test]
     procedure MsaaFocusReturnsCurrentStringGridCell;
     [Test]
     procedure MsaaCheckboxAndRadioExposePlatformRoleAndState;
+    [Test]
+    procedure MsaaStateReadsDirectStatePropertiesWithoutPatternProbes;
+    [Test]
+    procedure MsaaCommonSpeechPropertiesUseDirectProviderAccess;
+    [Test]
+    procedure MsaaLocationUsesDirectProviderGeometry;
+    [Test]
+    procedure MsaaHitTestUsesDirectProviderRootAccess;
+    [Test]
+    procedure MsaaHitTestMissUsesDirectProviderRootAccess;
+    [Test]
+    procedure MsaaHitTestUsesDirectNestedProviderRootAccess;
+    [Test]
+    procedure MsaaDirectAccessIsResolvedOncePerAccessibleWrapper;
   end;
 
 implementation
 
 uses
-  System.SysUtils, System.Variants, Winapi.ActiveX, Winapi.oleacc, Winapi.Windows, Vcl.ComCtrls, Vcl.Controls,
-  Vcl.Forms, Vcl.Grids, Vcl.StdCtrls, MaxLogic.Accessibility.Msaa, MaxLogic.Accessibility.ProviderCore,
-  MaxLogic.Accessibility.UIAutomationCore, MaxLogic.Accessibility.VclAdapters;
+  System.SysUtils, System.Types, System.TypInfo, System.Variants, Winapi.ActiveX, Winapi.oleacc, Winapi.Windows,
+  Vcl.ComCtrls, Vcl.Controls, Vcl.Forms, Vcl.Grids, Vcl.StdCtrls, MaxLogic.Accessibility.Diagnostics,
+  MaxLogic.Accessibility.Msaa, MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.UIAutomationCore,
+  MaxLogic.Accessibility.VclAdapters;
 
 type
   TFailingMsaaChildProvider = class(TAccessibilityProviderRoot)
@@ -39,9 +58,258 @@ type
     constructor Create;
   end;
 
+  TDirectFocusedMsaaRootProvider = class(TAccessibilityProviderRoot, IAccessibilityFocusedItemProvider)
+  private
+    fFocusedProvider: IAccessibilityProviderNode;
+    fRootGetFocusCount: Integer;
+  protected
+    function DoGetFocus(out aProvider: IRawElementProviderFragment): HResult; override;
+  public
+    constructor Create;
+    function RootGetFocusCount: Integer;
+    function TryGetFocusedItem(out aProvider: IRawElementProviderSimple; out aName: string): Boolean;
+  end;
+
+  TCountingMsaaStateProvider = class(TAccessibilityProviderNode)
+  private
+    fPatternProbeCount: Integer;
+    fSelectionPropertyProbeCount: Integer;
+    fTogglePropertyProbeCount: Integer;
+  protected
+    function DoGetPatternProvider(aPatternId: PATTERNID): IUnknown; override;
+    function DoGetPropertyValue(aPropertyId: PROPERTYID; out aValue: OleVariant): Boolean; override;
+  public
+    constructor Create;
+    function PatternProbeCount: Integer;
+    function SelectionPropertyProbeCount: Integer;
+    function TogglePropertyProbeCount: Integer;
+  end;
+
+  TCountingDirectAccessProvider = class(TObject, IInterface, IRawElementProviderSimple,
+    IAccessibilityProviderDirectAccess)
+  private
+    fDirectAccessQueryCount: Integer;
+  protected
+    function QueryInterface(const IID: TGUID; out Obj): HResult; stdcall;
+    function _AddRef: Integer; stdcall;
+    function _Release: Integer; stdcall;
+  public
+    function DirectAccessQueryCount: Integer;
+    function Get_HostRawElementProvider(out aRetVal: IRawElementProviderSimple): HResult; stdcall;
+    function Get_ProviderOptions(out aRetVal: ProviderOptions): HResult; stdcall;
+    function GetPatternProvider(aPatternId: PATTERNID; out aRetVal: IUnknown): HResult; stdcall;
+    function GetPropertyValue(aPropertyId: PROPERTYID; out aRetVal: OleVariant): HResult; stdcall;
+    procedure ResetDirectAccessQueryCount;
+    function SupportsPatternDirect(aPatternId: PATTERNID): Boolean;
+    function TryGetIntegerProperty(aPropertyId: PROPERTYID; out aValue: Integer): Boolean;
+    function TryGetNativeWindowHandle(out aValue: HWND): Boolean;
+    function TryGetStringProperty(aPropertyId: PROPERTYID; out aValue: string): Boolean;
+    function TryGetValueText(out aValue: string): Boolean;
+  end;
+
 constructor TFailingMsaaChildProvider.Create;
 begin
   inherited CreateNode([1], 0, nil, nil);
+end;
+
+constructor TDirectFocusedMsaaRootProvider.Create;
+begin
+  inherited CreateNode([914], 0, nil, nil);
+  fFocusedProvider := TAccessibilityProviderFactory.CreateFragment([915]);
+  fFocusedProvider.SetProperty(UIA_NamePropertyId, 'Focused child');
+  AddChild(fFocusedProvider);
+end;
+
+function TDirectFocusedMsaaRootProvider.DoGetFocus(out aProvider: IRawElementProviderFragment): HResult;
+begin
+  Inc(fRootGetFocusCount);
+  aProvider := nil;
+  Result := S_OK;
+end;
+
+function TDirectFocusedMsaaRootProvider.RootGetFocusCount: Integer;
+begin
+  Result := fRootGetFocusCount;
+end;
+
+function TDirectFocusedMsaaRootProvider.TryGetFocusedItem(out aProvider: IRawElementProviderSimple;
+  out aName: string): Boolean;
+begin
+  aProvider := fFocusedProvider.RawElementProvider;
+  aName := 'Focused child';
+  Result := True;
+end;
+
+constructor TCountingMsaaStateProvider.Create;
+begin
+  inherited CreateNode([932], 0, nil, nil);
+end;
+
+function TCountingMsaaStateProvider.DoGetPatternProvider(aPatternId: PATTERNID): IUnknown;
+begin
+  Inc(fPatternProbeCount);
+  Result := inherited DoGetPatternProvider(aPatternId);
+end;
+
+function TCountingMsaaStateProvider.DoGetPropertyValue(aPropertyId: PROPERTYID; out aValue: OleVariant): Boolean;
+begin
+  Result := True;
+  case aPropertyId of
+    UIA_ControlTypePropertyId:
+      aValue := UIA_CheckBoxControlTypeId;
+    UIA_HasKeyboardFocusPropertyId:
+      aValue := False;
+    UIA_IsEnabledPropertyId:
+      aValue := True;
+    UIA_IsKeyboardFocusablePropertyId:
+      aValue := True;
+    UIA_IsOffscreenPropertyId:
+      aValue := False;
+    UIA_SelectionItemIsSelectedPropertyId:
+      begin
+        Inc(fSelectionPropertyProbeCount);
+        Result := False;
+      end;
+    UIA_ToggleToggleStatePropertyId:
+      begin
+        Inc(fTogglePropertyProbeCount);
+        aValue := Integer(ToggleState_On);
+      end;
+  else
+    Result := inherited DoGetPropertyValue(aPropertyId, aValue);
+  end;
+end;
+
+function TCountingMsaaStateProvider.PatternProbeCount: Integer;
+begin
+  Result := fPatternProbeCount;
+end;
+
+function TCountingMsaaStateProvider.SelectionPropertyProbeCount: Integer;
+begin
+  Result := fSelectionPropertyProbeCount;
+end;
+
+function TCountingMsaaStateProvider.TogglePropertyProbeCount: Integer;
+begin
+  Result := fTogglePropertyProbeCount;
+end;
+
+function TCountingDirectAccessProvider._AddRef: Integer;
+begin
+  Result := -1;
+end;
+
+function TCountingDirectAccessProvider._Release: Integer;
+begin
+  Result := -1;
+end;
+
+function TCountingDirectAccessProvider.DirectAccessQueryCount: Integer;
+begin
+  Result := fDirectAccessQueryCount;
+end;
+
+function TCountingDirectAccessProvider.Get_HostRawElementProvider(out aRetVal: IRawElementProviderSimple): HResult;
+begin
+  aRetVal := nil;
+  Result := S_FALSE;
+end;
+
+function TCountingDirectAccessProvider.Get_ProviderOptions(out aRetVal: ProviderOptions): HResult;
+begin
+  aRetVal := ProviderOptions_ServerSideProvider;
+  Result := S_OK;
+end;
+
+function TCountingDirectAccessProvider.GetPatternProvider(aPatternId: PATTERNID; out aRetVal: IUnknown): HResult;
+begin
+  aRetVal := nil;
+  Result := S_OK;
+end;
+
+function TCountingDirectAccessProvider.GetPropertyValue(aPropertyId: PROPERTYID; out aRetVal: OleVariant): HResult;
+begin
+  aRetVal := Unassigned;
+  Result := S_OK;
+end;
+
+function TCountingDirectAccessProvider.QueryInterface(const IID: TGUID; out Obj): HResult;
+begin
+  if GetInterface(IID, Obj) then
+  begin
+    if IsEqualGUID(IID, GetTypeData(TypeInfo(IAccessibilityProviderDirectAccess))^.Guid) then
+    begin
+      Inc(fDirectAccessQueryCount);
+    end;
+
+    Exit(S_OK);
+  end;
+
+  Result := E_NOINTERFACE;
+end;
+
+procedure TCountingDirectAccessProvider.ResetDirectAccessQueryCount;
+begin
+  fDirectAccessQueryCount := 0;
+end;
+
+function TCountingDirectAccessProvider.SupportsPatternDirect(aPatternId: PATTERNID): Boolean;
+begin
+  Result := aPatternId = UIA_TogglePatternId;
+end;
+
+function TCountingDirectAccessProvider.TryGetIntegerProperty(aPropertyId: PROPERTYID; out aValue: Integer): Boolean;
+begin
+  Result := True;
+  case aPropertyId of
+    UIA_ControlTypePropertyId:
+      aValue := UIA_CheckBoxControlTypeId;
+    UIA_HasKeyboardFocusPropertyId:
+      aValue := 0;
+    UIA_IsEnabledPropertyId:
+      aValue := 1;
+    UIA_IsKeyboardFocusablePropertyId:
+      aValue := 1;
+    UIA_IsOffscreenPropertyId:
+      aValue := 0;
+    UIA_SelectionItemIsSelectedPropertyId:
+      begin
+        aValue := 0;
+        Result := False;
+      end;
+    UIA_ToggleToggleStatePropertyId:
+      aValue := Integer(ToggleState_On);
+  else
+    aValue := 0;
+    Result := False;
+  end;
+end;
+
+function TCountingDirectAccessProvider.TryGetNativeWindowHandle(out aValue: HWND): Boolean;
+begin
+  aValue := 0;
+  Result := False;
+end;
+
+function TCountingDirectAccessProvider.TryGetStringProperty(aPropertyId: PROPERTYID; out aValue: string): Boolean;
+begin
+  Result := True;
+  case aPropertyId of
+    UIA_HelpTextPropertyId:
+      aValue := 'Synthetic help';
+    UIA_NamePropertyId:
+      aValue := 'Synthetic checkbox';
+  else
+    aValue := '';
+    Result := False;
+  end;
+end;
+
+function TCountingDirectAccessProvider.TryGetValueText(out aValue: string): Boolean;
+begin
+  aValue := 'Synthetic value';
+  Result := True;
 end;
 
 procedure TFailingMsaaChildProvider.PrepareChildrenForNavigation;
@@ -178,6 +446,7 @@ var
   lAccessible: IAccessible;
   lDefaultAction: WideString;
   lForm: TForm;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
   lOrdersAccessible: IAccessible;
   lOrdersRect: TRect;
   lPageControl: TPageControl;
@@ -225,9 +494,19 @@ begin
     Assert.IsTrue((lState and STATE_SYSTEM_SELECTABLE) <> 0);
     Assert.IsTrue((lState and STATE_SYSTEM_SELECTED) = 0);
 
-    lDefaultAction := '';
-    Assert.AreEqual(S_OK, lTmsAccessible.Get_accDefaultAction(CHILDID_SELF, lDefaultAction));
-    Assert.AreEqual('Switch', string(lDefaultAction));
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+    try
+      lDefaultAction := '';
+      Assert.AreEqual(S_OK, lTmsAccessible.Get_accDefaultAction(CHILDID_SELF, lDefaultAction));
+      Assert.AreEqual('Switch', string(lDefaultAction));
+      lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+      Assert.AreEqual(0, lMetrics.ProviderGetPatternProviderCount,
+        'MSAA tab default action should use direct pattern support checks for framework providers.');
+    finally
+      TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+    end;
+
     Assert.AreEqual(S_OK, lTmsAccessible.accDoDefaultAction(CHILDID_SELF));
     Assert.AreSame(lTabTms, lPageControl.ActivePage);
     Assert.IsTrue((AccessibleState(lTmsAccessible) and STATE_SYSTEM_SELECTED) <> 0);
@@ -295,6 +574,72 @@ begin
   end;
 end;
 
+procedure TAccessibilityMsaaTests.MsaaChildEnumerationUsesDirectProviderChildren;
+const
+  cChildCount = 64;
+var
+  i: Integer;
+  lAccessible: IAccessible;
+  lChild: IAccessibilityProviderNode;
+  lChildAccessible: IAccessible;
+  lChildCount: Integer;
+  lChildDispatch: IDispatch;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+  lProvider: IAccessibilityProviderNode;
+begin
+  lProvider := TAccessibilityProviderFactory.CreateRoot([1], 0);
+  for i := 1 to cChildCount do
+  begin
+    lChild := TAccessibilityProviderFactory.CreateFragment([1000 + i]);
+    lChild.SetProperty(UIA_NamePropertyId, Format('Child %.2d', [i]));
+    lProvider.AddChild(lChild);
+  end;
+
+  lAccessible := TAccessibilityMsaaBridge.CreateAccessible(lProvider.RawElementProvider);
+  TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+  TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+  try
+    lChildCount := 0;
+    Assert.AreEqual(S_OK, lAccessible.Get_accChildCount(lChildCount));
+    Assert.AreEqual(cChildCount, lChildCount);
+
+    lChildDispatch := nil;
+    Assert.AreEqual(S_OK, lAccessible.Get_accChild(cChildCount, lChildDispatch));
+    lChildAccessible := AccessibleFromDispatch(lChildDispatch);
+    Assert.AreEqual('Child 64', AccessibleName(lChildAccessible));
+
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+    Assert.AreEqual(0, lMetrics.ProviderNavigateCount,
+      'MSAA child enumeration should use direct provider-child access, not UIA Navigate callbacks.');
+  finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+  end;
+end;
+
+procedure TAccessibilityMsaaTests.MsaaFocusUsesDirectFocusedItemProvider;
+var
+  lAccessible: IAccessible;
+  lDirectRoot: TDirectFocusedMsaaRootProvider;
+  lFocus: OleVariant;
+  lFocusAccessible: IAccessible;
+  lFocusDispatch: IDispatch;
+  lProvider: IAccessibilityProviderNode;
+begin
+  lDirectRoot := TDirectFocusedMsaaRootProvider.Create;
+  lProvider := lDirectRoot as IAccessibilityProviderNode;
+  lAccessible := TAccessibilityMsaaBridge.CreateAccessible(lProvider.RawElementProvider);
+
+  lFocus := Unassigned;
+  Assert.AreEqual(S_OK, lAccessible.Get_accFocus(lFocus));
+  Assert.AreEqual(varDispatch, VarType(lFocus));
+
+  lFocusDispatch := IDispatch(TVarData(lFocus).VDispatch);
+  lFocusAccessible := AccessibleFromDispatch(lFocusDispatch);
+  Assert.AreEqual('Focused child', AccessibleName(lFocusAccessible));
+  Assert.AreEqual(0, lDirectRoot.RootGetFocusCount,
+    'MSAA focus should use direct focused-item access before generic root GetFocus traversal.');
+end;
+
 procedure TAccessibilityMsaaTests.MsaaFocusReturnsCurrentStringGridCell;
 var
   lAccessible: IAccessible;
@@ -304,6 +649,7 @@ var
   lForm: TForm;
   lGrid: TStringGrid;
   lGridFragment: IRawElementProviderFragment;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
   lProvider: IAccessibilityProviderNode;
 begin
   lForm := TForm.Create(nil);
@@ -328,14 +674,24 @@ begin
     lGridFragment := FirstChild(FragmentFromProvider(lProvider));
     lAccessible := TAccessibilityMsaaBridge.CreateAccessible(SimpleProvider(lGridFragment));
 
-    lFocus := Unassigned;
-    Assert.AreEqual(S_OK, lAccessible.Get_accFocus(lFocus));
-    Assert.AreEqual(varDispatch, VarType(lFocus));
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+    try
+      lFocus := Unassigned;
+      Assert.AreEqual(S_OK, lAccessible.Get_accFocus(lFocus));
+      Assert.AreEqual(varDispatch, VarType(lFocus));
 
-    lCellDispatch := IDispatch(TVarData(lFocus).VDispatch);
-    lCellAccessible := AccessibleFromDispatch(lCellDispatch);
-    Assert.AreEqual('Contoso', AccessibleName(lCellAccessible));
-    Assert.AreEqual(ROLE_SYSTEM_CELL, AccessibleRole(lCellAccessible));
+      lCellDispatch := IDispatch(TVarData(lFocus).VDispatch);
+      lCellAccessible := AccessibleFromDispatch(lCellDispatch);
+      Assert.AreEqual('Contoso', AccessibleName(lCellAccessible));
+      Assert.AreEqual(ROLE_SYSTEM_CELL, AccessibleRole(lCellAccessible));
+
+      lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+      Assert.AreEqual(0, lMetrics.ProviderRootGetFocusCount,
+        'MSAA grid focus should use the provider direct focused-item path, not generic root GetFocus traversal.');
+    finally
+      TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+    end;
   finally
     lForm.Free;
   end;
@@ -400,6 +756,342 @@ begin
     Assert.IsTrue((AccessibleState(lRadioAccessible) and STATE_SYSTEM_CHECKED) <> 0);
   finally
     lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityMsaaTests.MsaaStateReadsDirectStatePropertiesWithoutPatternProbes;
+var
+  lAccessible: IAccessible;
+  lProvider: TCountingMsaaStateProvider;
+  lState: OleVariant;
+begin
+  lProvider := TCountingMsaaStateProvider.Create;
+  lAccessible := TAccessibilityMsaaBridge.CreateAccessible(lProvider.RawElementProvider);
+  lState := Unassigned;
+
+  Assert.AreEqual(S_OK, lAccessible.Get_accState(CHILDID_SELF, lState));
+
+  Assert.IsTrue((Integer(lState) and STATE_SYSTEM_CHECKED) <> 0);
+  Assert.AreEqual(1, lProvider.SelectionPropertyProbeCount,
+    'MSAA state composition should test SelectionItem state with one direct property read.');
+  Assert.AreEqual(1, lProvider.TogglePropertyProbeCount,
+    'MSAA state composition should read Toggle state once, not once for support and again for state.');
+  Assert.AreEqual(0, lProvider.PatternProbeCount,
+    'MSAA state composition should not probe UIA pattern providers when direct state properties are available.');
+end;
+
+procedure TAccessibilityMsaaTests.MsaaCommonSpeechPropertiesUseDirectProviderAccess;
+var
+  lCheckBox: TCheckBox;
+  lCheckBoxAccessible: IAccessible;
+  lCheckBoxFragment: IRawElementProviderFragment;
+  lEdit: TEdit;
+  lEditAccessible: IAccessible;
+  lEditFragment: IRawElementProviderFragment;
+  lForm: TForm;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+  lName: WideString;
+  lProvider: IAccessibilityProviderNode;
+  lRole: OleVariant;
+  lState: OleVariant;
+  lValue: WideString;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 180);
+
+    lEdit := TEdit.Create(lForm);
+    lEdit.Text := 'Search value';
+    lEdit.Parent := lForm;
+
+    lCheckBox := TCheckBox.Create(lForm);
+    lCheckBox.Caption := 'Include archived rows';
+    lCheckBox.Checked := True;
+    lCheckBox.Parent := lForm;
+
+    lForm.HandleNeeded;
+    lEdit.HandleNeeded;
+    lCheckBox.HandleNeeded;
+
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lEditFragment := FirstChild(FragmentFromProvider(lProvider));
+    lCheckBoxFragment := NextSibling(lEditFragment);
+    lEditAccessible := TAccessibilityMsaaBridge.CreateAccessible(SimpleProvider(lEditFragment));
+    lCheckBoxAccessible := TAccessibilityMsaaBridge.CreateAccessible(SimpleProvider(lCheckBoxFragment));
+
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+    try
+      lValue := '';
+      Assert.AreEqual(S_OK, lEditAccessible.Get_accValue(CHILDID_SELF, lValue));
+      Assert.AreEqual('Search value', string(lValue));
+
+      lName := '';
+      Assert.AreEqual(S_OK, lCheckBoxAccessible.Get_accName(CHILDID_SELF, lName));
+      Assert.AreEqual('Include archived rows', string(lName));
+      lRole := Unassigned;
+      Assert.AreEqual(S_OK, lCheckBoxAccessible.Get_accRole(CHILDID_SELF, lRole));
+      Assert.AreEqual(ROLE_SYSTEM_CHECKBUTTON, Integer(lRole));
+      lState := Unassigned;
+      Assert.AreEqual(S_OK, lCheckBoxAccessible.Get_accState(CHILDID_SELF, lState));
+      Assert.IsTrue((Integer(lState) and STATE_SYSTEM_CHECKED) <> 0);
+
+      lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+      Assert.AreEqual(0, lMetrics.ProviderGetPropertyValueCount,
+        'MSAA speech properties should read framework provider properties in-process.');
+      Assert.AreEqual(0, lMetrics.ProviderGetPatternProviderCount,
+        'MSAA speech properties should read framework provider patterns in-process.');
+    finally
+      TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+    end;
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityMsaaTests.MsaaLocationUsesDirectProviderGeometry;
+var
+  lAccessible: IAccessible;
+  lButton: TButton;
+  lButtonFragment: IRawElementProviderFragment;
+  lForm: TForm;
+  lHeight: Integer;
+  lLeft: Integer;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+  lProvider: IAccessibilityProviderNode;
+  lTop: Integer;
+  lWidth: Integer;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 180);
+
+    lButton := TButton.Create(lForm);
+    lButton.Caption := 'Apply';
+    lButton.SetBounds(24, 32, 88, 28);
+    lButton.Parent := lForm;
+
+    lForm.HandleNeeded;
+    lButton.HandleNeeded;
+
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lButtonFragment := FirstChild(FragmentFromProvider(lProvider));
+    lAccessible := TAccessibilityMsaaBridge.CreateAccessible(SimpleProvider(lButtonFragment));
+
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+    try
+      lLeft := 0;
+      lTop := 0;
+      lWidth := 0;
+      lHeight := 0;
+      Assert.AreEqual(S_OK, lAccessible.accLocation(lLeft, lTop, lWidth, lHeight, CHILDID_SELF));
+      Assert.IsTrue(lWidth > 0, 'MSAA location should expose a positive width.');
+      Assert.IsTrue(lHeight > 0, 'MSAA location should expose a positive height.');
+
+      lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+      Assert.AreEqual(0, lMetrics.ProviderGetBoundingRectangleCount,
+        'MSAA accLocation should read provider bounds through direct geometry access.');
+    finally
+      TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+    end;
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityMsaaTests.MsaaHitTestUsesDirectProviderRootAccess;
+var
+  lAccessible: IAccessible;
+  lButton: TButton;
+  lForm: TForm;
+  lHit: OleVariant;
+  lHitAccessible: IAccessible;
+  lHitDispatch: IDispatch;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+  lPoint: TPoint;
+  lProvider: IAccessibilityProviderNode;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 180);
+
+    lButton := TButton.Create(lForm);
+    lButton.Caption := 'Apply';
+    lButton.SetBounds(24, 32, 88, 28);
+    lButton.Parent := lForm;
+
+    lForm.HandleNeeded;
+    lButton.HandleNeeded;
+
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lAccessible := TAccessibilityMsaaBridge.CreateAccessible(lProvider.RawElementProvider);
+    lPoint := lButton.ClientToScreen(Point(lButton.Width div 2, lButton.Height div 2));
+
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+    try
+      lHit := Unassigned;
+      Assert.AreEqual(S_OK, lAccessible.accHitTest(lPoint.X, lPoint.Y, lHit));
+      Assert.AreEqual(varDispatch, VarType(lHit));
+
+      lHitDispatch := IDispatch(TVarData(lHit).VDispatch);
+      lHitAccessible := AccessibleFromDispatch(lHitDispatch);
+      Assert.AreEqual('Apply', AccessibleName(lHitAccessible));
+
+      lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+      Assert.AreEqual(0, lMetrics.ProviderRootElementProviderFromPointCount,
+        'MSAA hit testing should use direct framework root access instead of the public UIA hit-test callback.');
+    finally
+      TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+    end;
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityMsaaTests.MsaaHitTestMissUsesDirectProviderRootAccess;
+var
+  lAccessible: IAccessible;
+  lButton: TButton;
+  lForm: TForm;
+  lHit: OleVariant;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+  lPoint: TPoint;
+  lProvider: IAccessibilityProviderNode;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 180);
+
+    lButton := TButton.Create(lForm);
+    lButton.Caption := 'Apply';
+    lButton.SetBounds(24, 32, 88, 28);
+    lButton.Parent := lForm;
+
+    lForm.HandleNeeded;
+    lButton.HandleNeeded;
+
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lAccessible := TAccessibilityMsaaBridge.CreateAccessible(lProvider.RawElementProvider);
+    lPoint := lForm.ClientToScreen(Point(220, 100));
+
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+    try
+      lHit := Unassigned;
+      Assert.AreEqual(S_OK, lAccessible.accHitTest(lPoint.X, lPoint.Y, lHit));
+      Assert.AreEqual(CHILDID_SELF, Integer(lHit));
+
+      lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+      Assert.AreEqual(0, lMetrics.ProviderRootElementProviderFromPointCount,
+        'MSAA hit-test misses should not fall back to the public UIA root hit-test callback.');
+    finally
+      TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+    end;
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityMsaaTests.MsaaHitTestUsesDirectNestedProviderRootAccess;
+var
+  lAccessible: IAccessible;
+  lCellRect: TRect;
+  lForm: TForm;
+  lGrid: TStringGrid;
+  lHit: OleVariant;
+  lHitAccessible: IAccessible;
+  lHitDispatch: IDispatch;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+  lPoint: TPoint;
+  lProvider: IAccessibilityProviderNode;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 420, 260);
+
+    lGrid := TStringGrid.Create(lForm);
+    lGrid.Parent := lForm;
+    lGrid.SetBounds(12, 12, 260, 120);
+    lGrid.ColCount := 2;
+    lGrid.RowCount := 2;
+    lGrid.Cells[1, 1] := 'Grid item';
+
+    lForm.HandleNeeded;
+    lGrid.HandleNeeded;
+
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lAccessible := TAccessibilityMsaaBridge.CreateAccessible(lProvider.RawElementProvider);
+    lCellRect := lGrid.CellRect(1, 1);
+    lPoint := lGrid.ClientToScreen(lCellRect.CenterPoint);
+
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+    try
+      lHit := Unassigned;
+      Assert.AreEqual(S_OK, lAccessible.accHitTest(lPoint.X, lPoint.Y, lHit));
+      Assert.AreEqual(varDispatch, VarType(lHit));
+
+      lHitDispatch := IDispatch(TVarData(lHit).VDispatch);
+      lHitAccessible := AccessibleFromDispatch(lHitDispatch);
+      Assert.AreEqual('Grid item', AccessibleName(lHitAccessible));
+      Assert.AreEqual(ROLE_SYSTEM_CELL, AccessibleRole(lHitAccessible));
+
+      lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+      Assert.AreEqual(0, lMetrics.ProviderRootElementProviderFromPointCount,
+        'MSAA nested hit testing should stay on direct framework root access.');
+    finally
+      TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+    end;
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityMsaaTests.MsaaDirectAccessIsResolvedOncePerAccessibleWrapper;
+var
+  lAccessible: IAccessible;
+  lHelp: WideString;
+  lName: WideString;
+  lProvider: TCountingDirectAccessProvider;
+  lRole: OleVariant;
+  lSimple: IRawElementProviderSimple;
+  lState: OleVariant;
+  lValue: WideString;
+begin
+  lProvider := TCountingDirectAccessProvider.Create;
+  try
+    lSimple := lProvider as IRawElementProviderSimple;
+    lAccessible := TAccessibilityMsaaBridge.CreateAccessible(lSimple);
+    lProvider.ResetDirectAccessQueryCount;
+
+    lName := '';
+    Assert.AreEqual(S_OK, lAccessible.Get_accName(CHILDID_SELF, lName));
+    Assert.AreEqual('Synthetic checkbox', string(lName));
+
+    lRole := Unassigned;
+    Assert.AreEqual(S_OK, lAccessible.Get_accRole(CHILDID_SELF, lRole));
+    Assert.AreEqual(ROLE_SYSTEM_CHECKBUTTON, Integer(lRole));
+
+    lState := Unassigned;
+    Assert.AreEqual(S_OK, lAccessible.Get_accState(CHILDID_SELF, lState));
+    Assert.IsTrue((Integer(lState) and STATE_SYSTEM_CHECKED) <> 0);
+
+    lValue := '';
+    Assert.AreEqual(S_OK, lAccessible.Get_accValue(CHILDID_SELF, lValue));
+    Assert.AreEqual('Synthetic value', string(lValue));
+
+    lHelp := '';
+    Assert.AreEqual(S_OK, lAccessible.Get_accHelp(CHILDID_SELF, lHelp));
+    Assert.AreEqual('Synthetic help', string(lHelp));
+
+    Assert.AreEqual(0, lProvider.DirectAccessQueryCount,
+      'MSAA wrapper should cache direct provider access instead of querying the same interface per property.');
+  finally
+    lAccessible := nil;
+    lSimple := nil;
+    lProvider.Free;
   end;
 end;
 

@@ -17,19 +17,29 @@ type
 implementation
 
 uses
-  System.SysUtils, System.Variants, Winapi.ActiveX;
+  System.SysUtils, System.Variants, Winapi.ActiveX, MaxLogic.Accessibility.ProviderCore;
 
 type
   TAccessibilityMsaaProvider = class(TInterfacedObject, IDispatch, IAccessible)
   private
+    fChildAccess: IAccessibilityProviderChildAccess;
+    fDirectAccess: IAccessibilityProviderDirectAccess;
+    fGeometryAccess: IAccessibilityProviderGeometryAccess;
     fProvider: IRawElementProviderSimple;
+    fRootAccess: IAccessibilityProviderRootAccess;
+    function ChildAccess: IAccessibilityProviderChildAccess;
+    function DirectAccess: IAccessibilityProviderDirectAccess;
     function Fragment: IRawElementProviderFragment;
+    function GeometryAccess: IAccessibilityProviderGeometryAccess;
     function ProviderBoolProperty(aPropertyId: PROPERTYID; aDefault: Boolean): Boolean;
     function ProviderIntProperty(aPropertyId: PROPERTYID; aDefault: Integer): Integer;
     function ProviderStringProperty(aPropertyId: PROPERTYID): string;
+    function RootAccess: IAccessibilityProviderRootAccess;
     function SelectionItemProvider(out aProvider: ISelectionItemProvider): Boolean;
     function SelfChild(const aChild: OleVariant): Boolean;
     function ToggleProvider(out aProvider: IToggleProvider): Boolean;
+    function TryGetSelectionItemSelected(out aSelected: Boolean): Boolean;
+    function TryGetToggleState(out aToggleState: ToggleState): Boolean;
   public
     constructor Create(const aProvider: IRawElementProviderSimple);
     function Get_accParent(out ppdispParent: IDispatch): HResult; stdcall;
@@ -122,6 +132,15 @@ constructor TAccessibilityMsaaProvider.Create(const aProvider: IRawElementProvid
 begin
   inherited Create;
   fProvider := aProvider;
+  Supports(fProvider, IAccessibilityProviderChildAccess, fChildAccess);
+  Supports(fProvider, IAccessibilityProviderDirectAccess, fDirectAccess);
+  Supports(fProvider, IAccessibilityProviderGeometryAccess, fGeometryAccess);
+  Supports(fProvider, IAccessibilityProviderRootAccess, fRootAccess);
+end;
+
+function TAccessibilityMsaaProvider.ChildAccess: IAccessibilityProviderChildAccess;
+begin
+  Result := fChildAccess;
 end;
 
 function TAccessibilityMsaaProvider.Fragment: IRawElementProviderFragment;
@@ -130,11 +149,34 @@ begin
   Supports(fProvider, IRawElementProviderFragment, Result);
 end;
 
+function TAccessibilityMsaaProvider.DirectAccess: IAccessibilityProviderDirectAccess;
+begin
+  Result := fDirectAccess;
+end;
+
+function TAccessibilityMsaaProvider.GeometryAccess: IAccessibilityProviderGeometryAccess;
+begin
+  Result := fGeometryAccess;
+end;
+
+function TAccessibilityMsaaProvider.RootAccess: IAccessibilityProviderRootAccess;
+begin
+  Result := fRootAccess;
+end;
+
 function TAccessibilityMsaaProvider.ProviderBoolProperty(aPropertyId: PROPERTYID; aDefault: Boolean): Boolean;
 var
+  lDirectAccess: IAccessibilityProviderDirectAccess;
+  lDirectValue: Integer;
   lValue: OleVariant;
 begin
   Result := aDefault;
+  lDirectAccess := DirectAccess;
+  if (lDirectAccess <> nil) and lDirectAccess.TryGetIntegerProperty(aPropertyId, lDirectValue) then
+  begin
+    Exit(lDirectValue <> 0);
+  end;
+
   if (fProvider <> nil) and (fProvider.GetPropertyValue(aPropertyId, lValue) = S_OK) and
     not (VarIsEmpty(lValue) or VarIsNull(lValue)) then
   begin
@@ -144,9 +186,17 @@ end;
 
 function TAccessibilityMsaaProvider.ProviderIntProperty(aPropertyId: PROPERTYID; aDefault: Integer): Integer;
 var
+  lDirectAccess: IAccessibilityProviderDirectAccess;
+  lDirectValue: Integer;
   lValue: OleVariant;
 begin
   Result := aDefault;
+  lDirectAccess := DirectAccess;
+  if (lDirectAccess <> nil) and lDirectAccess.TryGetIntegerProperty(aPropertyId, lDirectValue) then
+  begin
+    Exit(lDirectValue);
+  end;
+
   if (fProvider <> nil) and (fProvider.GetPropertyValue(aPropertyId, lValue) = S_OK) and
     not (VarIsEmpty(lValue) or VarIsNull(lValue)) then
   begin
@@ -156,9 +206,17 @@ end;
 
 function TAccessibilityMsaaProvider.ProviderStringProperty(aPropertyId: PROPERTYID): string;
 var
+  lDirectAccess: IAccessibilityProviderDirectAccess;
+  lDirectValue: string;
   lValue: OleVariant;
 begin
   Result := '';
+  lDirectAccess := DirectAccess;
+  if (lDirectAccess <> nil) and lDirectAccess.TryGetStringProperty(aPropertyId, lDirectValue) then
+  begin
+    Exit(lDirectValue);
+  end;
+
   if (fProvider <> nil) and (fProvider.GetPropertyValue(aPropertyId, lValue) = S_OK) and
     not (VarIsEmpty(lValue) or VarIsNull(lValue)) then
   begin
@@ -189,6 +247,37 @@ begin
     Supports(lPattern, IToggleProvider, aProvider);
 end;
 
+function TAccessibilityMsaaProvider.TryGetSelectionItemSelected(out aSelected: Boolean): Boolean;
+var
+  lDirectAccess: IAccessibilityProviderDirectAccess;
+  lPropertyValue: Integer;
+begin
+  aSelected := False;
+  lDirectAccess := DirectAccess;
+  Result := (lDirectAccess <> nil) and lDirectAccess.TryGetIntegerProperty(UIA_SelectionItemIsSelectedPropertyId,
+    lPropertyValue);
+  if Result then
+  begin
+    aSelected := lPropertyValue <> 0;
+  end;
+end;
+
+function TAccessibilityMsaaProvider.TryGetToggleState(out aToggleState: ToggleState): Boolean;
+var
+  lDirectAccess: IAccessibilityProviderDirectAccess;
+  lPropertyValue: Integer;
+begin
+  aToggleState := ToggleState_Off;
+  lDirectAccess := DirectAccess;
+  Result := (lDirectAccess <> nil) and lDirectAccess.TryGetIntegerProperty(UIA_ToggleToggleStatePropertyId,
+    lPropertyValue) and
+    (lPropertyValue >= ToggleState_Off) and (lPropertyValue <= ToggleState_Indeterminate);
+  if Result then
+  begin
+    aToggleState := lPropertyValue;
+  end;
+end;
+
 function TAccessibilityMsaaProvider.Get_accParent(out ppdispParent: IDispatch): HResult;
 var
   lParent: IRawElementProviderFragment;
@@ -208,10 +297,22 @@ end;
 function TAccessibilityMsaaProvider.Get_accChildCount(out pcountChildren: Integer): HResult;
 var
   lChild: IRawElementProviderFragment;
+  lChildAccess: IAccessibilityProviderChildAccess;
   lFragment: IRawElementProviderFragment;
   lNextChild: IRawElementProviderFragment;
 begin
   pcountChildren := 0;
+  lChildAccess := ChildAccess;
+  if lChildAccess <> nil then
+  begin
+    Result := lChildAccess.DirectChildCount(pcountChildren);
+    if Result = UIA_E_ELEMENTNOTAVAILABLE then
+    begin
+      Exit(S_FALSE);
+    end;
+    Exit(Result);
+  end;
+
   lFragment := Fragment;
   if lFragment = nil then
   begin
@@ -240,6 +341,8 @@ function TAccessibilityMsaaProvider.Get_accChild(varChild: OleVariant; out ppdis
 var
   i: Integer;
   lChild: IRawElementProviderFragment;
+  lChildAccess: IAccessibilityProviderChildAccess;
+  lChildProvider: IRawElementProviderSimple;
   lFragment: IRawElementProviderFragment;
   lNextChild: IRawElementProviderFragment;
 begin
@@ -248,6 +351,23 @@ begin
     if not VarIsNumeric(varChild) or (Integer(varChild) <= CHILDID_SELF) then
     begin
       Exit(E_INVALIDARG);
+    end;
+
+    lChildAccess := ChildAccess;
+    if lChildAccess <> nil then
+    begin
+      Result := lChildAccess.DirectChildAt(Integer(varChild) - 1, lChildProvider);
+      if Result = UIA_E_ELEMENTNOTAVAILABLE then
+      begin
+        Exit(S_FALSE);
+      end;
+      if (Result <> S_OK) or (lChildProvider = nil) then
+      begin
+        Exit(Result);
+      end;
+
+      ppdispChild := TAccessibilityMsaaBridge.CreateAccessible(lChildProvider) as IDispatch;
+      Exit(S_OK);
     end;
 
     lFragment := Fragment;
@@ -303,13 +423,26 @@ end;
 
 function TAccessibilityMsaaProvider.Get_accValue(varChild: OleVariant; out pszValue: WideString): HResult;
 var
+  lDirectAccess: IAccessibilityProviderDirectAccess;
   lPattern: IUnknown;
+  lValue: string;
   lValueProvider: IValueProvider;
 begin
   pszValue := '';
   if not SelfChild(varChild) then
   begin
     Exit(E_INVALIDARG);
+  end;
+
+  lDirectAccess := DirectAccess;
+  if lDirectAccess <> nil then
+  begin
+    if lDirectAccess.TryGetValueText(lValue) then
+    begin
+      pszValue := lValue;
+      Exit(S_OK);
+    end;
+    Exit(S_FALSE);
   end;
 
   if (fProvider = nil) or (fProvider.GetPatternProvider(UIA_ValuePatternId, lPattern) <> S_OK) or
@@ -341,6 +474,8 @@ end;
 function TAccessibilityMsaaProvider.Get_accState(varChild: OleVariant; out pvarState: OleVariant): HResult;
 var
   lControlType: Integer;
+  lDirectAccess: IAccessibilityProviderDirectAccess;
+  lIsDirectSelected: Boolean;
   lIsSelected: BOOL;
   lSelectionItemProvider: ISelectionItemProvider;
   lState: Integer;
@@ -354,6 +489,7 @@ begin
   end;
 
   lState := STATE_SYSTEM_NORMAL;
+  lDirectAccess := DirectAccess;
   lControlType := ProviderIntProperty(UIA_ControlTypePropertyId, UIA_CustomControlTypeId);
   if not ProviderBoolProperty(UIA_IsEnabledPropertyId, True) then
   begin
@@ -375,7 +511,18 @@ begin
     lState := lState or STATE_SYSTEM_OFFSCREEN;
   end;
 
-  if SelectionItemProvider(lSelectionItemProvider) then
+  if (lDirectAccess <> nil) and TryGetSelectionItemSelected(lIsDirectSelected) then
+  begin
+    lState := lState or STATE_SYSTEM_SELECTABLE;
+    if lIsDirectSelected then
+    begin
+      lState := lState or STATE_SYSTEM_SELECTED;
+      if lControlType = UIA_RadioButtonControlTypeId then
+      begin
+        lState := lState or STATE_SYSTEM_CHECKED;
+      end;
+    end;
+  end else if (lDirectAccess = nil) and SelectionItemProvider(lSelectionItemProvider) then
   begin
     lState := lState or STATE_SYSTEM_SELECTABLE;
     if (lSelectionItemProvider.Get_IsSelected(lIsSelected) = S_OK) and lIsSelected then
@@ -388,7 +535,9 @@ begin
     end;
   end;
 
-  if ToggleProvider(lToggleProvider) and (lToggleProvider.Get_ToggleState(lToggleState) = S_OK) then
+  if ((lDirectAccess <> nil) and TryGetToggleState(lToggleState)) or
+    ((lDirectAccess = nil) and ToggleProvider(lToggleProvider) and
+    (lToggleProvider.Get_ToggleState(lToggleState) = S_OK)) then
   begin
     case lToggleState of
       ToggleState_On:
@@ -437,9 +586,19 @@ end;
 function TAccessibilityMsaaProvider.Get_accFocus(out pvarChild: OleVariant): HResult;
 var
   lFocus: IRawElementProviderFragment;
+  lFocusedItems: IAccessibilityFocusedItemProvider;
+  lFocusName: string;
+  lFocusProvider: IRawElementProviderSimple;
   lRoot: IRawElementProviderFragmentRoot;
 begin
   pvarChild := CHILDID_SELF;
+  if (fProvider <> nil) and Supports(fProvider, IAccessibilityFocusedItemProvider, lFocusedItems) and
+    lFocusedItems.TryGetFocusedItem(lFocusProvider, lFocusName) and (lFocusProvider <> nil) then
+  begin
+    pvarChild := DispatchVariant(TAccessibilityMsaaBridge.CreateAccessible(lFocusProvider));
+    Exit(S_OK);
+  end;
+
   if (fProvider <> nil) and Supports(fProvider, IRawElementProviderFragmentRoot, lRoot) and
     (lRoot.GetFocus(lFocus) = S_OK) and (lFocus <> nil) then
   begin
@@ -458,6 +617,8 @@ end;
 function TAccessibilityMsaaProvider.Get_accDefaultAction(varChild: OleVariant;
   out pszDefaultAction: WideString): HResult;
 var
+  lControlType: Integer;
+  lDirectAccess: IAccessibilityProviderDirectAccess;
   lSelectionItemProvider: ISelectionItemProvider;
 begin
   pszDefaultAction := '';
@@ -466,8 +627,25 @@ begin
     Exit(E_INVALIDARG);
   end;
 
-  if (ProviderIntProperty(UIA_ControlTypePropertyId, UIA_CustomControlTypeId) = UIA_TabItemControlTypeId) and
-    SelectionItemProvider(lSelectionItemProvider) then
+  lControlType := ProviderIntProperty(UIA_ControlTypePropertyId, UIA_CustomControlTypeId);
+  if lControlType <> UIA_TabItemControlTypeId then
+  begin
+    Exit(DISP_E_MEMBERNOTFOUND);
+  end;
+
+  lDirectAccess := DirectAccess;
+  if lDirectAccess <> nil then
+  begin
+    if lDirectAccess.SupportsPatternDirect(UIA_SelectionItemPatternId) then
+    begin
+      pszDefaultAction := cTabDefaultAction;
+      Exit(S_OK);
+    end;
+
+    Exit(DISP_E_MEMBERNOTFOUND);
+  end;
+
+  if SelectionItemProvider(lSelectionItemProvider) then
   begin
     pszDefaultAction := cTabDefaultAction;
     Exit(S_OK);
@@ -508,6 +686,7 @@ function TAccessibilityMsaaProvider.accLocation(out pxLeft: Integer; out pyTop: 
 var
   lBounds: UiaRect;
   lFragment: IRawElementProviderFragment;
+  lGeometryAccess: IAccessibilityProviderGeometryAccess;
 begin
   pxLeft := 0;
   pyTop := 0;
@@ -518,8 +697,17 @@ begin
     Exit(E_INVALIDARG);
   end;
 
-  lFragment := Fragment;
-  if (lFragment = nil) or (lFragment.Get_BoundingRectangle(lBounds) <> S_OK) then
+  lGeometryAccess := GeometryAccess;
+  if (lGeometryAccess = nil) or not lGeometryAccess.TryGetBoundingRectangle(lBounds) then
+  begin
+    lFragment := Fragment;
+    if (lFragment = nil) or (lFragment.Get_BoundingRectangle(lBounds) <> S_OK) then
+    begin
+      Exit(S_FALSE);
+    end;
+  end;
+
+  if (lBounds.Width <= 0) or (lBounds.Height <= 0) then
   begin
     Exit(S_FALSE);
   end;
@@ -541,9 +729,30 @@ end;
 function TAccessibilityMsaaProvider.accHitTest(xLeft: Integer; yTop: Integer; out pvarChild: OleVariant): HResult;
 var
   lHit: IRawElementProviderFragment;
+  lHitProvider: IRawElementProviderSimple;
+  lHitResult: HResult;
   lRoot: IRawElementProviderFragmentRoot;
+  lRootAccess: IAccessibilityProviderRootAccess;
 begin
   pvarChild := Unassigned;
+  lRootAccess := RootAccess;
+  if lRootAccess <> nil then
+  begin
+    lHitProvider := nil;
+    lHitResult := lRootAccess.DirectElementProviderFromPoint(xLeft, yTop, lHitProvider);
+    if lHitResult = S_OK then
+    begin
+      if lHitProvider <> nil then
+      begin
+        pvarChild := DispatchVariant(TAccessibilityMsaaBridge.CreateAccessible(lHitProvider));
+        Exit(S_OK);
+      end;
+
+      pvarChild := CHILDID_SELF;
+      Exit(S_OK);
+    end;
+  end;
+
   if (fProvider <> nil) and Supports(fProvider, IRawElementProviderFragmentRoot, lRoot) and
     (lRoot.ElementProviderFromPoint(xLeft, yTop, lHit) = S_OK) and (lHit <> nil) then
   begin

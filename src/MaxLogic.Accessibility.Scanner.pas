@@ -84,13 +84,32 @@ implementation
 
 uses
   System.Actions, System.Classes, System.Generics.Defaults, System.SysUtils, System.Types, System.TypInfo,
-  Winapi.Messages, Vcl.StdCtrls, MaxLogic.Accessibility.Text;
+  Winapi.Messages, Vcl.ComCtrls, Vcl.ExtCtrls, Vcl.StdCtrls, MaxLogic.Accessibility.Diagnostics,
+  MaxLogic.Accessibility.Text;
 
 type
   TSortedChildEntry = record
     Control: TControl;
     OriginalIndex: Integer;
     SortKey: Integer;
+  end;
+
+  TScannerLabelCandidate = record
+    Control: TControl;
+    FocusControl: TControl;
+    Text: string;
+  end;
+
+  TScannerControlAccess = class(TControl);
+  TScannerLabelAccess = class(TCustomLabel);
+
+  TRttiPropertyCache = class
+  private
+    fPropsByClass: TObjectDictionary<NativeUInt, TDictionary<string, PPropInfo>>;
+  public
+    constructor Create;
+    destructor Destroy; override;
+    function Find(aObject: TObject; const aPropertyName: string): PPropInfo;
   end;
 
   TAccessibilityScanNode = class(TInterfacedObject, IAccessibilityScanNode)
@@ -112,10 +131,14 @@ type
 
   TAccessibilityScanTree = class(TInterfacedObject, IAccessibilityScanTree)
   private
+    fFlattenedNodes: TArray<IAccessibilityScanNode>;
+    fNodeCount: Integer;
     fNodesByControl: TDictionary<TControl, IAccessibilityScanNode>;
     fRevision: Integer;
     fRoot: IAccessibilityScanNode;
-    procedure AddFlattenedChildren(const aNode: IAccessibilityScanNode; var aNodes: TArray<IAccessibilityScanNode>);
+    procedure AddFlattenedChildren(const aNode: IAccessibilityScanNode; var aNodes:
+      TArray<IAccessibilityScanNode>; var aIndex: Integer);
+    procedure BuildFlattenedNodes;
     procedure IndexNode(const aNode: IAccessibilityScanNode);
   public
     constructor Create(const aRoot: IAccessibilityScanNode; aRevision: Integer);
@@ -134,6 +157,7 @@ type
     fObservedScan: TAccessibilityObservedFormScan;
     fOriginalWindowProc: TWndMethod;
     fPassive: Boolean;
+    fRetained: Boolean;
     procedure Detach;
     function Passivate: Boolean;
   protected
@@ -174,40 +198,185 @@ begin
   Result := (TMethod(aLeft).Code = TMethod(aRight).Code) and (TMethod(aLeft).Data = TMethod(aRight).Data);
 end;
 
-function ReadObjectProperty(aObject: TObject; const aPropertyName: string): TObject;
+constructor TRttiPropertyCache.Create;
+begin
+  inherited Create;
+  fPropsByClass := TObjectDictionary<NativeUInt, TDictionary<string, PPropInfo>>.Create([doOwnsValues]);
+end;
+
+destructor TRttiPropertyCache.Destroy;
+begin
+  fPropsByClass.Free;
+  inherited Destroy;
+end;
+
+function TRttiPropertyCache.Find(aObject: TObject; const aPropertyName: string): PPropInfo;
+var
+  lClassInfo: PTypeInfo;
+  lClassKey: NativeUInt;
+  lProperties: TDictionary<string, PPropInfo>;
+begin
+  Result := nil;
+  if aObject = nil then
+  begin
+    Exit;
+  end;
+
+  lClassInfo := aObject.ClassInfo;
+  if lClassInfo = nil then
+  begin
+    Exit;
+  end;
+
+  lClassKey := NativeUInt(lClassInfo);
+  if not fPropsByClass.TryGetValue(lClassKey, lProperties) then
+  begin
+    lProperties := TDictionary<string, PPropInfo>.Create;
+    fPropsByClass.Add(lClassKey, lProperties);
+  end;
+
+  if not lProperties.TryGetValue(aPropertyName, Result) then
+  begin
+    TAccessibilityDiagnostics.RecordScannerRttiPropertyLookup;
+    Result := GetPropInfo(lClassInfo, aPropertyName);
+    lProperties.Add(aPropertyName, Result);
+  end;
+end;
+
+function ControlHasDirectCaption(aControl: TControl): Boolean;
+begin
+  Result := (aControl is TCustomForm) or (aControl is TCustomLabel) or (aControl is TStaticText) or
+    (aControl is TCustomButton) or (aControl is TCustomCheckBox) or (aControl is TRadioButton) or
+    (aControl is TCustomGroupBox) or (aControl is TCustomPanel) or (aControl is TTabSheet) or
+    (aControl is TToolButton);
+end;
+
+function TryReadDirectObjectProperty(aObject: TObject; const aPropertyName: string; out aValue: TObject): Boolean;
+begin
+  Result := False;
+  aValue := nil;
+  if (aPropertyName = 'Action') and (aObject is TControl) then
+  begin
+    aValue := TScannerControlAccess(aObject).Action;
+    Exit(True);
+  end;
+
+  if (aPropertyName = 'FocusControl') and (aObject is TCustomLabel) then
+  begin
+    aValue := TScannerLabelAccess(aObject).FocusControl;
+    Exit(True);
+  end;
+
+  if (aPropertyName = 'EditLabel') and (aObject is TCustomLabeledEdit) then
+  begin
+    aValue := TCustomLabeledEdit(aObject).EditLabel;
+    Exit(True);
+  end;
+end;
+
+function TryReadDirectStringProperty(aObject: TObject; const aPropertyName: string; out aValue: string): Boolean;
+var
+  lControl: TControl;
+begin
+  Result := False;
+  aValue := '';
+  if not (aObject is TControl) then
+  begin
+    Exit;
+  end;
+
+  lControl := TControl(aObject);
+  if (aPropertyName = 'Caption') and ControlHasDirectCaption(lControl) then
+  begin
+    aValue := TAccessibilityText.Clean(TScannerControlAccess(lControl).Caption);
+    Exit(True);
+  end;
+
+  if (aPropertyName = 'Text') and
+    ((lControl is TCustomEdit) or (lControl is TCustomMemo) or (lControl is TCustomComboBox)) then
+  begin
+    aValue := TAccessibilityText.Clean(TScannerControlAccess(lControl).Text);
+    Exit(True);
+  end;
+
+  if aPropertyName = 'Hint' then
+  begin
+    aValue := TAccessibilityText.Clean(lControl.Hint);
+    Exit(True);
+  end;
+
+  if aPropertyName = 'TextHint' then
+  begin
+    if lControl is TCustomEdit then
+    begin
+      aValue := TAccessibilityText.Clean(TCustomEdit(lControl).TextHint);
+      Exit(True);
+    end;
+
+    if lControl is TCustomComboBox then
+    begin
+      aValue := TAccessibilityText.Clean(TCustomComboBox(lControl).TextHint);
+      Exit(True);
+    end;
+  end;
+end;
+
+function LookupPropInfo(aObject: TObject; const aPropertyName: string; aCache: TRttiPropertyCache): PPropInfo;
+begin
+  if aCache <> nil then
+  begin
+    Exit(aCache.Find(aObject, aPropertyName));
+  end;
+
+  TAccessibilityDiagnostics.RecordScannerRttiPropertyLookup;
+  Result := GetPropInfo(aObject.ClassInfo, aPropertyName);
+end;
+
+function ReadObjectProperty(aObject: TObject; const aPropertyName: string; aCache: TRttiPropertyCache = nil):
+  TObject;
 var
   lPropInfo: PPropInfo;
 begin
   Result := nil;
-  lPropInfo := GetPropInfo(aObject.ClassInfo, aPropertyName);
+  if TryReadDirectObjectProperty(aObject, aPropertyName, Result) then
+  begin
+    Exit;
+  end;
+
+  lPropInfo := LookupPropInfo(aObject, aPropertyName, aCache);
   if (lPropInfo <> nil) and (lPropInfo.PropType^.Kind = tkClass) then
   begin
     Result := GetObjectProp(aObject, lPropInfo);
   end;
 end;
 
-function ReadStringProperty(aObject: TObject; const aPropertyName: string): string;
+function ReadStringProperty(aObject: TObject; const aPropertyName: string; aCache: TRttiPropertyCache = nil): string;
 var
   lPropInfo: PPropInfo;
 begin
   Result := '';
-  lPropInfo := GetPropInfo(aObject.ClassInfo, aPropertyName);
+  if TryReadDirectStringProperty(aObject, aPropertyName, Result) then
+  begin
+    Exit;
+  end;
+
+  lPropInfo := LookupPropInfo(aObject, aPropertyName, aCache);
   if (lPropInfo <> nil) and (lPropInfo.PropType^.Kind in [tkString, tkLString, tkWString, tkUString]) then
   begin
     Result := TAccessibilityText.Clean(GetStrProp(aObject, lPropInfo));
   end;
 end;
 
-function ReadNestedStringProperty(aObject: TObject; const aObjectPropertyName: string;
-  const aStringPropertyName: string): string;
+function ReadNestedStringProperty(aObject: TObject; const aObjectPropertyName: string; const aStringPropertyName:
+  string; aCache: TRttiPropertyCache = nil): string;
 var
   lObject: TObject;
 begin
   Result := '';
-  lObject := ReadObjectProperty(aObject, aObjectPropertyName);
+  lObject := ReadObjectProperty(aObject, aObjectPropertyName, aCache);
   if lObject <> nil then
   begin
-    Result := ReadStringProperty(lObject, aStringPropertyName);
+    Result := ReadStringProperty(lObject, aStringPropertyName, aCache);
   end;
 end;
 
@@ -219,11 +388,6 @@ end;
 function IsLabelControl(aControl: TControl): Boolean;
 begin
   Result := (aControl is TCustomLabel) or (aControl is TStaticText);
-end;
-
-function LabelTargetsControl(aLabel: TControl; aControl: TControl): Boolean;
-begin
-  Result := ReadObjectProperty(aLabel, 'FocusControl') = aControl;
 end;
 
 function ControlIsInActiveVisibleTree(aControl: TControl): Boolean;
@@ -245,7 +409,7 @@ begin
   Result := True;
 end;
 
-function LabelScore(aLabel: TControl; aControl: TControl): Integer;
+function LabelScore(const aLabel: TScannerLabelCandidate; aControl: TControl): Integer;
 var
   lControlCenterX: Integer;
   lControlCenterY: Integer;
@@ -255,13 +419,13 @@ var
   lLabelRect: TRect;
   lVerticalOverlap: Boolean;
 begin
-  if LabelTargetsControl(aLabel, aControl) then
+  if aLabel.FocusControl = aControl then
   begin
     Exit(0);
   end;
 
   lControlRect := aControl.BoundsRect;
-  lLabelRect := aLabel.BoundsRect;
+  lLabelRect := aLabel.Control.BoundsRect;
   lControlCenterX := (lControlRect.Left + lControlRect.Right) div 2;
   lControlCenterY := (lControlRect.Top + lControlRect.Bottom) div 2;
   lLabelCenterX := (lLabelRect.Left + lLabelRect.Right) div 2;
@@ -282,13 +446,13 @@ begin
   Result := MaxInt;
 end;
 
-function TryFindAssociatedLabelText(aControl: TControl; out aText: string): Boolean;
+function TryFindAssociatedLabelText(aControl: TControl; const aLabels: TArray<TScannerLabelCandidate>;
+  aFocusLabels: TDictionary<TControl, string>; out aText: string): Boolean;
 var
   i: Integer;
   lBestScore: Integer;
-  lCandidate: TControl;
+  lCandidate: TScannerLabelCandidate;
   lCandidateScore: Integer;
-  lText: string;
 begin
   Result := False;
   aText := '';
@@ -297,17 +461,16 @@ begin
     Exit;
   end;
 
-  lBestScore := MaxInt;
-  for i := 0 to Pred(aControl.Parent.ControlCount) do
+  if (aFocusLabels <> nil) and aFocusLabels.TryGetValue(aControl, aText) then
   begin
-    lCandidate := aControl.Parent.Controls[i];
-    if (lCandidate = aControl) or not IsLabelControl(lCandidate) or not ControlIsInActiveVisibleTree(lCandidate) then
-    begin
-      Continue;
-    end;
+    Exit(True);
+  end;
 
-    lText := ReadStringProperty(lCandidate, 'Caption');
-    if lText = '' then
+  lBestScore := MaxInt;
+  for i := 0 to High(aLabels) do
+  begin
+    lCandidate := aLabels[i];
+    if lCandidate.Control = aControl then
     begin
       Continue;
     end;
@@ -316,10 +479,57 @@ begin
     if lCandidateScore < lBestScore then
     begin
       lBestScore := lCandidateScore;
-      aText := lText;
+      aText := lCandidate.Text;
       Result := True;
     end;
   end;
+end;
+
+function BuildLabelCandidates(const aChildren: TArray<TControl>; out aFocusLabels: TDictionary<TControl, string>;
+  aCache: TRttiPropertyCache): TArray<TScannerLabelCandidate>;
+var
+  i: Integer;
+  lCount: Integer;
+  lFocusControl: TObject;
+  lText: string;
+begin
+  aFocusLabels := nil;
+  SetLength(Result, Length(aChildren));
+  lCount := 0;
+  for i := 0 to High(aChildren) do
+  begin
+    if not IsLabelControl(aChildren[i]) or not ControlIsInActiveVisibleTree(aChildren[i]) then
+    begin
+      Continue;
+    end;
+
+    lText := ReadStringProperty(aChildren[i], 'Caption', aCache);
+    if lText = '' then
+    begin
+      Continue;
+    end;
+
+    Result[lCount].Control := aChildren[i];
+    Result[lCount].Text := lText;
+    lFocusControl := ReadObjectProperty(aChildren[i], 'FocusControl', aCache);
+    if lFocusControl is TControl then
+    begin
+      Result[lCount].FocusControl := TControl(lFocusControl);
+      if aFocusLabels = nil then
+      begin
+        aFocusLabels := TDictionary<TControl, string>.Create;
+      end;
+
+      if not aFocusLabels.ContainsKey(TControl(lFocusControl)) then
+      begin
+        aFocusLabels.Add(TControl(lFocusControl), lText);
+      end;
+    end;
+
+    Inc(lCount);
+  end;
+
+  SetLength(Result, lCount);
 end;
 
 function ControlSortKey(aControl: TControl; aFallbackIndex: Integer): Integer;
@@ -361,12 +571,36 @@ function SortedChildren(aParent: TWinControl): TArray<TControl>;
 var
   i: Integer;
   lEntries: TArray<TSortedChildEntry>;
+  lIsSorted: Boolean;
+  lPreviousSortKey: Integer;
+  lSortKey: Integer;
 begin
-  SetLength(lEntries, aParent.ControlCount);
   SetLength(Result, aParent.ControlCount);
+  lIsSorted := True;
+  lPreviousSortKey := Low(Integer);
   for i := 0 to Pred(aParent.ControlCount) do
   begin
-    lEntries[i].Control := aParent.Controls[i];
+    Result[i] := aParent.Controls[i];
+    lSortKey := ControlSortKey(Result[i], i);
+    if (i > 0) and (lSortKey < lPreviousSortKey) then
+    begin
+      lIsSorted := False;
+    end;
+
+    lPreviousSortKey := lSortKey;
+  end;
+
+  if lIsSorted then
+  begin
+    TAccessibilityDiagnostics.RecordScannerSortedChildren(Length(Result), False);
+    Exit;
+  end;
+
+  TAccessibilityDiagnostics.RecordScannerSortedChildren(Length(Result), True);
+  SetLength(lEntries, Length(Result));
+  for i := 0 to High(Result) do
+  begin
+    lEntries[i].Control := Result[i];
     lEntries[i].OriginalIndex := i;
     lEntries[i].SortKey := ControlSortKey(lEntries[i].Control, i);
   end;
@@ -377,6 +611,21 @@ begin
   begin
     Result[i] := lEntries[i].Control;
   end;
+end;
+
+function ContainsTextInputControl(const aChildren: TArray<TControl>): Boolean;
+var
+  i: Integer;
+begin
+  for i := 0 to High(aChildren) do
+  begin
+    if IsTextInputControl(aChildren[i]) then
+    begin
+      Exit(True);
+    end;
+  end;
+
+  Result := False;
 end;
 
 function TAccessibilityTextInfo.IsEmpty: Boolean;
@@ -449,7 +698,7 @@ begin
   end;
 end;
 
-class function TAccessibilityTextExtractor.Extract(aControl: TControl): TAccessibilityTextInfo;
+function ExtractText(aControl: TControl; aCache: TRttiPropertyCache): TAccessibilityTextInfo;
 var
   lAction: TObject;
   lActionHintName: string;
@@ -467,10 +716,10 @@ begin
     Exit;
   end;
 
-  Result.Name := ReadStringProperty(aControl, 'AccessibleName');
-  lHint := ReadStringProperty(aControl, 'Hint');
+  Result.Name := ReadStringProperty(aControl, 'AccessibleName', aCache);
+  lHint := ReadStringProperty(aControl, 'Hint', aCache);
   TAccessibilityText.SplitHint(lHint, lActionHintName, Result.HelpText);
-  lTextHint := ReadStringProperty(aControl, 'TextHint');
+  lTextHint := ReadStringProperty(aControl, 'TextHint', aCache);
   if lTextHint <> '' then
   begin
     if Result.HelpText = '' then
@@ -487,7 +736,7 @@ begin
     Exit;
   end;
 
-  lAction := ReadObjectProperty(aControl, 'Action');
+  lAction := ReadObjectProperty(aControl, 'Action', aCache);
   if lAction is TContainedAction then
   begin
     Result.Name := TAccessibilityText.Clean(TContainedAction(lAction).Caption);
@@ -509,7 +758,7 @@ begin
   end;
 
   lIconOnly := False;
-  lCaption := ReadStringProperty(aControl, 'Caption');
+  lCaption := ReadStringProperty(aControl, 'Caption', aCache);
   if lCaption <> '' then
   begin
     lIconOnly := TAccessibilityText.IsIconFontOnly(lCaption);
@@ -520,7 +769,7 @@ begin
     end;
   end;
 
-  lLabelText := ReadNestedStringProperty(aControl, 'EditLabel', 'Caption');
+  lLabelText := ReadNestedStringProperty(aControl, 'EditLabel', 'Caption', aCache);
   if lLabelText <> '' then
   begin
     lIconOnly := lIconOnly or TAccessibilityText.IsIconFontOnly(lLabelText);
@@ -531,7 +780,7 @@ begin
     end;
   end;
 
-  lText := ReadStringProperty(aControl, 'Text');
+  lText := ReadStringProperty(aControl, 'Text', aCache);
   if lText <> '' then
   begin
     lIconOnly := lIconOnly or TAccessibilityText.IsIconFontOnly(lText);
@@ -555,6 +804,11 @@ begin
   end;
 
   Result.Name := TAccessibilityText.Clean(aControl.Name);
+end;
+
+class function TAccessibilityTextExtractor.Extract(aControl: TControl): TAccessibilityTextInfo;
+begin
+  Result := ExtractText(aControl, nil);
 end;
 
 constructor TAccessibilityScanNode.Create(aControl: TControl; const aName: string; const aHelpText: string);
@@ -609,6 +863,7 @@ begin
   fRoot := aRoot;
   fRevision := aRevision;
   IndexNode(fRoot);
+  BuildFlattenedNodes;
 end;
 
 destructor TAccessibilityScanTree.Destroy;
@@ -618,18 +873,35 @@ begin
 end;
 
 procedure TAccessibilityScanTree.AddFlattenedChildren(const aNode: IAccessibilityScanNode;
-  var aNodes: TArray<IAccessibilityScanNode>);
+  var aNodes: TArray<IAccessibilityScanNode>; var aIndex: Integer);
 var
   i: Integer;
-  lIndex: Integer;
+  lChild: IAccessibilityScanNode;
 begin
   for i := 0 to Pred(aNode.ChildCount) do
   begin
-    lIndex := Length(aNodes);
-    SetLength(aNodes, lIndex + 1);
-    aNodes[lIndex] := aNode.Child(i);
-    AddFlattenedChildren(aNode.Child(i), aNodes);
+    lChild := aNode.Child(i);
+    aNodes[aIndex] := lChild;
+    Inc(aIndex);
+    AddFlattenedChildren(lChild, aNodes, aIndex);
   end;
+end;
+
+procedure TAccessibilityScanTree.BuildFlattenedNodes;
+var
+  lIndex: Integer;
+begin
+  fFlattenedNodes := nil;
+  if fNodeCount <= 1 then
+  begin
+    TAccessibilityDiagnostics.RecordScannerFlattenedNodesBuild(0);
+    Exit;
+  end;
+
+  SetLength(fFlattenedNodes, fNodeCount - 1);
+  TAccessibilityDiagnostics.RecordScannerFlattenedNodesBuild(Length(fFlattenedNodes));
+  lIndex := 0;
+  AddFlattenedChildren(fRoot, fFlattenedNodes, lIndex);
 end;
 
 function TAccessibilityScanTree.FindNode(aControl: TControl): IAccessibilityScanNode;
@@ -654,6 +926,7 @@ begin
     Exit;
   end;
 
+  Inc(fNodeCount);
   if (aNode.Control <> nil) and not fNodesByControl.ContainsKey(aNode.Control) then
   begin
     fNodesByControl.Add(aNode.Control, aNode);
@@ -667,8 +940,8 @@ end;
 
 function TAccessibilityScanTree.FlattenedNodes: TArray<IAccessibilityScanNode>;
 begin
-  Result := [];
-  AddFlattenedChildren(fRoot, Result);
+  TAccessibilityDiagnostics.RecordScannerFlattenedNodesSnapshot(Length(fFlattenedNodes));
+  Result := Copy(fFlattenedNodes);
 end;
 
 function TAccessibilityScanTree.Revision: Integer;
@@ -754,9 +1027,10 @@ begin
       gRetainedHooks := TList<TAccessibilityControlHook>.Create;
     end;
 
-    if not gRetainedHooks.Contains(Self) then
+    if not fRetained then
     begin
       gRetainedHooks.Add(Self);
+      fRetained := True;
     end;
   end;
 end;
@@ -774,6 +1048,7 @@ begin
   begin
     lHook := gRetainedHooks[Pred(gRetainedHooks.Count)];
     gRetainedHooks.Delete(Pred(gRetainedHooks.Count));
+    lHook.fRetained := False;
     lHook.fPassive := False;
     lHook.Detach;
     lHook.Free;
@@ -886,15 +1161,18 @@ begin
   Result := fTree;
 end;
 
-function CreateControlInfo(aControl: TControl; const aRegistry: IAccessibilityAdapterRegistry):
+function CreateControlInfo(aControl: TControl; const aRegistry: IAccessibilityAdapterRegistry;
+  const aLabels: TArray<TScannerLabelCandidate>; aFocusLabels: TDictionary<TControl, string>;
+  aCache: TRttiPropertyCache):
   TAccessibilityControlInfo;
 var
   lAdapter: IAccessibilityControlAdapter;
   lAssociatedLabelText: string;
   lText: TAccessibilityTextInfo;
 begin
-  lText := TAccessibilityTextExtractor.Extract(aControl);
-  if IsTextInputControl(aControl) and TryFindAssociatedLabelText(aControl, lAssociatedLabelText) then
+  lText := ExtractText(aControl, aCache);
+  if IsTextInputControl(aControl) and TryFindAssociatedLabelText(aControl, aLabels, aFocusLabels,
+    lAssociatedLabelText) then
   begin
     lText.Name := lAssociatedLabelText;
   end;
@@ -924,30 +1202,43 @@ begin
 end;
 
 procedure ScanControlChildren(aParent: TWinControl; const aParentNode: TAccessibilityScanNode;
-  const aRegistry: IAccessibilityAdapterRegistry);
+  const aRegistry: IAccessibilityAdapterRegistry; aCache: TRttiPropertyCache);
 var
   i: Integer;
   lChildren: TArray<TControl>;
   lChildNode: TAccessibilityScanNode;
+  lFocusLabels: TDictionary<TControl, string>;
   lInfo: TAccessibilityControlInfo;
+  lLabels: TArray<TScannerLabelCandidate>;
   lNextParent: TAccessibilityScanNode;
 begin
   lChildren := SortedChildren(aParent);
-  for i := 0 to High(lChildren) do
+  lFocusLabels := nil;
+  if ContainsTextInputControl(lChildren) then
   begin
-    lInfo := CreateControlInfo(lChildren[i], aRegistry);
-    lNextParent := aParentNode;
-    if lInfo.IncludeInTree then
+    lLabels := BuildLabelCandidates(lChildren, lFocusLabels, aCache);
+  end else begin
+    lLabels := [];
+  end;
+  try
+    for i := 0 to High(lChildren) do
     begin
-      lChildNode := TAccessibilityScanNode.Create(lInfo.Control, lInfo.Name, lInfo.HelpText);
-      aParentNode.AddChild(lChildNode);
-      lNextParent := lChildNode;
-    end;
+      lInfo := CreateControlInfo(lChildren[i], aRegistry, lLabels, lFocusLabels, aCache);
+      lNextParent := aParentNode;
+      if lInfo.IncludeInTree then
+      begin
+        lChildNode := TAccessibilityScanNode.Create(lInfo.Control, lInfo.Name, lInfo.HelpText);
+        aParentNode.AddChild(lChildNode);
+        lNextParent := lChildNode;
+      end;
 
-    if lChildren[i] is TWinControl then
-    begin
-      ScanControlChildren(TWinControl(lChildren[i]), lNextParent, aRegistry);
+      if lChildren[i] is TWinControl then
+      begin
+        ScanControlChildren(TWinControl(lChildren[i]), lNextParent, aRegistry, aCache);
+      end;
     end;
+  finally
+    lFocusLabels.Free;
   end;
 end;
 
@@ -960,6 +1251,7 @@ end;
 class function TAccessibilityScanner.ScanForm(aForm: TCustomForm; const aRegistry: IAccessibilityAdapterRegistry):
   IAccessibilityScanTree;
 var
+  lCache: TRttiPropertyCache;
   lRoot: TAccessibilityScanNode;
 begin
   if aForm = nil then
@@ -969,8 +1261,13 @@ begin
 
   lRoot := TAccessibilityScanNode.Create(aForm, TAccessibilityText.Clean(aForm.Caption),
     TAccessibilityText.Clean(aForm.Hint));
-  ScanControlChildren(aForm, lRoot, aRegistry);
-  Result := TAccessibilityScanTree.Create(lRoot, 1);
+  lCache := TRttiPropertyCache.Create;
+  try
+    ScanControlChildren(aForm, lRoot, aRegistry, lCache);
+    Result := TAccessibilityScanTree.Create(lRoot, 1);
+  finally
+    lCache.Free;
+  end;
 end;
 
 initialization

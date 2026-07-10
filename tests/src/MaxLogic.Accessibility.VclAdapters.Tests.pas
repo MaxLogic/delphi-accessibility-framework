@@ -13,9 +13,15 @@ type
     [Test]
     procedure DefaultAdaptersExposeUsefulNonWindowedControlsOnly;
     [Test]
+    procedure DefaultAdaptersCacheRepeatedCustomControlRttiLookups;
+    [Test]
     procedure DisabledSpeedButtonAutomationDoesNotInvokeClickOrToggle;
     [Test]
     procedure ProviderTreeExposesVclControlProperties;
+    [Test]
+    procedure FormRootProviderUsesWindowControlType;
+    [Test]
+    procedure FormRootProviderOverridesNativeWindowTree;
     [Test]
     procedure TextEditProviderExposesEditTypeAndTextHintHelp;
     [Test]
@@ -27,11 +33,13 @@ type
     [Test]
     procedure ActiveTabSheetBodyHitTestingReturnsNestedLabel;
     [Test]
-    procedure WindowedControlProviderExposesNativeWindowHandle;
+    procedure CustomWindowedProvidersPublishNativeWindowHandleButLayoutContainersDoNot;
     [Test]
     procedure WindowedButtonAndCheckBoxProvidersExposeCaptionHintAndState;
     [Test]
     procedure RadioButtonProviderUsesSelectionItemPattern;
+    [Test]
+    procedure VclSelectionContainersUseParentWithoutNavigation;
     [Test]
     procedure DemoStandardControlsExposeIntentionalRoles;
     [Test]
@@ -45,6 +53,10 @@ type
     [Test]
     procedure ListBoxProviderReturnsAllSelectedItemsForMultiSelect;
     [Test]
+    procedure ListBoxSelectionContainerUsesOwnerWithoutNavigation;
+    [Test]
+    procedure ListBoxProviderKeepsNativeHwndInternalWithoutPublishingIt;
+    [Test]
     procedure ListBoxItemProviderHandlesStaleItemIndex;
     [Test]
     procedure ListBoxProviderStopsReturningFocusItemWhenCachedTextBecomesEmpty;
@@ -52,6 +64,12 @@ type
     procedure StatusBarProviderUsesVisibleStatusText;
     [Test]
     procedure RootHitTestingReturnsDeepestNonWindowedLabel;
+    [Test]
+    procedure RootProviderLookupFindsControlsWithoutNavigation;
+    [Test]
+    procedure RootHitTestingUsesDirectControlBeforeUnrelatedHitTestRoots;
+    [Test]
+    procedure RootFallbackHitTestingAvoidsProviderNavigation;
     [Test]
     procedure RootHitTestingAvoidsRepeatedProviderTreeWalks;
     [Test]
@@ -61,13 +79,22 @@ type
 implementation
 
 uses
-  System.Diagnostics, System.SysUtils, System.Types, System.Variants, Winapi.ActiveX, Winapi.Messages, Winapi.Windows,
+  System.SysUtils, System.Types, System.Variants, Winapi.ActiveX, Winapi.Messages, Winapi.Windows,
   Vcl.Buttons, Vcl.Controls, Vcl.ComCtrls, Vcl.ExtCtrls, Vcl.Forms, Vcl.Grids, Vcl.StdCtrls, DUnitX.Assert,
-  MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.Scanner, MaxLogic.Accessibility.UIAutomationCore,
-  MaxLogic.Accessibility.VclAdapters, AccessibilityDemoMainForm;
+  MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.Scanner,
+  MaxLogic.Accessibility.UIAutomationCore, MaxLogic.Accessibility.VclAdapters, AccessibilityDemoMainForm;
 
 type
   TCaptionGraphicControl = class(TGraphicControl)
+  private
+    fCaption: string;
+  protected
+    procedure Paint; override;
+  published
+    property Caption: string read fCaption write fCaption;
+  end;
+
+  TColdCaptionGraphicControl = class(TGraphicControl)
   private
     fCaption: string;
   protected
@@ -92,7 +119,36 @@ type
     property ClickCalls: Integer read fClickCalls;
   end;
 
+  IHostProbeUiaApi = interface(IAccessibilityUiaApi)
+    ['{4CA617C1-E8ED-4E75-B789-9E8685454F62}']
+    function HostCalls: Integer;
+  end;
+
+  THostProbeUiaApi = class(TInterfacedObject, IHostProbeUiaApi)
+  private
+    fHostCalls: Integer;
+  public
+    function ClientsAreListening: Boolean;
+    function DisconnectProvider(const aProvider: IRawElementProviderSimple): HRESULT;
+    function HostCalls: Integer;
+    function HostProviderFromHwnd(aHwnd: HWND; out aProvider: IRawElementProviderSimple): HRESULT;
+    function RaiseAutomationEvent(const aProvider: IRawElementProviderSimple; aEventId: EVENTID): HRESULT;
+    function RaiseAutomationPropertyChanged(const aProvider: IRawElementProviderSimple; aPropertyId: PROPERTYID;
+      const aOldValue: OleVariant; const aNewValue: OleVariant): HRESULT;
+    function RaiseNotification(const aProvider: IRawElementProviderSimple; aNotificationKind: NotificationKind;
+      aNotificationProcessing: NotificationProcessing; const aDisplayString: WideString;
+      const aActivityId: WideString): HRESULT;
+    function RaiseStructureChanged(const aProvider: IRawElementProviderSimple; aStructureChangeType: StructureChangeType;
+      const aRuntimeId: TArray<Integer>): HRESULT;
+    function ReturnRawElementProvider(aHwnd: HWND; aWParam: WPARAM; aLParam: LPARAM;
+      const aProvider: IRawElementProviderSimple): LRESULT;
+  end;
+
 procedure TCaptionGraphicControl.Paint;
+begin
+end;
+
+procedure TColdCaptionGraphicControl.Paint;
 begin
 end;
 
@@ -105,6 +161,59 @@ procedure TProbeSpeedButton.Click;
 begin
   Inc(fClickCalls);
   inherited Click;
+end;
+
+function THostProbeUiaApi.ClientsAreListening: Boolean;
+begin
+  Result := False;
+end;
+
+function THostProbeUiaApi.DisconnectProvider(const aProvider: IRawElementProviderSimple): HRESULT;
+begin
+  Result := S_OK;
+end;
+
+function THostProbeUiaApi.HostCalls: Integer;
+begin
+  Result := fHostCalls;
+end;
+
+function THostProbeUiaApi.HostProviderFromHwnd(aHwnd: HWND; out aProvider: IRawElementProviderSimple): HRESULT;
+begin
+  Inc(fHostCalls);
+  aProvider := nil;
+  Result := S_FALSE;
+end;
+
+function THostProbeUiaApi.RaiseAutomationEvent(const aProvider: IRawElementProviderSimple;
+  aEventId: EVENTID): HRESULT;
+begin
+  Result := S_OK;
+end;
+
+function THostProbeUiaApi.RaiseAutomationPropertyChanged(const aProvider: IRawElementProviderSimple;
+  aPropertyId: PROPERTYID; const aOldValue: OleVariant; const aNewValue: OleVariant): HRESULT;
+begin
+  Result := S_OK;
+end;
+
+function THostProbeUiaApi.RaiseNotification(const aProvider: IRawElementProviderSimple;
+  aNotificationKind: NotificationKind; aNotificationProcessing: NotificationProcessing; const aDisplayString: WideString;
+  const aActivityId: WideString): HRESULT;
+begin
+  Result := S_OK;
+end;
+
+function THostProbeUiaApi.RaiseStructureChanged(const aProvider: IRawElementProviderSimple;
+  aStructureChangeType: StructureChangeType; const aRuntimeId: TArray<Integer>): HRESULT;
+begin
+  Result := S_OK;
+end;
+
+function THostProbeUiaApi.ReturnRawElementProvider(aHwnd: HWND; aWParam: WPARAM; aLParam: LPARAM;
+  const aProvider: IRawElementProviderSimple): LRESULT;
+begin
+  Result := 0;
 end;
 
 function FirstChildFragment(const aProvider: IAccessibilityProviderNode): IRawElementProviderFragment;
@@ -163,10 +272,27 @@ end;
 
 function ProviderNativeWindowHandle(const aFragment: IRawElementProviderFragment): HWND;
 var
+  lNativeWindow: IAccessibilityProviderNativeWindow;
+begin
+  Assert.IsTrue(Supports(aFragment, IAccessibilityProviderNativeWindow, lNativeWindow));
+  Result := lNativeWindow.NativeWindowHandle;
+end;
+
+function ProviderPublishedNativeWindowHandle(const aFragment: IRawElementProviderFragment): HWND;
+var
   lValue: OleVariant;
 begin
+  Result := 0;
   Assert.AreEqual(S_OK, SimpleProvider(aFragment).GetPropertyValue(UIA_NativeWindowHandlePropertyId, lValue));
-  Result := HWND(Integer(lValue));
+  if not VarIsEmpty(lValue) and not VarIsNull(lValue) then
+  begin
+    Result := HWND(Integer(lValue));
+  end;
+end;
+
+function ProviderOptionsFor(const aFragment: IRawElementProviderFragment): ProviderOptions;
+begin
+  Assert.AreEqual(S_OK, SimpleProvider(aFragment).Get_ProviderOptions(Result));
 end;
 
 function ProviderPattern(const aFragment: IRawElementProviderFragment; aPatternId: PATTERNID): IUnknown;
@@ -356,14 +482,52 @@ begin
     Assert.AreEqual('Shown next to customer edit', lTree.FindNode(lLabel).HelpText);
     Assert.IsNull(lTree.FindNode(lEmptyLabel));
 
-    Assert.IsNotNull(lTree.FindNode(lPanelWithChild));
-    Assert.AreEqual('', lTree.FindNode(lPanelWithChild).Name);
+    Assert.IsNull(lTree.FindNode(lPanelWithChild));
     Assert.AreEqual('Nested value', lTree.FindNode(lChildLabel).Name);
     Assert.IsNull(lTree.FindNode(lEmptyPanel));
 
     Assert.AreEqual('Custom graphic', lTree.FindNode(lGraphic).Name);
     Assert.AreEqual('Graphic help', lTree.FindNode(lGraphic).HelpText);
     Assert.IsNull(lTree.FindNode(lDecorativeGraphic));
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityVclAdaptersTests.DefaultAdaptersCacheRepeatedCustomControlRttiLookups;
+const
+  cControlCount = 60;
+  cMaxRttiLookups = 0;
+var
+  i: Integer;
+  lForm: TForm;
+  lGraphic: TColdCaptionGraphicControl;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+  lRegistry: IAccessibilityAdapterRegistry;
+  lTree: IAccessibilityScanTree;
+begin
+  lForm := TForm.Create(nil);
+  try
+    for i := 1 to cControlCount do
+    begin
+      lGraphic := TColdCaptionGraphicControl.Create(lForm);
+      lGraphic.Caption := Format('Custom graphic %d', [i]);
+      lGraphic.Parent := lForm;
+    end;
+
+    lRegistry := TAccessibilityVclAdapters.CreateDefaultRegistry;
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+    try
+      lTree := TAccessibilityScanner.ScanForm(lForm, lRegistry);
+      Assert.IsNotNull(lTree.FindNode(lGraphic));
+      lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+      Assert.IsTrue(lMetrics.VclAdapterRttiPropertyLookupCount <= cMaxRttiLookups,
+        Format('VCL adapters should reuse scanner fallback text instead of rereading RTTI. Expected <= %d, got %d.',
+        [cMaxRttiLookups, lMetrics.VclAdapterRttiPropertyLookupCount]));
+    finally
+      TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+    end;
   finally
     lForm.Free;
   end;
@@ -608,6 +772,41 @@ begin
   end;
 end;
 
+procedure TAccessibilityVclAdaptersTests.FormRootProviderUsesWindowControlType;
+var
+  lForm: TForm;
+  lProvider: IAccessibilityProviderNode;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+
+    Assert.AreEqual(UIA_WindowControlTypeId, ProviderIntProperty(lProvider.FragmentProvider,
+      UIA_ControlTypePropertyId));
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityVclAdaptersTests.FormRootProviderOverridesNativeWindowTree;
+var
+  lForm: TForm;
+  lOptions: ProviderOptions;
+  lProvider: IAccessibilityProviderNode;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+
+    lOptions := ProviderOptionsFor(lProvider.FragmentProvider);
+
+    Assert.IsTrue((Integer(lOptions) and Integer(ProviderOptions_OverrideProvider)) <> 0,
+      'The form root provider should override the native VCL form provider so external ControlView walks do not merge the layout-only HWND tree.');
+  finally
+    lForm.Free;
+  end;
+end;
+
 procedure TAccessibilityVclAdaptersTests.TextEditProviderExposesEditTypeAndTextHintHelp;
 var
   lEdit: TEdit;
@@ -783,6 +982,93 @@ begin
         SafeArrayDestroy(lSelection);
       end;
     end;
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityVclAdaptersTests.ListBoxSelectionContainerUsesOwnerWithoutNavigation;
+var
+  lContainer: IRawElementProviderSimple;
+  lContainerFragment: IRawElementProviderFragment;
+  lForm: TForm;
+  lItem: IRawElementProviderFragment;
+  lListBox: TListBox;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+  lPattern: IUnknown;
+  lProvider: IAccessibilityProviderNode;
+  lSelectionItem: ISelectionItemProvider;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 240);
+
+    lListBox := TListBox.Create(lForm);
+    lListBox.Name := 'EventList';
+    lListBox.Parent := lForm;
+    lListBox.SetBounds(16, 16, 240, 100);
+    lListBox.Items.Add('First event');
+    lListBox.Items.Add('Second event');
+    lListBox.ItemIndex := 1;
+
+    lForm.HandleNeeded;
+    lListBox.HandleNeeded;
+
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lItem := FindDescendantByName(lProvider.FragmentProvider, 'Second event');
+    Assert.IsNotNull(lItem);
+    lPattern := ProviderPattern(lItem, UIA_SelectionItemPatternId);
+    Assert.IsTrue(Supports(lPattern, ISelectionItemProvider, lSelectionItem));
+
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+    try
+      lContainer := nil;
+      Assert.AreEqual(S_OK, lSelectionItem.Get_SelectionContainer(lContainer));
+      Assert.IsNotNull(lContainer);
+      Assert.IsTrue(Supports(lContainer, IRawElementProviderFragment, lContainerFragment));
+      Assert.AreEqual('EventList', ProviderStringProperty(lContainerFragment, UIA_NamePropertyId));
+
+      lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+      Assert.AreEqual(0, lMetrics.ProviderNavigateCount,
+        'Listbox selection items should return their owner directly instead of calling public Navigate(Parent).');
+    finally
+      TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+    end;
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityVclAdaptersTests.ListBoxProviderKeepsNativeHwndInternalWithoutPublishingIt;
+var
+  lApi: IHostProbeUiaApi;
+  lForm: TForm;
+  lHost: IRawElementProviderSimple;
+  lListBox: TListBox;
+  lListBoxFragment: IRawElementProviderFragment;
+  lProvider: IAccessibilityProviderNode;
+begin
+  lApi := THostProbeUiaApi.Create;
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 420, 220);
+
+    lListBox := TListBox.Create(lForm);
+    lListBox.Parent := lForm;
+    lListBox.Name := 'Events';
+    lListBox.SetBounds(16, 16, 240, 110);
+    lListBox.Items.Add('Queued order');
+    lListBox.Items.Add('Audit warning');
+    lListBox.HandleNeeded;
+
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm, IAccessibilityAdapterRegistry(nil), lApi);
+    lListBoxFragment := FindDescendantByName(lProvider.FragmentProvider, 'Events');
+    Assert.IsNotNull(lListBoxFragment);
+    Assert.AreEqual(Integer(lListBox.Handle), Integer(ProviderNativeWindowHandle(lListBoxFragment)));
+    Assert.AreEqual(0, Integer(ProviderPublishedNativeWindowHandle(lListBoxFragment)));
+    Assert.AreEqual(S_FALSE, SimpleProvider(lListBoxFragment).Get_HostRawElementProvider(lHost));
+    Assert.AreEqual(0, lApi.HostCalls);
   finally
     lForm.Free;
   end;
@@ -1108,32 +1394,65 @@ begin
   end;
 end;
 
-procedure TAccessibilityVclAdaptersTests.WindowedControlProviderExposesNativeWindowHandle;
+procedure TAccessibilityVclAdaptersTests.CustomWindowedProvidersPublishNativeWindowHandleButLayoutContainersDoNot;
 var
   lEdit: TEdit;
   lEditFragment: IRawElementProviderFragment;
   lForm: TForm;
+  lListBox: TListBox;
+  lListBoxFragment: IRawElementProviderFragment;
+  lPanel: TPanel;
+  lPanelFragment: IRawElementProviderFragment;
   lPoint: TPoint;
   lProvider: IAccessibilityProviderNode;
   lRoot: IRawElementProviderFragmentRoot;
 begin
   lForm := TForm.Create(nil);
   try
-    lForm.SetBounds(100, 100, 420, 120);
+    lForm.SetBounds(100, 100, 420, 220);
 
     lEdit := TEdit.Create(lForm);
     lEdit.Parent := lForm;
     lEdit.TextHint := 'search text';
     lEdit.SetBounds(112, 14, 160, 23);
 
+    lListBox := TListBox.Create(lForm);
+    lListBox.Parent := lForm;
+    lListBox.Name := 'Events';
+    lListBox.Items.Add('Queued order');
+    lListBox.SetBounds(112, 48, 160, 80);
+
+    lPanel := TPanel.Create(lForm);
+    lPanel.Parent := lForm;
+    lPanel.Caption := 'Layout panel';
+    lPanel.SetBounds(112, 144, 160, 40);
+
     lForm.HandleNeeded;
+    lEdit.HandleNeeded;
+    lListBox.HandleNeeded;
+    lPanel.HandleNeeded;
     lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
     lRoot := FragmentRoot(lProvider);
+
     lPoint := ControlScreenCenter(lEdit);
 
     Assert.AreEqual(S_OK, lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lEditFragment));
     Assert.IsNotNull(lEditFragment);
     Assert.AreEqual(Integer(lEdit.Handle), Integer(ProviderNativeWindowHandle(lEditFragment)));
+    Assert.AreEqual(0, Integer(ProviderPublishedNativeWindowHandle(lEditFragment)));
+    Assert.AreEqual(Integer(ProviderOptions_ServerSideProvider), Integer(ProviderOptionsFor(lEditFragment)));
+
+    lListBoxFragment := FindDescendantByName(lProvider.FragmentProvider, 'Events');
+    Assert.IsNotNull(lListBoxFragment);
+    Assert.AreEqual(Integer(lListBox.Handle), Integer(ProviderNativeWindowHandle(lListBoxFragment)));
+    Assert.AreEqual(0, Integer(ProviderPublishedNativeWindowHandle(lListBoxFragment)));
+    Assert.AreEqual(Integer(ProviderOptions_ServerSideProvider), Integer(ProviderOptionsFor(lListBoxFragment)));
+
+    lPanelFragment := FindDescendantByName(lProvider.FragmentProvider, 'Layout panel');
+    Assert.IsNotNull(lPanelFragment);
+    Assert.AreEqual(Integer(lPanel.Handle), Integer(ProviderNativeWindowHandle(lPanelFragment)));
+    Assert.AreEqual(0, Integer(ProviderPublishedNativeWindowHandle(lPanelFragment)));
+    Assert.AreEqual(Integer(ProviderOptions_ServerSideProvider), Integer(ProviderOptionsFor(lPanelFragment)));
   finally
     lForm.Free;
   end;
@@ -1254,6 +1573,72 @@ begin
     Assert.AreEqual(S_OK, lSelectionItem.Select);
     Assert.IsFalse(lFirstRadio.Checked);
     Assert.IsTrue(lSecondRadio.Checked);
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityVclAdaptersTests.VclSelectionContainersUseParentWithoutNavigation;
+var
+  lContainer: IRawElementProviderSimple;
+  lContainerFragment: IRawElementProviderFragment;
+  lForm: TForm;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+  lPageControl: TPageControl;
+  lPattern: IUnknown;
+  lProvider: IAccessibilityProviderNode;
+  lRadio: TRadioButton;
+  lRadioFragment: IRawElementProviderFragment;
+  lSelectionItem: ISelectionItemProvider;
+  lTabFragment: IRawElementProviderFragment;
+  lTabSheet: TTabSheet;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lForm.Caption := 'Settings';
+
+    lRadio := TRadioButton.Create(lForm);
+    lRadio.Parent := lForm;
+    lRadio.Caption := 'Compact';
+    lRadio.Checked := True;
+    lRadio.HandleNeeded;
+
+    lPageControl := TPageControl.Create(lForm);
+    lPageControl.Parent := lForm;
+    lPageControl.SetBounds(12, 36, 300, 160);
+
+    lTabSheet := TTabSheet.Create(lForm);
+    lTabSheet.Caption := 'Orders';
+    lTabSheet.PageControl := lPageControl;
+    lPageControl.ActivePage := lTabSheet;
+    lForm.HandleNeeded;
+
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lRadioFragment := FindDescendantByName(lProvider.FragmentProvider, 'Compact');
+    lTabFragment := FindDescendantByName(lProvider.FragmentProvider, 'Orders');
+    Assert.IsNotNull(lRadioFragment);
+    Assert.IsNotNull(lTabFragment);
+
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+    try
+      lPattern := ProviderPattern(lRadioFragment, UIA_SelectionItemPatternId);
+      Assert.IsTrue(Supports(lPattern, ISelectionItemProvider, lSelectionItem));
+      Assert.AreEqual(S_OK, lSelectionItem.Get_SelectionContainer(lContainer));
+      Assert.IsTrue(Supports(lContainer, IRawElementProviderFragment, lContainerFragment));
+      Assert.AreEqual('Settings', ProviderStringProperty(lContainerFragment, UIA_NamePropertyId));
+
+      lPattern := ProviderPattern(lTabFragment, UIA_SelectionItemPatternId);
+      Assert.IsTrue(Supports(lPattern, ISelectionItemProvider, lSelectionItem));
+      Assert.AreEqual(S_OK, lSelectionItem.Get_SelectionContainer(lContainer));
+      Assert.IsTrue(Supports(lContainer, IRawElementProviderFragment, lContainerFragment));
+
+      lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+      Assert.AreEqual(0, lMetrics.ProviderNavigateCount,
+        'Selection item container queries should use the in-process parent pointer, not public UIA Navigate.');
+    finally
+      TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+    end;
   finally
     lForm.Free;
   end;
@@ -1444,131 +1829,172 @@ begin
   end;
 end;
 
-function LegacyUiaRectContainsPoint(const aRect: UiaRect; aX: Double; aY: Double): Boolean;
-begin
-  Result := (aX >= aRect.Left) and (aY >= aRect.Top) and (aX < aRect.Left + aRect.Width) and
-    (aY < aRect.Top + aRect.Height);
-end;
-
-function LegacyTryFindTabHeaderProviderFromPoint(const aFragment: IRawElementProviderFragment; aX: Double; aY: Double;
-  out aProvider: IRawElementProviderFragment): Boolean;
+procedure TAccessibilityVclAdaptersTests.RootProviderLookupFindsControlsWithoutNavigation;
+const
+  cControlCount = 700;
 var
-  lChild: IRawElementProviderFragment;
-  lControl: TControl;
-  lInfo: IAccessibilityVclControlProviderInfo;
-  lNextChild: IRawElementProviderFragment;
+  i: Integer;
+  lForm: TForm;
+  lFragment: IRawElementProviderFragment;
+  lLabel: TLabel;
+  lLookup: IAccessibilityVclProviderLookup;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+  lProvider: IAccessibilityProviderNode;
+  lSimple: IRawElementProviderSimple;
 begin
-  aProvider := nil;
-  Result := False;
-  if aFragment = nil then
-  begin
-    Exit;
-  end;
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 900, 900);
 
-  if Supports(aFragment, IAccessibilityVclControlProviderInfo, lInfo) then
-  begin
-    lControl := lInfo.Control;
-    if lControl is TTabSheet then
+    for i := 1 to cControlCount do
     begin
-      Exit;
-    end;
-  end;
-
-  if aFragment.Navigate(NavigateDirection_FirstChild, lChild) <> S_OK then
-  begin
-    Exit;
-  end;
-
-  while lChild <> nil do
-  begin
-    if LegacyTryFindTabHeaderProviderFromPoint(lChild, aX, aY, aProvider) then
-    begin
-      Exit(True);
+      lLabel := TLabel.Create(lForm);
+      lLabel.Caption := Format('Lookup node %d', [i]);
+      lLabel.Parent := lForm;
+      lLabel.SetBounds(8 + ((i - 1) mod 20) * 40, 8 + ((i - 1) div 20) * 22, 36, 18);
     end;
 
-    lNextChild := nil;
-    if lChild.Navigate(NavigateDirection_NextSibling, lNextChild) <> S_OK then
-    begin
-      Exit;
+    lForm.HandleNeeded;
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    Assert.IsTrue(Supports(lProvider.RawElementProvider, IAccessibilityVclProviderLookup, lLookup),
+      'VCL root should expose a native control-to-provider lookup.');
+
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+    try
+      Assert.IsTrue(lLookup.TryFindProviderForControl(lLabel, lSimple));
+      Assert.IsTrue(Supports(lSimple, IRawElementProviderFragment, lFragment));
+      Assert.AreEqual(Format('Lookup node %d', [cControlCount]),
+        ProviderStringProperty(lFragment, UIA_NamePropertyId));
+
+      lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+      Assert.AreEqual(0, lMetrics.ProviderNavigateCount,
+        'Native provider lookup should not walk the UIA fragment tree.');
+    finally
+      TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
     end;
-    lChild := lNextChild;
+  finally
+    lForm.Free;
   end;
 end;
 
-function LegacyTryFindVisibleControlProviderFromPoint(const aFragment: IRawElementProviderFragment; aX: Double;
-  aY: Double; out aProvider: IRawElementProviderFragment): Boolean;
+procedure TAccessibilityVclAdaptersTests.RootHitTestingUsesDirectControlBeforeUnrelatedHitTestRoots;
 var
-  lBounds: UiaRect;
-  lChild: IRawElementProviderFragment;
-  lInfo: IAccessibilityVclControlProviderInfo;
-  lNextChild: IRawElementProviderFragment;
+  lButton: TButton;
+  lForm: TForm;
+  lGrid: TStringGrid;
+  lHit: IRawElementProviderFragment;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+  lPoint: TPoint;
+  lProvider: IAccessibilityProviderNode;
+  lRoot: IRawElementProviderFragmentRoot;
 begin
-  aProvider := nil;
-  Result := False;
-  if aFragment = nil then
-  begin
-    Exit;
-  end;
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 420, 260);
 
-  if aFragment.Navigate(NavigateDirection_FirstChild, lChild) = S_OK then
-  begin
-    while lChild <> nil do
-    begin
-      if LegacyTryFindVisibleControlProviderFromPoint(lChild, aX, aY, aProvider) then
-      begin
-        Exit(True);
-      end;
+    lGrid := TStringGrid.Create(lForm);
+    lGrid.Parent := lForm;
+    lGrid.ColCount := 3;
+    lGrid.RowCount := 3;
+    lGrid.Cells[1, 1] := 'Grid item';
+    lGrid.SetBounds(16, 16, 180, 80);
+    lGrid.HandleNeeded;
 
-      lNextChild := nil;
-      if lChild.Navigate(NavigateDirection_NextSibling, lNextChild) <> S_OK then
-      begin
-        Break;
-      end;
-      lChild := lNextChild;
+    lButton := TButton.Create(lForm);
+    lButton.Parent := lForm;
+    lButton.Caption := 'Run';
+    lButton.SetBounds(230, 24, 90, 32);
+    lButton.HandleNeeded;
+
+    lForm.HandleNeeded;
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lRoot := FragmentRoot(lProvider);
+    lPoint := ControlScreenCenter(lButton);
+
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+    try
+      Assert.AreEqual(S_OK, lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit));
+      Assert.AreEqual('Run', ProviderStringProperty(lHit, UIA_NamePropertyId));
+
+      lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+      Assert.AreEqual(1, lMetrics.ProviderRootElementProviderFromPointCount,
+        'Root hit testing over a direct VCL control should not probe unrelated child fragment roots.');
+    finally
+      TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
     end;
-  end;
-
-  if Supports(aFragment, IAccessibilityVclControlProviderInfo, lInfo) and
-    (aFragment.Get_BoundingRectangle(lBounds) = S_OK) and LegacyUiaRectContainsPoint(lBounds, aX, aY) then
-  begin
-    aProvider := aFragment;
-    Exit(True);
+  finally
+    lForm.Free;
   end;
 end;
 
-function LegacyElementProviderFromPoint(const aFragment: IRawElementProviderFragment; aX: Double; aY: Double;
-  out aProvider: IRawElementProviderFragment): HResult;
+procedure TAccessibilityVclAdaptersTests.RootFallbackHitTestingAvoidsProviderNavigation;
+var
+  lForm: TForm;
+  lHit: IRawElementProviderFragment;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+  lPageControl: TPageControl;
+  lPoint: TPoint;
+  lProvider: IAccessibilityProviderNode;
+  lRoot: IRawElementProviderFragmentRoot;
+  lTabOrders: TTabSheet;
+  lTabTms: TTabSheet;
 begin
-  aProvider := nil;
-  if LegacyTryFindTabHeaderProviderFromPoint(aFragment, aX, aY, aProvider) then
-  begin
-    Exit(S_OK);
-  end;
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 420, 260);
 
-  if LegacyTryFindVisibleControlProviderFromPoint(aFragment, aX, aY, aProvider) then
-  begin
-    Exit(S_OK);
-  end;
+    lPageControl := TPageControl.Create(lForm);
+    lPageControl.Parent := lForm;
+    lPageControl.SetBounds(12, 12, 360, 200);
 
-  Result := S_FALSE;
+    lTabOrders := TTabSheet.Create(lForm);
+    lTabOrders.Caption := 'Orders';
+    lTabOrders.PageControl := lPageControl;
+
+    lTabTms := TTabSheet.Create(lForm);
+    lTabTms.Caption := 'TMS grid';
+    lTabTms.PageControl := lPageControl;
+
+    lPageControl.ActivePage := lTabOrders;
+    lForm.HandleNeeded;
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lRoot := FragmentRoot(lProvider);
+    lPoint := lTabOrders.ClientToScreen(Point(40, 90));
+
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+    try
+      Assert.AreEqual(S_OK, lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit));
+      Assert.IsNotNull(lHit);
+
+      lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+      Assert.AreEqual(0, lMetrics.ProviderNavigateCount,
+        'Fallback root hit testing should use direct in-process child access, not UIA Navigate.');
+      Assert.AreEqual(0, lMetrics.ProviderGetBoundingRectangleCount,
+        'Fallback root hit testing should use direct VCL geometry, not provider bounding rectangle callbacks.');
+    finally
+      TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+    end;
+  finally
+    lForm.Free;
+  end;
 end;
 
 procedure TAccessibilityVclAdaptersTests.RootHitTestingAvoidsRepeatedProviderTreeWalks;
 const
   cControlCount = 700;
   cIterations = 100;
-  cMaxOptimizedPercent = 85;
 var
   i: Integer;
   lForm: TForm;
   lHit: IRawElementProviderFragment;
   lLabel: TLabel;
-  lLegacyTicks: Int64;
-  lOptimizedTicks: Int64;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
   lPoint: TPoint;
   lProvider: IAccessibilityProviderNode;
   lRoot: IRawElementProviderFragmentRoot;
-  lStopwatch: TStopwatch;
 begin
   lForm := TForm.Create(nil);
   try
@@ -1590,29 +2016,23 @@ begin
     Assert.AreEqual(S_OK, lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit));
     Assert.AreEqual(Format('Hit node %d', [cControlCount]), ProviderStringProperty(lHit, UIA_NamePropertyId));
 
-    lStopwatch := TStopwatch.StartNew;
-    for i := 1 to cIterations do
-    begin
-      lHit := nil;
-      Assert.AreEqual(S_OK, LegacyElementProviderFromPoint(lProvider.FragmentProvider, lPoint.X, lPoint.Y, lHit));
-      Assert.IsNotNull(lHit);
-    end;
-    lStopwatch.Stop;
-    lLegacyTicks := lStopwatch.ElapsedTicks;
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+    try
+      for i := 1 to cIterations do
+      begin
+        lHit := nil;
+        Assert.AreEqual(S_OK, lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit));
+        Assert.IsNotNull(lHit);
+      end;
 
-    lStopwatch := TStopwatch.StartNew;
-    for i := 1 to cIterations do
-    begin
-      lHit := nil;
-      Assert.AreEqual(S_OK, lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit));
-      Assert.IsNotNull(lHit);
+      lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+      Assert.AreEqual(cIterations, lMetrics.ProviderRootElementProviderFromPointCount);
+      Assert.AreEqual(0, lMetrics.ProviderNavigateCount,
+        'Root hit testing should avoid repeated full provider-tree walks for direct VCL controls.');
+    finally
+      TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
     end;
-    lStopwatch.Stop;
-    lOptimizedTicks := lStopwatch.ElapsedTicks;
-
-    Assert.IsTrue(lOptimizedTicks * 100 <= lLegacyTicks * cMaxOptimizedPercent,
-      Format('Root hit testing should avoid repeated full tree walks; legacy=%d optimized=%d ticks for %d controls and %d calls.',
-      [lLegacyTicks, lOptimizedTicks, cControlCount, cIterations]));
   finally
     lForm.Free;
   end;

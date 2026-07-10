@@ -17,6 +17,8 @@ type
     [Test]
     procedure OptInProviderGridPatternGetItemReturnsValidOffscreenCells;
     [Test]
+    procedure OptInProviderSelectionReturnsCurrentCell;
+    [Test]
     procedure OptInProviderColumnSpanCountsOnlyVisibleMergedColumns;
     [Test]
     procedure OptInProviderRowSpanCountsOnlyVisibleMergedRows;
@@ -641,6 +643,49 @@ begin
     Assert.IsTrue(ChildNameExists(lGridFragment, 'After hidden TMS column'));
     Assert.IsFalse(ChildNameExists(lGridFragment, 'Hidden TMS row'));
     Assert.IsTrue(ChildNameExists(lGridFragment, 'After hidden TMS row'));
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAdvStringGridAccessibilityTests.OptInProviderSelectionReturnsCurrentCell;
+var
+  lForm: TForm;
+  lGrid: TAdvStringGrid;
+  lGridFragment: IRawElementProviderFragment;
+  lPattern: IUnknown;
+  lProvider: IAccessibilityProviderNode;
+  lSelectedFragment: IRawElementProviderFragment;
+  lSelectedSimple: IRawElementProviderSimple;
+  lSelectedUnknown: IUnknown;
+  lSelection: PSafeArray;
+  lSelectionIndex: LongInt;
+  lSelectionProvider: ISelectionProvider;
+begin
+  CreateAdvGridFixture(lForm, lGrid);
+  try
+    lGrid.Col := 1;
+    lGrid.Row := 1;
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm, TmsRegistry);
+    lGridFragment := FirstChildFragment(lProvider.FragmentProvider);
+    lPattern := ProviderPattern(lGridFragment, UIA_SelectionPatternId);
+    Assert.IsTrue(Supports(lPattern, ISelectionProvider, lSelectionProvider));
+
+    lSelection := nil;
+    Assert.AreEqual(S_OK, lSelectionProvider.GetSelection(lSelection));
+    try
+      Assert.IsNotNull(lSelection);
+      lSelectionIndex := 0;
+      Assert.AreEqual(S_OK, SafeArrayGetElement(lSelection, lSelectionIndex, lSelectedUnknown));
+      Assert.IsTrue(Supports(lSelectedUnknown, IRawElementProviderSimple, lSelectedSimple));
+      lSelectedFragment := FragmentFromSimple(lSelectedSimple);
+      Assert.AreEqual('Alice', ProviderStringProperty(lSelectedFragment, UIA_NamePropertyId));
+    finally
+      if lSelection <> nil then
+      begin
+        SafeArrayDestroy(lSelection);
+      end;
+    end;
   finally
     lForm.Free;
   end;

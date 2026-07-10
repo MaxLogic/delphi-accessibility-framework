@@ -21,6 +21,8 @@ type
     [Test]
     procedure ManagerApplicationInstallInstallsHintNotifications;
     [Test]
+    procedure HintNotificationsWithoutUiaClientsSkipTextPreparationAndEventBatches;
+    [Test]
     procedure ManagerApplicationInstallObservesControlBalloonHintsOnMouseEnter;
     [Test]
     procedure ManagerApplicationInstallUsesFinalControlHintAfterMouseEnterMutation;
@@ -57,7 +59,8 @@ implementation
 uses
   System.Classes, System.SysUtils, System.Variants, Winapi.Windows, Vcl.Controls, Vcl.Forms, Vcl.StdCtrls,
   Vcl.ExtCtrls, DUnitX.Assert, MaxLogic.Accessibility.Hints, MaxLogic.Accessibility.Manager,
-  MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.UIAutomationCore, MaxLogic.Accessibility.VclAdapters;
+  MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.UIAutomationCore,
+  MaxLogic.Accessibility.VclAdapters;
 
 type
   // Real UIA notification delivery needs an external UIA client, so this fake preserves the event boundary deterministically.
@@ -377,6 +380,33 @@ begin
     Application.Hint := lOriginalHintText;
     Application.OnHint := lOriginalHint;
     Application.OnShowHint := lOriginalShowHint;
+  end;
+end;
+
+procedure TAccessibilityHintTests.HintNotificationsWithoutUiaClientsSkipTextPreparationAndEventBatches;
+var
+  lApi: IHintTestUiaApi;
+  lController: TAccessibilityHintController;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+  lProvider: IAccessibilityProviderNode;
+begin
+  lApi := THintTestUiaApi.Create;
+  lApi.SetClientsAreListening(False);
+  lProvider := TAccessibilityProviderFactory.CreateRoot([705], 0, lApi);
+  lController := TAccessibilityHintController.Create(nil, lProvider, lApi);
+  TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+  TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+  try
+    lController.NotifyVisibleHint('Short hint|Long help text|3');
+    lController.NotifyBalloonHint('Upload complete', '5 files processed|3');
+
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+    Assert.AreEqual(0, lApi.NotificationCalls);
+    Assert.AreEqual(0, lMetrics.HintTextPreparationCount);
+    Assert.AreEqual(0, lMetrics.ProviderEventBatchCount);
+  finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+    lController.Free;
   end;
 end;
 

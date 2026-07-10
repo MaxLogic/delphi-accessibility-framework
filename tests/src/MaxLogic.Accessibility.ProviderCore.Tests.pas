@@ -13,6 +13,10 @@ type
     [Test]
     procedure FragmentNavigationIsDeterministic;
     [Test]
+    procedure DirectChildCountThenIndexedAccessReusesPreparedChildren;
+    [Test]
+    procedure FragmentSiblingNavigationReusesPreparedChildren;
+    [Test]
     procedure FragmentNextSiblingEnumerationScalesLinearly;
     [Test]
     procedure FragmentOwnerDestroyDisconnectsFragmentProvider;
@@ -23,13 +27,45 @@ type
     [Test]
     procedure ProviderPropertiesAndRuntimeIdsAreExposed;
     [Test]
+    procedure RuntimeIdCreationAvoidsPerElementSafeArrayCalls;
+    [Test]
+    procedure ProviderRuntimeIdsAreCopiedByBlock;
+    [Test]
+    procedure CommonStaticPropertiesAvoidDictionaryAllocation;
+    [Test]
+    procedure AdditionalStaticPropertiesAvoidDictionaryAllocation;
+    [Test]
+    procedure CommonStaticPropertiesUseTypedStorage;
+    [Test]
+    procedure CommonTypedStoragePreservesFallbackVariants;
+    [Test]
+    procedure LeafProviderCreationDoesNotAllocateChildLists;
+    [Test]
+    procedure DirectPatternSupportUsesStatePropertiesBeforePatternProvider;
+    [Test]
+    procedure WindowedProvidersOverrideNativeProxyWithoutPublishingHwnd;
+    [Test]
     procedure ProviderBaseClassesCanBeExtended;
     [Test]
     procedure RetainedChildProviderDisconnectsWhenParentIsDestroyed;
     [Test]
     procedure DisconnectedProvidersReturnElementUnavailable;
     [Test]
+    procedure PublishedHostProviderLookupDoesNotReenterWmGetObject;
+    [Test]
+    procedure UnpublishedNativeWindowProvidersDoNotLookupHostProvider;
+    [Test]
+    procedure NestedFragmentRootUsesNearestFragmentRoot;
+    [Test]
+    procedure FragmentRootLookupDoesNotScaleWithProviderDepth;
+    [Test]
+    procedure ElementProviderFromPointDoesNotBuildLogDescriptionWhenDiagnosticsDisabled;
+    [Test]
+    procedure ElementProviderFromPointUsesInternalBoundsWithoutProviderCallback;
+    [Test]
     procedure WmGetObjectReturnsRootProviderOnlyForUiaRequests;
+    [Test]
+    procedure WmGetObjectFallsBackWhenUiaRejectsProvider;
     [Test]
     procedure WmGetObjectLeavesClientObjectRequestsForNativeMsaa;
     [Test]
@@ -41,15 +77,25 @@ type
 implementation
 
 uses
-  System.Classes, System.Diagnostics, System.SysUtils, Winapi.ActiveX, Winapi.Windows,
-  MaxLogic.Accessibility.ProviderCore,
-  MaxLogic.Accessibility.UIAutomationCore;
+  System.Classes, System.Diagnostics, System.IOUtils, System.SysUtils, System.Variants, Winapi.ActiveX, Winapi.Windows,
+  MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.UIAutomationCore;
 
 type
+  IPropertyProbeProvider = interface
+    ['{DE586BD4-2E94-4FD5-BC77-BECA33D52749}']
+    function PropertyProbeCount: Integer;
+  end;
+
+  IPrepareProbeProvider = interface
+    ['{8E37E42D-A390-46D8-9B8E-68879723CC1C}']
+    function PrepareCount: Integer;
+  end;
+
   ITestUiaApi = interface(IAccessibilityUiaApi)
     ['{BD87F3C7-7C19-489C-9855-03A41E879476}']
     function DisconnectCalls: Integer;
     function EventCalls: Integer;
+    function HostCalls: Integer;
     function LastNotificationKind: NotificationKind;
     function ReturnCalls: Integer;
     function LastEventId: EVENTID;
@@ -59,15 +105,19 @@ type
     function LastStructureChangeType: StructureChangeType;
     function NotificationCalls: Integer;
     function PropertyCalls: Integer;
+    function ReentrantHandled: Boolean;
     function StructureCalls: Integer;
     procedure SetClientsAreListening(aValue: Boolean);
+    procedure SetReentrantProvider(const aProvider: IRawElementProviderSimple);
+    procedure SetReturnRawElementProviderResult(aValue: LRESULT);
   end;
 
-  TTestUiaApi = class(TInterfacedObject, ITestUiaApi)
+  TTestUiaApi = class(TInterfacedObject, IAccessibilityUiaApi, ITestUiaApi)
   private
     fClientsAreListening: Boolean;
     fDisconnectCalls: Integer;
     fEventCalls: Integer;
+    fHostCalls: Integer;
     fLastEventId: EVENTID;
     fLastHwnd: HWND;
     fLastLParam: LPARAM;
@@ -76,7 +126,10 @@ type
     fLastStructureChangeType: StructureChangeType;
     fNotificationCalls: Integer;
     fPropertyCalls: Integer;
+    fReentrantHandled: Boolean;
+    fReentrantProvider: IRawElementProviderSimple;
     fReturnCalls: Integer;
+    fReturnRawElementProviderResult: LRESULT;
     fStructureCalls: Integer;
   public
     function ClientsAreListening: Boolean;
@@ -84,6 +137,7 @@ type
     function DisconnectCalls: Integer;
     function EventCalls: Integer;
     function HostProviderFromHwnd(aHwnd: HWND; out aProvider: IRawElementProviderSimple): HRESULT;
+    function HostCalls: Integer;
     function LastEventId: EVENTID;
     function LastHwnd: HWND;
     function LastLParam: LPARAM;
@@ -92,6 +146,7 @@ type
     function LastStructureChangeType: StructureChangeType;
     function NotificationCalls: Integer;
     function PropertyCalls: Integer;
+    function ReentrantHandled: Boolean;
     function StructureCalls: Integer;
     function RaiseAutomationEvent(const aProvider: IRawElementProviderSimple; aEventId: EVENTID): HRESULT;
     function RaiseAutomationPropertyChanged(const aProvider: IRawElementProviderSimple; aPropertyId: PROPERTYID;
@@ -105,6 +160,8 @@ type
     function ReturnRawElementProvider(aHwnd: HWND; aWParam: WPARAM; aLParam: LPARAM;
       const aProvider: IRawElementProviderSimple): LRESULT;
     procedure SetClientsAreListening(aValue: Boolean);
+    procedure SetReentrantProvider(const aProvider: IRawElementProviderSimple);
+    procedure SetReturnRawElementProviderResult(aValue: LRESULT);
   end;
 
   TNamedProviderNode = class(TAccessibilityProviderNode)
@@ -113,6 +170,44 @@ type
     function DoGetPropertyValue(aPropertyId: PROPERTYID; out aValue: OleVariant): Boolean; override;
   public
     constructor Create;
+  end;
+
+  TCountingHitTestProviderNode = class(TAccessibilityProviderNode, IPropertyProbeProvider)
+  private
+    fPropertyProbeCount: Integer;
+  protected
+    function DoGetBoundingRectangle(out aValue: UiaRect): Boolean; override;
+    function DoGetPropertyValue(aPropertyId: PROPERTYID; out aValue: OleVariant): Boolean; override;
+  public
+    constructor Create;
+    function PropertyProbeCount: Integer;
+  end;
+
+  TPreparingProviderNode = class(TAccessibilityProviderNode, IPrepareProbeProvider)
+  private
+    fPrepared: Boolean;
+    fPrepareCount: Integer;
+  protected
+    procedure PrepareChildrenForNavigation; override;
+  public
+    constructor Create;
+    function PrepareCount: Integer;
+  end;
+
+  TPatternProbeProviderNode = class(TAccessibilityProviderNode)
+  private
+    fPatternProbeCount: Integer;
+  protected
+    function DoGetPatternProvider(aPatternId: PATTERNID): IUnknown; override;
+    function DoGetPropertyValue(aPropertyId: PROPERTYID; out aValue: OleVariant): Boolean; override;
+  public
+    constructor Create;
+    function PatternProbeCount: Integer;
+  end;
+
+  TPublishedWindowProviderNode = class(TAccessibilityProviderNode)
+  public
+    constructor Create(const aApi: IAccessibilityUiaApi);
   end;
 
 function RuntimeIdValue(const aProvider: IRawElementProviderFragment; aIndex: Integer): Integer;
@@ -131,6 +226,21 @@ begin
       SafeArrayDestroy(lArray);
     end;
   end;
+end;
+
+function InterfacesAreSame(const aLeft: IInterface; const aRight: IInterface): Boolean;
+var
+  lLeft: IUnknown;
+  lRight: IUnknown;
+begin
+  if (aLeft = nil) or (aRight = nil) then
+  begin
+    Exit(aLeft = aRight);
+  end;
+
+  lLeft := aLeft as IUnknown;
+  lRight := aRight as IUnknown;
+  Result := lLeft = lRight;
 end;
 
 function MeasureNextSiblingEnumerationTicks(aChildCount: Integer): Int64;
@@ -164,6 +274,161 @@ begin
   end;
 end;
 
+function RepoRoot: string;
+begin
+  Result := TPath.GetFullPath(TPath.Combine(ExtractFilePath(ParamStr(0)), '..\..\..'));
+end;
+
+function ReadRepoText(const aRelativePath: string): string;
+var
+  lPath: string;
+begin
+  lPath := TPath.Combine(RepoRoot, aRelativePath);
+  Assert.IsTrue(TFile.Exists(lPath), aRelativePath + ' is missing.');
+  Result := TFile.ReadAllText(lPath, TEncoding.UTF8);
+end;
+
+function MeasureCommonProviderCreationTicks(aIterations: Integer): Int64;
+var
+  i: Integer;
+  lProvider: IAccessibilityProviderNode;
+  lStopwatch: TStopwatch;
+begin
+  lStopwatch := TStopwatch.StartNew;
+  for i := 1 to aIterations do
+  begin
+    lProvider := TAccessibilityProviderFactory.CreateFragment([i]);
+    lProvider.SetProperty(UIA_NamePropertyId, 'Save');
+    lProvider.SetProperty(UIA_ControlTypePropertyId, UIA_ButtonControlTypeId);
+    lProvider.SetProperty(UIA_ClassNamePropertyId, 'TButton');
+    lProvider.SetProperty(UIA_HelpTextPropertyId, 'Run the action');
+  end;
+  lStopwatch.Stop;
+  Result := lStopwatch.ElapsedTicks;
+  if Result < 1 then
+  begin
+    Result := 1;
+  end;
+end;
+
+function MeasureAdditionalStaticProviderCreationTicks(aIterations: Integer): Int64;
+var
+  i: Integer;
+  lProvider: IAccessibilityProviderNode;
+  lStopwatch: TStopwatch;
+begin
+  lStopwatch := TStopwatch.StartNew;
+  for i := 1 to aIterations do
+  begin
+    lProvider := TAccessibilityProviderFactory.CreateFragment([i]);
+    lProvider.SetProperty(UIA_AutomationIdPropertyId, 'SaveButton');
+    lProvider.SetProperty(UIA_FrameworkIdPropertyId, 'MaxLogic');
+    lProvider.SetProperty(UIA_ItemStatusPropertyId, 'Ready');
+    lProvider.SetProperty(UIA_ItemTypePropertyId, 'Action');
+  end;
+  lStopwatch.Stop;
+  Result := lStopwatch.ElapsedTicks;
+  if Result < 1 then
+  begin
+    Result := 1;
+  end;
+end;
+
+function BuildRuntimeId(aLength: Integer; aBase: Integer): TArray<Integer>;
+var
+  i: Integer;
+begin
+  SetLength(Result, aLength);
+  for i := 0 to High(Result) do
+  begin
+    Result[i] := aBase + i;
+  end;
+end;
+
+function MeasureRuntimeIdCreationTicks(aRuntimeIdLength: Integer; aIterations: Integer): Int64;
+var
+  i: Integer;
+  lArray: PSafeArray;
+  lProvider: IAccessibilityProviderNode;
+  lRuntimeId: TArray<Integer>;
+  lStopwatch: TStopwatch;
+begin
+  lRuntimeId := BuildRuntimeId(aRuntimeIdLength, 500);
+  lProvider := TAccessibilityProviderFactory.CreateFragment(lRuntimeId);
+  lStopwatch := TStopwatch.StartNew;
+  for i := 1 to aIterations do
+  begin
+    lArray := nil;
+    Assert.AreEqual(S_OK, lProvider.FragmentProvider.GetRuntimeId(lArray));
+    Assert.IsNotNull(lArray);
+    SafeArrayDestroy(lArray);
+  end;
+  lStopwatch.Stop;
+  Result := lStopwatch.ElapsedTicks;
+  if Result < 1 then
+  begin
+    Result := 1;
+  end;
+end;
+
+function MeasureFragmentRootLookupTicks(aDepth: Integer; aIterations: Integer): Int64;
+var
+  i: Integer;
+  lChild: IAccessibilityProviderNode;
+  lFragment: IRawElementProviderFragment;
+  lParent: IAccessibilityProviderNode;
+  lRoot: IAccessibilityProviderNode;
+  lRootProvider: IRawElementProviderFragmentRoot;
+  lStopwatch: TStopwatch;
+begin
+  lRoot := TAccessibilityProviderFactory.CreateRoot([1], HWND(10));
+  lParent := lRoot;
+  for i := 1 to aDepth do
+  begin
+    lChild := TAccessibilityProviderFactory.CreateFragment([1000 + i]);
+    lParent.AddChild(lChild);
+    lParent := lChild;
+  end;
+
+  lFragment := lParent.FragmentProvider;
+  lStopwatch := TStopwatch.StartNew;
+  for i := 1 to aIterations do
+  begin
+    Assert.AreEqual(S_OK, lFragment.Get_FragmentRoot(lRootProvider));
+    Assert.IsNotNull(lRootProvider);
+  end;
+  lStopwatch.Stop;
+
+  Result := lStopwatch.ElapsedTicks;
+  if Result < 1 then
+  begin
+    Result := 1;
+  end;
+end;
+
+function MeasureUncommonProviderCreationTicks(aIterations: Integer): Int64;
+var
+  i: Integer;
+  lProvider: IAccessibilityProviderNode;
+  lStopwatch: TStopwatch;
+begin
+  lStopwatch := TStopwatch.StartNew;
+  for i := 1 to aIterations do
+  begin
+    lProvider := TAccessibilityProviderFactory.CreateFragment([i]);
+    lProvider.SetProperty(UIA_LocalizedControlTypePropertyId, 'button');
+    lProvider.SetProperty(UIA_ProviderDescriptionPropertyId, 'provider');
+    lProvider.SetProperty(UIA_IsEnabledPropertyId, True);
+    lProvider.SetProperty(UIA_IsControlElementPropertyId, True);
+  end;
+  lStopwatch.Stop;
+  Result := lStopwatch.ElapsedTicks;
+  if Result < 1 then
+  begin
+    Result := 1;
+  end;
+end;
+
 function TTestUiaApi.ClientsAreListening: Boolean;
 begin
   Result := fClientsAreListening;
@@ -186,9 +451,23 @@ begin
 end;
 
 function TTestUiaApi.HostProviderFromHwnd(aHwnd: HWND; out aProvider: IRawElementProviderSimple): HRESULT;
+var
+  lMessageResult: LRESULT;
 begin
+  Inc(fHostCalls);
+  if fReentrantProvider <> nil then
+  begin
+    fReentrantHandled := TAccessibilityProviderWindowMessages.TryHandleGetObject(aHwnd, 0, UiaRootObjectId,
+      fReentrantProvider, Self as IAccessibilityUiaApi, lMessageResult);
+  end;
+
   aProvider := nil;
   Result := S_FALSE;
+end;
+
+function TTestUiaApi.HostCalls: Integer;
+begin
+  Result := fHostCalls;
 end;
 
 function TTestUiaApi.LastEventId: EVENTID;
@@ -229,6 +508,11 @@ end;
 function TTestUiaApi.PropertyCalls: Integer;
 begin
   Result := fPropertyCalls;
+end;
+
+function TTestUiaApi.ReentrantHandled: Boolean;
+begin
+  Result := fReentrantHandled;
 end;
 
 function TTestUiaApi.RaiseAutomationEvent(const aProvider: IRawElementProviderSimple; aEventId: EVENTID): HRESULT;
@@ -274,12 +558,28 @@ begin
   Inc(fReturnCalls);
   fLastHwnd := aHwnd;
   fLastLParam := aLParam;
-  Result := 4242;
+  if fReturnRawElementProviderResult <> 0 then
+  begin
+    Result := fReturnRawElementProviderResult;
+  end else begin
+    Result := 4242;
+  end;
 end;
 
 procedure TTestUiaApi.SetClientsAreListening(aValue: Boolean);
 begin
   fClientsAreListening := aValue;
+end;
+
+procedure TTestUiaApi.SetReentrantProvider(const aProvider: IRawElementProviderSimple);
+begin
+  fReentrantProvider := aProvider;
+  fReentrantHandled := False;
+end;
+
+procedure TTestUiaApi.SetReturnRawElementProviderResult(aValue: LRESULT);
+begin
+  fReturnRawElementProviderResult := aValue;
 end;
 
 function TTestUiaApi.StructureCalls: Integer;
@@ -290,6 +590,37 @@ end;
 constructor TNamedProviderNode.Create;
 begin
   inherited CreateNode([909], 0, nil, nil);
+end;
+
+constructor TCountingHitTestProviderNode.Create;
+begin
+  inherited CreateNode([911], 0, nil, nil);
+end;
+
+constructor TPatternProbeProviderNode.Create;
+begin
+  inherited CreateNode([912], 0, nil, nil);
+end;
+
+constructor TPublishedWindowProviderNode.Create(const aApi: IAccessibilityUiaApi);
+begin
+  inherited CreateNode([910], HWND(100), aApi, nil);
+  SetPublishNativeWindowHandle(True);
+end;
+
+function TCountingHitTestProviderNode.DoGetBoundingRectangle(out aValue: UiaRect): Boolean;
+begin
+  aValue.Left := 0;
+  aValue.Top := 0;
+  aValue.Width := 100;
+  aValue.Height := 100;
+  Result := True;
+end;
+
+function TCountingHitTestProviderNode.DoGetPropertyValue(aPropertyId: PROPERTYID; out aValue: OleVariant): Boolean;
+begin
+  Inc(fPropertyProbeCount);
+  Result := inherited DoGetPropertyValue(aPropertyId, aValue);
 end;
 
 function TNamedProviderNode.DoGetPatternProvider(aPatternId: PATTERNID): IUnknown;
@@ -311,6 +642,64 @@ begin
   end else begin
     Result := inherited DoGetPropertyValue(aPropertyId, aValue);
   end;
+end;
+
+function TPatternProbeProviderNode.DoGetPatternProvider(aPatternId: PATTERNID): IUnknown;
+begin
+  Inc(fPatternProbeCount);
+  if (aPatternId = UIA_TogglePatternId) or (aPatternId = UIA_SelectionItemPatternId) then
+  begin
+    Exit(RawElementProvider as IUnknown);
+  end;
+
+  Result := inherited DoGetPatternProvider(aPatternId);
+end;
+
+function TPatternProbeProviderNode.DoGetPropertyValue(aPropertyId: PROPERTYID; out aValue: OleVariant): Boolean;
+begin
+  Result := True;
+  case aPropertyId of
+    UIA_SelectionItemIsSelectedPropertyId:
+      aValue := True;
+    UIA_ToggleToggleStatePropertyId:
+      aValue := Integer(ToggleState_On);
+  else
+    Result := inherited DoGetPropertyValue(aPropertyId, aValue);
+  end;
+end;
+
+function TCountingHitTestProviderNode.PropertyProbeCount: Integer;
+begin
+  Result := fPropertyProbeCount;
+end;
+
+constructor TPreparingProviderNode.Create;
+begin
+  inherited CreateNode([900], 0, nil, nil);
+end;
+
+function TPreparingProviderNode.PrepareCount: Integer;
+begin
+  Result := fPrepareCount;
+end;
+
+procedure TPreparingProviderNode.PrepareChildrenForNavigation;
+begin
+  inherited PrepareChildrenForNavigation;
+  Inc(fPrepareCount);
+  if fPrepared then
+  begin
+    Exit;
+  end;
+
+  fPrepared := True;
+  AddChild(TAccessibilityProviderFactory.CreateFragment([901]));
+  AddChild(TAccessibilityProviderFactory.CreateFragment([902]));
+end;
+
+function TPatternProbeProviderNode.PatternProbeCount: Integer;
+begin
+  Result := fPatternProbeCount;
 end;
 
 procedure TProviderCoreTests.AutomationEventsAreRaisedOnlyWhenClientsListen;
@@ -385,6 +774,41 @@ begin
   Assert.AreEqual(NotificationKind_Other, lApi.LastNotificationKind);
 end;
 
+procedure TProviderCoreTests.PublishedHostProviderLookupDoesNotReenterWmGetObject;
+var
+  lApi: ITestUiaApi;
+  lCachedHost: IRawElementProviderSimple;
+  lNativeWindow: IAccessibilityProviderNativeWindow;
+  lRootHost: IRawElementProviderSimple;
+  lRootProvider: IAccessibilityProviderNode;
+begin
+  lApi := TTestUiaApi.Create;
+  lRootProvider := TPublishedWindowProviderNode.Create(lApi) as IAccessibilityProviderNode;
+  lApi.SetReentrantProvider(lRootProvider.RawElementProvider);
+
+  Assert.IsTrue(Supports(lRootProvider.RawElementProvider, IAccessibilityProviderNativeWindow, lNativeWindow));
+  Assert.AreEqual(HWND(100), lNativeWindow.NativeWindowHandle);
+  Assert.AreEqual(S_FALSE, lRootProvider.RawElementProvider.Get_HostRawElementProvider(lRootHost));
+  Assert.AreEqual(1, lApi.HostCalls);
+  Assert.AreEqual(S_FALSE, lRootProvider.RawElementProvider.Get_HostRawElementProvider(lCachedHost));
+  Assert.AreEqual(1, lApi.HostCalls, 'Published providers should cache host-provider lookup per HWND.');
+  Assert.IsFalse(lApi.ReentrantHandled);
+  Assert.AreEqual(0, lApi.ReturnCalls);
+end;
+
+procedure TProviderCoreTests.UnpublishedNativeWindowProvidersDoNotLookupHostProvider;
+var
+  lApi: ITestUiaApi;
+  lRootHost: IRawElementProviderSimple;
+  lRootProvider: IAccessibilityProviderNode;
+begin
+  lApi := TTestUiaApi.Create;
+  lRootProvider := TAccessibilityProviderFactory.CreateRoot([1], HWND(100), lApi);
+
+  Assert.AreEqual(S_FALSE, lRootProvider.RawElementProvider.Get_HostRawElementProvider(lRootHost));
+  Assert.AreEqual(0, lApi.HostCalls);
+end;
+
 procedure TProviderCoreTests.FragmentOwnerDestroyDisconnectsFragmentProvider;
 var
   lApi: ITestUiaApi;
@@ -422,6 +846,57 @@ begin
   Assert.AreEqual(201, RuntimeIdValue(lFirst, 1));
   Assert.AreEqual(S_OK, lSecond.Navigate(NavigateDirection_Parent, lFirst));
   Assert.AreEqual(100, RuntimeIdValue(lFirst, 1));
+end;
+
+procedure TProviderCoreTests.DirectChildCountThenIndexedAccessReusesPreparedChildren;
+var
+  lAccess: IAccessibilityProviderChildAccess;
+  lChild: IRawElementProviderSimple;
+  lCount: Integer;
+  lPrepareProbe: IPrepareProbeProvider;
+  lProvider: IAccessibilityProviderNode;
+begin
+  lProvider := TPreparingProviderNode.Create as IAccessibilityProviderNode;
+  Assert.IsTrue(Supports(lProvider.RawElementProvider, IAccessibilityProviderChildAccess, lAccess));
+  Assert.IsTrue(Supports(lProvider, IPrepareProbeProvider, lPrepareProbe));
+
+  Assert.AreEqual(S_OK, lAccess.DirectChildCount(lCount));
+  Assert.AreEqual(2, lCount);
+  Assert.AreEqual(S_OK, lAccess.DirectChildAt(0, lChild));
+  Assert.IsNotNull(lChild);
+  Assert.AreEqual(S_OK, lAccess.DirectChildAt(1, lChild));
+  Assert.IsNotNull(lChild);
+  Assert.AreEqual(1, lPrepareProbe.PrepareCount,
+    'Direct child count and indexed reads should share one prepared child snapshot.');
+
+  Assert.AreEqual(S_OK, lAccess.DirectChildAt(0, lChild));
+  Assert.AreEqual(2, lPrepareProbe.PrepareCount,
+    'The indexed-read snapshot should be consumed instead of becoming a stale long-lived cache.');
+end;
+
+procedure TProviderCoreTests.FragmentSiblingNavigationReusesPreparedChildren;
+var
+  lFirst: IRawElementProviderFragment;
+  lPrepareProbe: IPrepareProbeProvider;
+  lProvider: IAccessibilityProviderNode;
+  lSecond: IRawElementProviderFragment;
+begin
+  lProvider := TPreparingProviderNode.Create as IAccessibilityProviderNode;
+  Assert.IsTrue(Supports(lProvider, IPrepareProbeProvider, lPrepareProbe));
+
+  Assert.AreEqual(S_OK, lProvider.FragmentProvider.Navigate(NavigateDirection_FirstChild, lFirst));
+  Assert.IsNotNull(lFirst);
+  Assert.AreEqual(1, lPrepareProbe.PrepareCount);
+
+  Assert.AreEqual(S_OK, lFirst.Navigate(NavigateDirection_NextSibling, lSecond));
+  Assert.IsNotNull(lSecond);
+  Assert.AreEqual(1, lPrepareProbe.PrepareCount,
+    'Next sibling navigation should reuse the prepared child snapshot while child indexes remain current.');
+
+  Assert.AreEqual(S_OK, lSecond.Navigate(NavigateDirection_PreviousSibling, lFirst));
+  Assert.IsNotNull(lFirst);
+  Assert.AreEqual(1, lPrepareProbe.PrepareCount,
+    'Previous sibling navigation should reuse the prepared child snapshot while child indexes remain current.');
 end;
 
 procedure TProviderCoreTests.FragmentNextSiblingEnumerationScalesLinearly;
@@ -510,6 +985,223 @@ begin
   Assert.AreEqual(UIA_ButtonControlTypeId, Integer(lValue));
 end;
 
+procedure TProviderCoreTests.RuntimeIdCreationAvoidsPerElementSafeArrayCalls;
+const
+  cIterations = 20000;
+  cLongRuntimeIdLength = 32;
+  cMaxLongPercentOfShort = 250;
+var
+  lLongTicks: Int64;
+  lShortTicks: Int64;
+begin
+  lShortTicks := MeasureRuntimeIdCreationTicks(1, cIterations);
+  lLongTicks := MeasureRuntimeIdCreationTicks(cLongRuntimeIdLength, cIterations);
+
+  Assert.IsTrue(lLongTicks * 100 <= lShortTicks * cMaxLongPercentOfShort,
+    Format('Runtime ID SAFEARRAY creation should avoid one SafeArrayPutElement call per value; short=%d long=%d ticks.',
+    [lShortTicks, lLongTicks]));
+end;
+
+procedure TProviderCoreTests.ProviderRuntimeIdsAreCopiedByBlock;
+const
+  cProviderCount = 40;
+  cRuntimeIdLength = 64;
+var
+  i: Integer;
+  lApi: ITestUiaApi;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+  lProvider: IAccessibilityProviderNode;
+  lRuntimeId: TArray<Integer>;
+begin
+  lApi := TTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  lRuntimeId := BuildRuntimeId(cRuntimeIdLength, 9000);
+
+  TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+  TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+  try
+    for i := 1 to cProviderCount do
+    begin
+      lProvider := TAccessibilityProviderFactory.CreateFragment(lRuntimeId, lApi);
+    end;
+
+    Assert.IsTrue(TAccessibilityProviderEvents.RaiseStructureChanged(lProvider.RawElementProvider,
+      StructureChangeType_ChildAdded, lRuntimeId, lApi));
+
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+    Assert.AreEqual(cProviderCount + 1, lMetrics.ProviderRuntimeIdBlockCopyCount,
+      'Provider runtime ids should be copied with one native block copy per destination array.');
+    Assert.AreEqual((cProviderCount + 1) * cRuntimeIdLength, lMetrics.ProviderRuntimeIdBlockCopyElementCount,
+      'Runtime id block-copy diagnostics should record the copied element volume.');
+    Assert.AreEqual(0, lMetrics.ProviderRuntimeIdElementCopyCount,
+      'Provider runtime ids should not be copied one Integer assignment at a time.');
+  finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+  end;
+end;
+
+procedure TProviderCoreTests.CommonStaticPropertiesAvoidDictionaryAllocation;
+const
+  cIterations = 20000;
+  cMaxCommonPercent = 75;
+var
+  lCommonTicks: Int64;
+  lUncommonTicks: Int64;
+begin
+  lCommonTicks := MeasureCommonProviderCreationTicks(cIterations);
+  lUncommonTicks := MeasureUncommonProviderCreationTicks(cIterations);
+
+  Assert.IsTrue(lCommonTicks * 100 <= lUncommonTicks * cMaxCommonPercent,
+    Format('Common static UIA properties should avoid per-provider dictionary allocation; common=%d uncommon=%d ticks.',
+    [lCommonTicks, lUncommonTicks]));
+end;
+
+procedure TProviderCoreTests.AdditionalStaticPropertiesAvoidDictionaryAllocation;
+const
+  cIterations = 20000;
+  cMaxAdditionalPercent = 75;
+var
+  lAdditionalTicks: Int64;
+  lProvider: IAccessibilityProviderNode;
+  lUncommonTicks: Int64;
+  lValue: OleVariant;
+begin
+  lProvider := TAccessibilityProviderFactory.CreateFragment([1]);
+  lProvider.SetProperty(UIA_AutomationIdPropertyId, 'SaveButton');
+  lProvider.SetProperty(UIA_FrameworkIdPropertyId, 'MaxLogic');
+  lProvider.SetProperty(UIA_ItemStatusPropertyId, 'Ready');
+  lProvider.SetProperty(UIA_ItemTypePropertyId, 'Action');
+
+  Assert.AreEqual(S_OK, lProvider.RawElementProvider.GetPropertyValue(UIA_AutomationIdPropertyId, lValue));
+  Assert.AreEqual('SaveButton', string(lValue));
+  Assert.AreEqual(S_OK, lProvider.RawElementProvider.GetPropertyValue(UIA_FrameworkIdPropertyId, lValue));
+  Assert.AreEqual('MaxLogic', string(lValue));
+  Assert.AreEqual(S_OK, lProvider.RawElementProvider.GetPropertyValue(UIA_ItemStatusPropertyId, lValue));
+  Assert.AreEqual('Ready', string(lValue));
+  Assert.AreEqual(S_OK, lProvider.RawElementProvider.GetPropertyValue(UIA_ItemTypePropertyId, lValue));
+  Assert.AreEqual('Action', string(lValue));
+
+  lAdditionalTicks := MeasureAdditionalStaticProviderCreationTicks(cIterations);
+  lUncommonTicks := MeasureUncommonProviderCreationTicks(cIterations);
+
+  Assert.IsTrue(lAdditionalTicks * 100 <= lUncommonTicks * cMaxAdditionalPercent,
+    Format('Additional static UIA properties should avoid per-provider dictionary allocation; additional=%d uncommon=%d ticks.',
+    [lAdditionalTicks, lUncommonTicks]));
+end;
+
+procedure TProviderCoreTests.CommonStaticPropertiesUseTypedStorage;
+var
+  lSourceText: string;
+begin
+  lSourceText := ReadRepoText('src\MaxLogic.Accessibility.ProviderCore.pas');
+
+  Assert.IsFalse(Pos('fAutomationIdProperty: OleVariant', lSourceText) > 0,
+    'Common string provider properties should use typed storage, not OleVariant fields.');
+  Assert.IsFalse(Pos('fClassNameProperty: OleVariant', lSourceText) > 0,
+    'Common string provider properties should use typed storage, not OleVariant fields.');
+  Assert.IsFalse(Pos('fControlTypeProperty: OleVariant', lSourceText) > 0,
+    'Common integer provider properties should use typed storage, not OleVariant fields.');
+  Assert.IsFalse(Pos('fFrameworkIdProperty: OleVariant', lSourceText) > 0,
+    'Common string provider properties should use typed storage, not OleVariant fields.');
+  Assert.IsFalse(Pos('fHelpTextProperty: OleVariant', lSourceText) > 0,
+    'Common string provider properties should use typed storage, not OleVariant fields.');
+  Assert.IsFalse(Pos('fItemStatusProperty: OleVariant', lSourceText) > 0,
+    'Common string provider properties should use typed storage, not OleVariant fields.');
+  Assert.IsFalse(Pos('fItemTypeProperty: OleVariant', lSourceText) > 0,
+    'Common string provider properties should use typed storage, not OleVariant fields.');
+  Assert.IsFalse(Pos('fNameProperty: OleVariant', lSourceText) > 0,
+    'Common string provider properties should use typed storage, not OleVariant fields.');
+end;
+
+procedure TProviderCoreTests.CommonTypedStoragePreservesFallbackVariants;
+var
+  lControlType: Integer;
+  lDirectAccess: IAccessibilityProviderDirectAccess;
+  lProvider: IAccessibilityProviderNode;
+  lText: string;
+  lValue: OleVariant;
+begin
+  lProvider := TAccessibilityProviderFactory.CreateFragment([1]);
+  Assert.IsTrue(Supports(lProvider.RawElementProvider, IAccessibilityProviderDirectAccess, lDirectAccess));
+
+  lProvider.SetProperty(UIA_NamePropertyId, Null);
+  Assert.AreEqual(S_OK, lProvider.RawElementProvider.GetPropertyValue(UIA_NamePropertyId, lValue));
+  Assert.IsTrue(VarIsNull(lValue), 'Fallback storage should preserve Null string-property values.');
+  Assert.IsFalse(lDirectAccess.TryGetStringProperty(UIA_NamePropertyId, lText),
+    'Direct string access should reject Null fallback values.');
+
+  lProvider.SetProperty(UIA_NamePropertyId, 'Save');
+  Assert.IsTrue(lDirectAccess.TryGetStringProperty(UIA_NamePropertyId, lText));
+  Assert.AreEqual('Save', lText);
+
+  lProvider.SetProperty(UIA_ControlTypePropertyId, Null);
+  Assert.AreEqual(S_OK, lProvider.RawElementProvider.GetPropertyValue(UIA_ControlTypePropertyId, lValue));
+  Assert.IsTrue(VarIsNull(lValue), 'Fallback storage should preserve Null integer-property values.');
+  Assert.IsFalse(lDirectAccess.TryGetIntegerProperty(UIA_ControlTypePropertyId, lControlType),
+    'Direct integer access should reject Null fallback values.');
+
+  lProvider.SetProperty(UIA_ControlTypePropertyId, UIA_ButtonControlTypeId);
+  Assert.IsTrue(lDirectAccess.TryGetIntegerProperty(UIA_ControlTypePropertyId, lControlType));
+  Assert.AreEqual(UIA_ButtonControlTypeId, lControlType);
+end;
+
+procedure TProviderCoreTests.LeafProviderCreationDoesNotAllocateChildLists;
+const
+  cProviderCount = 256;
+var
+  i: Integer;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+  lProvider: IAccessibilityProviderNode;
+begin
+  TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+  TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+  try
+    for i := 1 to cProviderCount do
+    begin
+      lProvider := TAccessibilityProviderFactory.CreateFragment([1000 + i]);
+      lProvider.SetProperty(UIA_NamePropertyId, 'Leaf');
+    end;
+
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+    Assert.AreEqual(0, lMetrics.ProviderChildListAllocationCount,
+      'Leaf provider creation should not allocate child-list storage.');
+  finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+  end;
+end;
+
+procedure TProviderCoreTests.DirectPatternSupportUsesStatePropertiesBeforePatternProvider;
+var
+  lDirectAccess: IAccessibilityProviderDirectAccess;
+  lProvider: TPatternProbeProviderNode;
+begin
+  lProvider := TPatternProbeProviderNode.Create;
+  Assert.IsTrue(Supports(lProvider.RawElementProvider, IAccessibilityProviderDirectAccess, lDirectAccess));
+
+  Assert.IsTrue(lDirectAccess.SupportsPatternDirect(UIA_TogglePatternId));
+  Assert.IsTrue(lDirectAccess.SupportsPatternDirect(UIA_SelectionItemPatternId));
+  Assert.AreEqual(0, lProvider.PatternProbeCount,
+    'Direct state-pattern checks should use in-process state properties before querying pattern providers.');
+end;
+
+procedure TProviderCoreTests.WindowedProvidersOverrideNativeProxyWithoutPublishingHwnd;
+var
+  lNativeWindow: IAccessibilityProviderNativeWindow;
+  lProvider: IAccessibilityProviderNode;
+  lProviderOptions: ProviderOptions;
+  lValue: OleVariant;
+begin
+  lProvider := TAccessibilityProviderFactory.CreateRoot([77], HWND(123));
+
+  Assert.AreEqual(S_OK, lProvider.RawElementProvider.Get_ProviderOptions(lProviderOptions));
+  Assert.AreEqual(Integer(ProviderOptions_ServerSideProvider or ProviderOptions_OverrideProvider),
+    Integer(lProviderOptions));
+  Assert.IsTrue(Supports(lProvider.RawElementProvider, IAccessibilityProviderNativeWindow, lNativeWindow));
+  Assert.AreEqual(HWND(123), lNativeWindow.NativeWindowHandle);
+  Assert.AreEqual(S_OK, lProvider.RawElementProvider.GetPropertyValue(UIA_NativeWindowHandlePropertyId, lValue));
+  Assert.IsTrue(VarIsEmpty(lValue));
+end;
+
 procedure TProviderCoreTests.ProviderBaseClassesCanBeExtended;
 var
   lPattern: IUnknown;
@@ -543,6 +1235,89 @@ begin
     lChildFragment.Navigate(NavigateDirection_Parent, lParent));
 end;
 
+procedure TProviderCoreTests.NestedFragmentRootUsesNearestFragmentRoot;
+var
+  lActualRoot: IRawElementProviderFragmentRoot;
+  lChild: IAccessibilityProviderNode;
+  lExpectedRoot: IRawElementProviderFragmentRoot;
+  lInnerRoot: IAccessibilityProviderNode;
+  lOuterRoot: IAccessibilityProviderNode;
+begin
+  lOuterRoot := TAccessibilityProviderFactory.CreateRoot([1], HWND(10));
+  lInnerRoot := TAccessibilityProviderFactory.CreateRoot([2], HWND(20));
+  lChild := TAccessibilityProviderFactory.CreateFragment([3]);
+
+  lOuterRoot.AddChild(lInnerRoot);
+  lInnerRoot.AddChild(lChild);
+
+  Assert.IsTrue(Supports(lInnerRoot.RawElementProvider, IRawElementProviderFragmentRoot, lExpectedRoot));
+  Assert.AreEqual(S_OK, lChild.FragmentProvider.Get_FragmentRoot(lActualRoot));
+  Assert.IsTrue(InterfacesAreSame(lExpectedRoot, lActualRoot));
+end;
+
+procedure TProviderCoreTests.FragmentRootLookupDoesNotScaleWithProviderDepth;
+const
+  cIterations = 10000;
+  cLargeDepth = 256;
+  cMaxLargePercentOfShallow = 500;
+  cShallowDepth = 1;
+var
+  lDeepTicks: Int64;
+  lShallowTicks: Int64;
+begin
+  lShallowTicks := MeasureFragmentRootLookupTicks(cShallowDepth, cIterations);
+  lDeepTicks := MeasureFragmentRootLookupTicks(cLargeDepth, cIterations);
+
+  Assert.IsTrue(lDeepTicks * 100 <= lShallowTicks * cMaxLargePercentOfShallow,
+    Format('Repeated Get_FragmentRoot should use a cached nearest root instead of walking parents; shallow=%d deep=%d.',
+    [lShallowTicks, lDeepTicks]));
+end;
+
+procedure TProviderCoreTests.ElementProviderFromPointDoesNotBuildLogDescriptionWhenDiagnosticsDisabled;
+var
+  lHit: IRawElementProviderFragment;
+  lProbe: IPropertyProbeProvider;
+  lRoot: IAccessibilityProviderNode;
+begin
+  TAccessibilityDiagnostics.Disable;
+  lRoot := TAccessibilityProviderFactory.CreateRoot([1], 0);
+  lProbe := TCountingHitTestProviderNode.Create as IPropertyProbeProvider;
+  lRoot.AddChild(lProbe as IAccessibilityProviderNode);
+
+  Assert.AreEqual(S_OK, (lRoot.FragmentProvider as IRawElementProviderFragmentRoot).ElementProviderFromPoint(10, 10,
+    lHit));
+  Assert.IsNotNull(lHit);
+  Assert.AreEqual(0, lProbe.PropertyProbeCount,
+    'Mouse hit testing must not query provider properties only to build discarded diagnostics text.');
+end;
+
+procedure TProviderCoreTests.ElementProviderFromPointUsesInternalBoundsWithoutProviderCallback;
+var
+  lHit: IRawElementProviderFragment;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+  lProbe: IPropertyProbeProvider;
+  lRoot: IAccessibilityProviderNode;
+begin
+  lRoot := TAccessibilityProviderFactory.CreateRoot([1], 0);
+  lProbe := TCountingHitTestProviderNode.Create as IPropertyProbeProvider;
+  lRoot.AddChild(lProbe as IAccessibilityProviderNode);
+
+  TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+  TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+  try
+    Assert.AreEqual(S_OK, (lRoot.FragmentProvider as IRawElementProviderFragmentRoot).ElementProviderFromPoint(10, 10,
+      lHit));
+    Assert.IsNotNull(lHit);
+
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+    Assert.AreEqual(1, lMetrics.ProviderRootElementProviderFromPointCount);
+    Assert.AreEqual(0, lMetrics.ProviderGetBoundingRectangleCount,
+      'Internal hit-test descent should call provider bounds directly instead of re-entering the UIA boundary wrapper.');
+  finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+  end;
+end;
+
 procedure TProviderCoreTests.WmGetObjectReturnsRootProviderOnlyForUiaRequests;
 var
   lApi: ITestUiaApi;
@@ -565,6 +1340,25 @@ begin
   Assert.AreEqual(1, lApi.ReturnCalls);
   Assert.AreEqual(HWND(100), lApi.LastHwnd);
   Assert.AreEqual(LPARAM(UiaRootObjectId), lApi.LastLParam);
+end;
+
+procedure TProviderCoreTests.WmGetObjectFallsBackWhenUiaRejectsProvider;
+var
+  lApi: ITestUiaApi;
+  lHandled: Boolean;
+  lMessageResult: LRESULT;
+  lProvider: IAccessibilityProviderNode;
+begin
+  lApi := TTestUiaApi.Create;
+  lApi.SetReturnRawElementProviderResult(LRESULT(E_FAIL));
+  lProvider := TAccessibilityProviderFactory.CreateRoot([10], HWND(100), lApi);
+
+  lHandled := TAccessibilityProviderWindowMessages.TryHandleGetObject(HWND(100), 7, UiaRootObjectId,
+    lProvider.RawElementProvider, lApi, lMessageResult);
+
+  Assert.IsFalse(lHandled);
+  Assert.AreEqual(0, Integer(lMessageResult));
+  Assert.AreEqual(1, lApi.ReturnCalls);
 end;
 
 procedure TProviderCoreTests.WmGetObjectLeavesClientObjectRequestsForNativeMsaa;

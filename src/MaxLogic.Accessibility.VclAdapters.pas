@@ -4,7 +4,7 @@ interface
 
 uses
   Vcl.Controls, Vcl.Forms,
-  MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.Scanner;
+  MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.Scanner, MaxLogic.Accessibility.UIAutomationCore;
 
 type
   IAccessibilityVclProviderAdapter = interface
@@ -16,6 +16,11 @@ type
   IAccessibilityVclControlProviderInfo = interface
     ['{2A10CDB2-64DC-4553-A53C-A9F6345E6F74}']
     function Control: TControl;
+  end;
+
+  IAccessibilityVclProviderLookup = interface
+    ['{BE71B85E-441E-45EE-96F6-504148877F0A}']
+    function TryFindProviderForControl(aControl: TControl; out aProvider: IRawElementProviderSimple): Boolean;
   end;
 
   TAccessibilityVclAdapters = record
@@ -38,13 +43,26 @@ implementation
 uses
   System.Actions, System.Classes, System.Diagnostics, System.Generics.Collections, System.Math, System.SysUtils,
   System.Types, System.TypInfo, Winapi.ActiveX, Winapi.Messages, Winapi.Windows, Vcl.Buttons, Vcl.ComCtrls,
-  Vcl.ExtCtrls, Vcl.Grids, Vcl.StdCtrls, MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.Text,
-  MaxLogic.Accessibility.UIAutomationCore;
+  Vcl.ExtCtrls, Vcl.Grids, Vcl.StdCtrls, MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.Text;
 
 type
+  TAccessibilityVclCheckBoxAccess = class(TCustomCheckBox);
+  TAccessibilityVclControlAccess = class(TControl);
+  TAccessibilityListBoxAccess = class(TCustomListBox);
+
+  TVclAdapterRttiPropertyCache = class
+  private
+    fPropsByClass: TObjectDictionary<NativeUInt, TDictionary<string, PPropInfo>>;
+  public
+    constructor Create;
+    destructor Destroy; override;
+    function Lookup(aObject: TObject; const aPropertyName: string): PPropInfo;
+  end;
+
   IAccessibilityVclRootProvider = interface
     ['{28654175-22FB-4F34-BDE7-8D82E7087897}']
     procedure AddHitTestRoot(const aRoot: IRawElementProviderFragmentRoot);
+    procedure RegisterControlProvider(aControl: TControl; const aProvider: IRawElementProviderFragment);
   end;
 
   TExplicitTextAdapter = class(TInterfacedObject, IAccessibilityControlAdapter)
@@ -90,9 +108,17 @@ type
       const aApi: IAccessibilityUiaApi): IAccessibilityProviderNode;
   end;
 
-  TAccessibilityVclFormProviderRoot = class(TAccessibilityProviderRoot, IAccessibilityVclRootProvider)
+  TAccessibilityVclFormProviderRoot = class(TAccessibilityProviderRoot, IAccessibilityVclRootProvider,
+    IAccessibilityVclProviderLookup)
   private
+    fForm: TCustomForm;
     fHitTestRoots: TList<IRawElementProviderFragmentRoot>;
+    fProvidersByControl: TDictionary<TControl, IRawElementProviderFragment>;
+    function CanUseDirectHitTarget(aControl: TControl): Boolean;
+    function ControlFromPoint(const aScreenPoint: TPoint): TControl;
+    function TryFindControlProvider(aControl: TControl; out aProvider: IRawElementProviderFragment): Boolean;
+    function TryFindTabHeaderProviderFromPoint(const aScreenPoint: TPoint;
+      out aProvider: IRawElementProviderFragment): Boolean;
   protected
     function DoElementProviderFromPoint(aX: Double; aY: Double; out aProvider: IRawElementProviderFragment):
       HResult; override;
@@ -101,6 +127,8 @@ type
     constructor Create(aForm: TCustomForm; const aApi: IAccessibilityUiaApi);
     destructor Destroy; override;
     procedure AddHitTestRoot(const aRoot: IRawElementProviderFragmentRoot);
+    procedure RegisterControlProvider(aControl: TControl; const aProvider: IRawElementProviderFragment);
+    function TryFindProviderForControl(aControl: TControl; out aProvider: IRawElementProviderSimple): Boolean;
   end;
 
   TAccessibilityStringGridProvider = class;
@@ -133,6 +161,7 @@ type
     function Select: HResult; stdcall;
     function SetValue(aValue: PWideChar): HResult; stdcall;
     function Toggle: HResult; stdcall;
+    function TryGetValueText(out aValue: string): Boolean; override;
   end;
 
   TAccessibilityMemoProvider = class;
@@ -150,15 +179,30 @@ type
       const aApi: IAccessibilityUiaApi);
   end;
 
+  IAccessibilityListBoxItemTextCache = interface
+    ['{7B41092B-4819-4556-B41E-E5E6C40B6E4E}']
+    procedure RefreshTextCache(const aRawText: string; const aCleanText: string);
+  end;
+
   TAccessibilityMemoProvider = class(TAccessibilityVclControlProvider, IRawElementProviderFragmentRoot)
   private
     fLines: TDictionary<Integer, IAccessibilityProviderNode>;
     fMemo: TCustomMemo;
+    fPreparedClientHeight: Integer;
+    fPreparedClientWidth: Integer;
+    fPreparedFirstVisibleLine: Integer;
+    fPreparedHandle: HWND;
+    fPreparedLineCount: Integer;
+    fPreparedValid: Boolean;
     fRuntimeId: Integer;
     fUiaApi: IAccessibilityUiaApi;
+    function ChildrenPreparationIsCurrent: Boolean;
     function EnsureLineProvider(aLine: Integer): IAccessibilityProviderNode;
+    function EnsurePreparedLineProvider(aLine: Integer): IAccessibilityProviderNode;
     function LineProvider(aLine: Integer): IAccessibilityProviderNode;
+    procedure RememberChildrenPreparation(aLineCount: Integer; aFirstVisibleLine: Integer);
   protected
+    function CanUsePreparedSiblingNavigation(aChild: TAccessibilityProviderNode): Boolean; override;
     procedure PrepareChildrenForNavigation; override;
   public
     constructor Create(aMemo: TCustomMemo; aRuntimeId: Integer; const aName: string; const aHelpText: string;
@@ -169,21 +213,29 @@ type
     function GetFocus(out aRetVal: IRawElementProviderFragment): HResult; stdcall;
   end;
 
-  TAccessibilityListBoxItemProvider = class(TAccessibilityProviderNode, ISelectionItemProvider)
+  TAccessibilityListBoxItemProvider = class(TAccessibilityProviderNode, IAccessibilityListBoxItemTextCache,
+    ISelectionItemProvider)
   private
+    fCachedCleanText: string;
+    fCachedRawText: string;
     fIndex: Integer;
     fListBox: TCustomListBox;
+    fOwner: TAccessibilityListBoxProvider;
+    fTextCacheValid: Boolean;
+    function CurrentText: string;
     function IsVisibleItem: Boolean;
   protected
     function DoGetBoundingRectangle(out aValue: UiaRect): Boolean; override;
     function DoGetPatternProvider(aPatternId: PATTERNID): IUnknown; override;
     function DoGetPropertyValue(aPropertyId: PROPERTYID; out aValue: OleVariant): Boolean; override;
   public
-    constructor Create(aListBox: TCustomListBox; aIndex: Integer; const aRuntimeId: array of Integer;
-      const aApi: IAccessibilityUiaApi);
+    constructor Create(aOwner: TAccessibilityListBoxProvider; aListBox: TCustomListBox; aIndex: Integer;
+      const aRuntimeId: array of Integer; const aApi: IAccessibilityUiaApi; const aRawText: string;
+      const aCleanText: string);
     function AddToSelection: HResult; stdcall;
     function Get_IsSelected(out aRetVal: BOOL): HResult; stdcall;
     function Get_SelectionContainer(out aRetVal: IRawElementProviderSimple): HResult; stdcall;
+    procedure RefreshTextCache(const aRawText: string; const aCleanText: string);
     function RemoveFromSelection: HResult; stdcall;
     function Select: HResult; stdcall;
   end;
@@ -196,7 +248,6 @@ type
     fListBox: TCustomListBox;
     fPreparedClientHeight: Integer;
     fPreparedClientWidth: Integer;
-    fPreparedFocusedIndex: Integer;
     fPreparedHandle: HWND;
     fPreparedItemCount: Integer;
     fPreparedItemHeight: Integer;
@@ -205,12 +256,16 @@ type
     fRuntimeId: Integer;
     fUiaApi: IAccessibilityUiaApi;
     function ChildrenPreparationIsCurrent: Boolean;
-    function CreateSelectionArray(const aProviders: TArray<IRawElementProviderSimple>): PSafeArray;
+    function CreateSelectionArray(const aProvider: IRawElementProviderSimple): PSafeArray; overload;
+    function CreateSelectionArrayForSelectedIndexes(const aSelectedIndexes: TArray<Integer>;
+      out aProviderCount: Integer): PSafeArray;
     function EnsureItemProvider(aIndex: Integer): IAccessibilityProviderNode;
     function ItemProvider(aIndex: Integer): IAccessibilityProviderNode;
     function ListBoxOwnsFocus: Boolean;
     procedure RememberChildrenPreparation;
+    function TryGetPreparedItemRect(aIndex: Integer; out aItemRect: TRect): Boolean;
   protected
+    function CanUsePreparedSiblingNavigation(aChild: TAccessibilityProviderNode): Boolean; override;
     function DoGetPatternProvider(aPatternId: PATTERNID): IUnknown; override;
     procedure PrepareChildrenForNavigation; override;
   public
@@ -290,25 +345,47 @@ type
   end;
 
   TAccessibilityStringGridProvider = class(TAccessibilityProviderNode, IAccessibilityVclControlProviderInfo,
-    IRawElementProviderFragmentRoot, IGridProvider, ISelectionProvider)
+    IAccessibilityFocusedItemProvider, IRawElementProviderFragmentRoot, IGridProvider, ISelectionProvider)
   private
     fCells: TDictionary<Int64, IAccessibilityProviderNode>;
     fGrid: TStringGrid;
+    fPreparedClientHeight: Integer;
+    fPreparedClientWidth: Integer;
+    fPreparedColCount: Integer;
+    fPreparedFixedCols: Integer;
+    fPreparedFixedRows: Integer;
+    fPreparedHandle: HWND;
+    fPreparedLeftCol: Integer;
+    fPreparedOptions: TGridOptions;
+    fPreparedRowCount: Integer;
+    fPreparedTopRow: Integer;
+    fPreparedValid: Boolean;
+    fPreparedVisibleColCount: Integer;
+    fPreparedVisibleRowCount: Integer;
     fRows: TDictionary<Integer, IAccessibilityProviderNode>;
     fRuntimeId: Integer;
     fUiaApi: IAccessibilityUiaApi;
     procedure BuildVisibleCells;
     function CellProvider(aCol: Integer; aRow: Integer): IAccessibilityProviderNode;
+    function ChildrenPreparationIsCurrent: Boolean;
     procedure ClearRowProviders;
     function CreateSelectionArray(const aProvider: IRawElementProviderSimple): PSafeArray;
     function EnsureCellProvider(aCol: Integer; aRow: Integer): IAccessibilityProviderNode;
+    function EnsureCellProviderDirect(aCol: Integer; aRow: Integer): IAccessibilityProviderNode;
     function EnsureRowProvider(aRow: Integer): IAccessibilityProviderNode;
+    function EnsureRowProviderDirect(aRow: Integer): IAccessibilityProviderNode;
+    procedure EnsureVisibleCellProvider(aCol: Integer; aRow: Integer; aMetricsEnabled: Boolean;
+      var aCellProbeCount: Integer; var aCreatedCount: Integer);
+    procedure EnsureVisibleRowProvider(aRow: Integer; aMetricsEnabled: Boolean; var aRowProbeCount: Integer;
+      var aCreatedCount: Integer);
     function GridOwnsFocus: Boolean;
     function IsVisibleCell(aCol: Integer; aRow: Integer): Boolean;
     procedure RefreshVisibleCells;
     procedure RefreshVisibleRows;
+    procedure RememberChildrenPreparation;
     function RowProvider(aRow: Integer): IAccessibilityProviderNode;
   protected
+    function CanUsePreparedSiblingNavigation(aChild: TAccessibilityProviderNode): Boolean; override;
     function DoGetBoundingRectangle(out aValue: UiaRect): Boolean; override;
     function DoGetPatternProvider(aPatternId: PATTERNID): IUnknown; override;
     function DoGetPropertyValue(aPropertyId: PROPERTYID; out aValue: OleVariant): Boolean; override;
@@ -327,6 +404,7 @@ type
     function Get_IsSelectionRequired(out aRetVal: BOOL): HResult; stdcall;
     function Get_RowCount(out aRetVal: Integer): HResult; stdcall;
     function GetSelection(out aRetVal: PSafeArray): HResult; stdcall;
+    function TryGetFocusedItem(out aProvider: IRawElementProviderSimple; out aName: string): Boolean;
   end;
 
 function NativeWindowHandleForControl(aControl: TControl): HWND;
@@ -415,20 +493,45 @@ begin
   end;
 end;
 
-function MemoLineText(aMemo: TCustomMemo; aLine: Integer): string;
-var
-  lCharIndex: LRESULT;
-  lLineCount: LRESULT;
-  lLineLength: LRESULT;
+function MemoLineExists(aMemo: TCustomMemo; aLine: Integer): Boolean;
 begin
-  Result := '';
+  Result := False;
   if (aMemo = nil) or (aLine < 0) then
   begin
     Exit;
   end;
 
-  lLineCount := aMemo.Perform(EM_GETLINECOUNT, 0, 0);
-  if aLine >= lLineCount then
+  Result := aMemo.Perform(EM_LINEINDEX, aLine, 0) >= 0;
+end;
+
+function MemoLineCount(aMemo: TCustomMemo): Integer;
+var
+  lLineCountResult: LRESULT;
+begin
+  Result := 0;
+  if aMemo = nil then
+  begin
+    Exit;
+  end;
+
+  lLineCountResult := aMemo.Perform(EM_GETLINECOUNT, 0, 0);
+  if lLineCountResult > 0 then
+  begin
+    Result := Integer(lLineCountResult);
+  end;
+end;
+
+function MemoLineText(aMemo: TCustomMemo; aLine: Integer): string;
+const
+  cMaxMemoGetLineLength = High(Word);
+var
+  lCharIndex: LRESULT;
+  lCopiedLength: LRESULT;
+  lLineBuffer: string;
+  lLineLength: LRESULT;
+begin
+  Result := '';
+  if (aMemo = nil) or (aLine < 0) then
   begin
     Exit;
   end;
@@ -440,7 +543,34 @@ begin
   end;
 
   lLineLength := aMemo.Perform(EM_LINELENGTH, lCharIndex, 0);
-  Result := TAccessibilityText.Clean(Copy(aMemo.Text, Integer(lCharIndex) + 1, Integer(lLineLength)));
+  if lLineLength <= 0 then
+  begin
+    Exit;
+  end;
+
+  if lLineLength > cMaxMemoGetLineLength then
+  begin
+    Result := TAccessibilityText.Clean(Copy(aMemo.Text, Integer(lCharIndex) + 1, Integer(lLineLength)));
+    Exit;
+  end;
+
+  SetLength(lLineBuffer, Integer(lLineLength));
+  PWord(PChar(lLineBuffer))^ := Word(lLineLength);
+  lCopiedLength := aMemo.Perform(EM_GETLINE, aLine, LPARAM(PChar(lLineBuffer)));
+  if lCopiedLength <= 0 then
+  begin
+    Exit;
+  end;
+
+  if lCopiedLength > lLineLength then
+  begin
+    lCopiedLength := lLineLength;
+  end;
+  if lCopiedLength < lLineLength then
+  begin
+    SetLength(lLineBuffer, Integer(lCopiedLength));
+  end;
+  Result := TAccessibilityText.Clean(lLineBuffer);
 end;
 
 function MemoLineIndexAtPoint(aMemo: TCustomMemo; const aClientPoint: TPoint): Integer;
@@ -449,7 +579,6 @@ var
   lCharIndexParam: WPARAM;
   lRawCharIndex: Int64;
   lSignedCharIndex: Int64;
-  lLineCount: LRESULT;
 begin
   Result := -1;
   if (aMemo = nil) or not PtInRect(Rect(0, 0, aMemo.ClientWidth, aMemo.ClientHeight), aClientPoint) then
@@ -467,8 +596,7 @@ begin
   lRawCharIndex := lSignedCharIndex and $00000000FFFFFFFF;
   lCharIndexParam := WPARAM(lRawCharIndex and $FFFF);
   Result := aMemo.Perform(EM_LINEFROMCHAR, lCharIndexParam, 0);
-  lLineCount := aMemo.Perform(EM_GETLINECOUNT, 0, 0);
-  if (Result < 0) or (Result >= lLineCount) then
+  if Result < 0 then
   begin
     Result := -1;
   end;
@@ -477,18 +605,11 @@ end;
 function MemoLineBounds(aMemo: TCustomMemo; aLine: Integer; out aRect: TRect): Boolean;
 var
   lCharIndex: LRESULT;
-  lLineCount: LRESULT;
   lLinePoint: TPoint;
 begin
   aRect := TRect.Empty;
   Result := False;
   if (aMemo = nil) or (aLine < 0) or not ControlIsInActiveVisibleTree(aMemo) then
-  begin
-    Exit;
-  end;
-
-  lLineCount := aMemo.Perform(EM_GETLINECOUNT, 0, 0);
-  if aLine >= lLineCount then
   begin
     Exit;
   end;
@@ -504,13 +625,18 @@ begin
   Result := (aRect.Width > 0) and (aRect.Height > 0);
 end;
 
+function CleanListBoxItemText(const aRawText: string): string;
+begin
+  TAccessibilityDiagnostics.RecordListBoxItemTextProbe;
+  Result := TAccessibilityText.Clean(aRawText);
+end;
+
 function ListBoxItemText(aListBox: TCustomListBox; aIndex: Integer): string;
 begin
   Result := '';
   if (aListBox <> nil) and (aIndex >= 0) and (aIndex < aListBox.Items.Count) then
   begin
-    TAccessibilityDiagnostics.RecordListBoxItemTextProbe;
-    Result := TAccessibilityText.Clean(aListBox.Items[aIndex]);
+    Result := CleanListBoxItemText(aListBox.Items[aIndex]);
   end;
 end;
 
@@ -529,21 +655,6 @@ begin
     aItemRect.IntersectsWith(Rect(0, 0, aListBox.ClientWidth, aListBox.ClientHeight));
 end;
 
-function ListBoxItemIsVisible(aListBox: TCustomListBox; aIndex: Integer): Boolean;
-var
-  lItemRect: TRect;
-begin
-  Result := False;
-  if (aListBox = nil) or (aIndex < 0) or (aIndex >= aListBox.Items.Count) or
-    not ControlIsInActiveVisibleTree(aListBox) then
-  begin
-    Exit;
-  end;
-
-  lItemRect := aListBox.ItemRect(aIndex);
-  Result := ListBoxItemRectIsVisible(aListBox, lItemRect);
-end;
-
 function ListBoxItemIndexExists(aListBox: TCustomListBox; aIndex: Integer): Boolean;
 begin
   Result := (aListBox <> nil) and (aIndex >= 0) and (aIndex < aListBox.Items.Count);
@@ -552,19 +663,84 @@ end;
 function ListBoxWindowItemHeight(aListBox: TCustomListBox): Integer;
 var
   lIndex: Integer;
+  lListBox: TAccessibilityListBoxAccess;
 begin
   Result := 0;
-  if (aListBox = nil) or not aListBox.HandleAllocated or (aListBox.Items.Count = 0) then
+  if aListBox = nil then
   begin
     Exit;
   end;
 
-  lIndex := EnsureRange(aListBox.TopIndex, 0, Pred(aListBox.Items.Count));
-  Result := Integer(aListBox.Perform(LB_GETITEMHEIGHT, lIndex, 0));
-  if Result < 0 then
+  lListBox := TAccessibilityListBoxAccess(aListBox);
+  if aListBox.HandleAllocated then
   begin
-    Result := 0;
+    lIndex := 0;
+    if (lListBox.Style = lbOwnerDrawVariable) and (aListBox.Items.Count > 0) then
+    begin
+      lIndex := EnsureRange(aListBox.TopIndex, 0, Pred(aListBox.Items.Count));
+    end;
+
+    Result := Integer(aListBox.Perform(LB_GETITEMHEIGHT, lIndex, 0));
+    if Result > 0 then
+    begin
+      Exit;
+    end;
+
+    if aListBox.Items.Count = 0 then
+    begin
+      Exit(0);
+    end;
   end;
+
+  Result := lListBox.ItemHeight;
+end;
+
+function ListBoxUsesUniformItemHeight(aListBox: TCustomListBox): Boolean;
+begin
+  Result := (aListBox <> nil) and (TAccessibilityListBoxAccess(aListBox).Style <> lbOwnerDrawVariable);
+end;
+
+function ListBoxVisibleItemRect(aListBox: TCustomListBox; aIndex: Integer; out aItemRect: TRect): Boolean;
+var
+  lItemHeight: Integer;
+  lTop: Integer;
+  lTopIndex: Integer;
+begin
+  aItemRect := TRect.Empty;
+  Result := False;
+  if not ListBoxItemIndexExists(aListBox, aIndex) then
+  begin
+    Exit;
+  end;
+
+  if not ControlIsInActiveVisibleTree(aListBox) then
+  begin
+    Exit;
+  end;
+
+  if ListBoxUsesUniformItemHeight(aListBox) then
+  begin
+    lItemHeight := ListBoxWindowItemHeight(aListBox);
+    if (lItemHeight <= 0) or (aListBox.ClientWidth <= 0) then
+    begin
+      Exit;
+    end;
+
+    lTopIndex := EnsureRange(aListBox.TopIndex, 0, Pred(aListBox.Items.Count));
+    lTop := (aIndex - lTopIndex) * lItemHeight;
+    aItemRect := Rect(0, lTop, aListBox.ClientWidth, lTop + lItemHeight);
+  end else begin
+    aItemRect := aListBox.ItemRect(aIndex);
+  end;
+
+  Result := ListBoxItemRectIsVisible(aListBox, aItemRect);
+end;
+
+function ListBoxItemIsVisible(aListBox: TCustomListBox; aIndex: Integer): Boolean;
+var
+  lItemRect: TRect;
+begin
+  Result := ListBoxVisibleItemRect(aListBox, aIndex, lItemRect);
 end;
 
 function ListBoxOwnsKeyboardFocus(aListBox: TCustomListBox): Boolean;
@@ -593,6 +769,37 @@ begin
   Result := (lActiveControl = aListBox) or ((lActiveControl <> nil) and aListBox.ContainsControl(lActiveControl));
 end;
 
+function ListBoxSelectedIndexes(aListBox: TCustomListBox): TArray<Integer>;
+var
+  lCount: Integer;
+  lReturnedCount: LRESULT;
+begin
+  Result := nil;
+  if (aListBox = nil) or not aListBox.HandleAllocated then
+  begin
+    Exit;
+  end;
+
+  lCount := aListBox.SelCount;
+  if lCount <= 0 then
+  begin
+    Exit;
+  end;
+
+  SetLength(Result, lCount);
+  lReturnedCount := SendMessage(aListBox.Handle, LB_GETSELITEMS, WPARAM(lCount), LPARAM(@Result[0]));
+  if lReturnedCount <= 0 then
+  begin
+    Result := nil;
+    Exit;
+  end;
+
+  if lReturnedCount < lCount then
+  begin
+    SetLength(Result, Integer(lReturnedCount));
+  end;
+end;
+
 function GridUsesRowSelection(aGrid: TStringGrid): Boolean;
 begin
   Result := (aGrid <> nil) and (goRowSelect in aGrid.Options);
@@ -603,24 +810,34 @@ begin
   Result := (aCellRect.Width > 0) and (aCellRect.Height > 0);
 end;
 
-function GridCellIsVisible(aGrid: TStringGrid; aCol: Integer; aRow: Integer): Boolean;
-var
-  lCellRect: TRect;
+function TryGetVisibleGridCellRect(aGrid: TStringGrid; aCol: Integer; aRow: Integer;
+  out aCellRect: TRect): Boolean;
 begin
+  aCellRect := TRect.Empty;
   Result := False;
   if (aGrid = nil) or (aCol < 0) or (aCol >= aGrid.ColCount) or (aRow < 0) or (aRow >= aGrid.RowCount) then
   begin
     Exit;
   end;
 
-  lCellRect := aGrid.CellRect(aCol, aRow);
-  Result := IsVisibleCellRect(lCellRect);
+  aCellRect := aGrid.CellRect(aCol, aRow);
+  Result := IsVisibleCellRect(aCellRect);
+end;
+
+function GridCellIsVisible(aGrid: TStringGrid; aCol: Integer; aRow: Integer): Boolean;
+var
+  lCellRect: TRect;
+begin
+  Result := TryGetVisibleGridCellRect(aGrid, aCol, aRow, lCellRect);
 end;
 
 function GridRowHasVisibleHeader(aGrid: TStringGrid; aRow: Integer): Boolean;
 var
   lCol: Integer;
+  lFirstScrollableCol: Integer;
+  lFixedColCount: Integer;
   lHeaderRow: Integer;
+  lLastScrollableCol: Integer;
 begin
   Result := False;
   if (aGrid = nil) or (aGrid.FixedRows <= 0) or (aRow < aGrid.FixedRows) then
@@ -629,7 +846,8 @@ begin
   end;
 
   lHeaderRow := Pred(aGrid.FixedRows);
-  for lCol := 0 to Pred(aGrid.ColCount) do
+  lFixedColCount := Min(aGrid.FixedCols, aGrid.ColCount);
+  for lCol := 0 to Pred(lFixedColCount) do
   begin
     if GridCellIsVisible(aGrid, lCol, aRow) and
       (TAccessibilityText.Clean(aGrid.Cells[lCol, lHeaderRow]) <> '') then
@@ -637,14 +855,78 @@ begin
       Exit(True);
     end;
   end;
+
+  if aGrid.ColCount <= 0 then
+  begin
+    Exit;
+  end;
+
+  lFirstScrollableCol := EnsureRange(aGrid.LeftCol, 0, Pred(aGrid.ColCount));
+  lLastScrollableCol := Min(Pred(aGrid.ColCount), lFirstScrollableCol + Max(0, aGrid.VisibleColCount) + 1);
+  for lCol := lFirstScrollableCol to lLastScrollableCol do
+  begin
+    if (lCol >= lFixedColCount) and GridCellIsVisible(aGrid, lCol, aRow) and
+      (TAccessibilityText.Clean(aGrid.Cells[lCol, lHeaderRow]) <> '') then
+    begin
+      Exit(True);
+    end;
+  end;
+end;
+
+procedure AppendGridRowAccessibleCell(aGrid: TStringGrid; aRow: Integer; aCol: Integer; aHeaderRow: Integer;
+  aUseHeaderFormat: Boolean; var aText: string; aMetricsEnabled: Boolean; var aHeaderProbeCount: Integer);
+var
+  lCellText: string;
+  lHeaderText: string;
+begin
+  if not GridCellIsVisible(aGrid, aCol, aRow) then
+  begin
+    Exit;
+  end;
+
+  lCellText := TAccessibilityText.Clean(aGrid.Cells[aCol, aRow]);
+  if lCellText = '' then
+  begin
+    Exit;
+  end;
+
+  if aText <> '' then
+  begin
+    if aUseHeaderFormat then
+    begin
+      aText := aText + sLineBreak + sLineBreak;
+    end else begin
+      aText := aText + ', ';
+    end;
+  end;
+
+  if aUseHeaderFormat then
+  begin
+    if aMetricsEnabled then
+    begin
+      Inc(aHeaderProbeCount);
+    end;
+    lHeaderText := TAccessibilityText.Clean(aGrid.Cells[aCol, aHeaderRow]);
+    if lHeaderText <> '' then
+    begin
+      lCellText := lHeaderText + ': ' + lCellText;
+    end;
+  end;
+
+  aText := aText + lCellText;
 end;
 
 function GridRowAccessibleText(aGrid: TStringGrid; aRow: Integer): string;
 var
-  lCellText: string;
+  lCellProbeCount: Integer;
   lCol: Integer;
+  lFirstScrollableCol: Integer;
+  lFixedColCount: Integer;
+  lHeaderProbeCount: Integer;
   lHeaderRow: Integer;
-  lHeaderText: string;
+  lLastScrollableCol: Integer;
+  lMetricsEnabled: Boolean;
+  lStopwatch: TStopwatch;
   lUseHeaderFormat: Boolean;
 begin
   Result := '';
@@ -653,44 +935,157 @@ begin
     Exit;
   end;
 
+  lCellProbeCount := 0;
+  lHeaderProbeCount := 0;
+  lMetricsEnabled := TAccessibilityDiagnostics.ProviderHotspotMetricsEnabled;
+  if lMetricsEnabled then
+  begin
+    lStopwatch := TStopwatch.StartNew;
+  end;
+
   lUseHeaderFormat := GridRowHasVisibleHeader(aGrid, aRow);
   lHeaderRow := Pred(aGrid.FixedRows);
-  for lCol := 0 to Pred(aGrid.ColCount) do
-  begin
-    if GridCellIsVisible(aGrid, lCol, aRow) then
+  try
+    lFixedColCount := Min(aGrid.FixedCols, aGrid.ColCount);
+    for lCol := 0 to Pred(lFixedColCount) do
     begin
-      lCellText := TAccessibilityText.Clean(aGrid.Cells[lCol, aRow]);
-      if lCellText <> '' then
+      if lMetricsEnabled then
       begin
-        if Result <> '' then
-        begin
-          if lUseHeaderFormat then
-          begin
-            Result := Result + sLineBreak + sLineBreak;
-          end else begin
-            Result := Result + ', ';
-          end;
-        end;
-        if lUseHeaderFormat then
-        begin
-          lHeaderText := TAccessibilityText.Clean(aGrid.Cells[lCol, lHeaderRow]);
-          if lHeaderText <> '' then
-          begin
-            lCellText := lHeaderText + ': ' + lCellText;
-          end;
-        end;
-        Result := Result + lCellText;
+        Inc(lCellProbeCount);
       end;
+
+      AppendGridRowAccessibleCell(aGrid, aRow, lCol, lHeaderRow, lUseHeaderFormat, Result, lMetricsEnabled,
+        lHeaderProbeCount);
+    end;
+
+    if aGrid.ColCount > 0 then
+    begin
+      lFirstScrollableCol := EnsureRange(aGrid.LeftCol, 0, Pred(aGrid.ColCount));
+      lLastScrollableCol := Min(Pred(aGrid.ColCount), lFirstScrollableCol + Max(0, aGrid.VisibleColCount) + 1);
+      for lCol := lFirstScrollableCol to lLastScrollableCol do
+      begin
+        if lCol >= lFixedColCount then
+        begin
+          if lMetricsEnabled then
+          begin
+            Inc(lCellProbeCount);
+          end;
+          AppendGridRowAccessibleCell(aGrid, aRow, lCol, lHeaderRow, lUseHeaderFormat, Result, lMetricsEnabled,
+            lHeaderProbeCount);
+        end;
+      end;
+    end;
+  finally
+    if lMetricsEnabled then
+    begin
+      TAccessibilityDiagnostics.RecordStringGridRowText(lCellProbeCount, lHeaderProbeCount, lStopwatch.ElapsedTicks);
     end;
   end;
 end;
+
+procedure IncludeGridRowBoundsCell(aGrid: TStringGrid; aRow: Integer; aCol: Integer; var aLeft: Integer;
+  var aRight: Integer; var aTop: Integer; var aHeight: Integer; var aVisibleCellFound: Boolean;
+  aMetricsEnabled: Boolean; var aCellProbeCount: Integer);
+var
+  lCellRect: TRect;
+begin
+  if aMetricsEnabled then
+  begin
+    Inc(aCellProbeCount);
+  end;
+
+  if TryGetVisibleGridCellRect(aGrid, aCol, aRow, lCellRect) then
+  begin
+    aLeft := Min(aLeft, lCellRect.Left);
+    aRight := Max(aRight, lCellRect.Right);
+    if not aVisibleCellFound then
+    begin
+      aTop := lCellRect.Top;
+      aHeight := lCellRect.Height;
+    end;
+    aVisibleCellFound := True;
+  end;
+end;
+
+function ControlHasDirectCaption(aControl: TControl): Boolean;
+begin
+  Result := (aControl is TCustomForm) or (aControl is TCustomLabel) or (aControl is TStaticText) or
+    (aControl is TCustomButton) or (aControl is TCustomCheckBox) or (aControl is TRadioButton) or
+    (aControl is TCustomGroupBox) or (aControl is TCustomPanel) or (aControl is TTabSheet) or
+    (aControl is TSpeedButton) or (aControl is TToolButton);
+end;
+
+function TryReadDirectObjectProperty(aObject: TObject; const aPropertyName: string; out aValue: TObject): Boolean;
+begin
+  Result := False;
+  aValue := nil;
+  if (aPropertyName = 'Action') and (aObject is TControl) then
+  begin
+    aValue := TAccessibilityVclControlAccess(aObject).Action;
+    Exit(True);
+  end;
+end;
+
+function TryReadDirectStringProperty(aObject: TObject; const aPropertyName: string; out aValue: string): Boolean;
+var
+  lControl: TControl;
+begin
+  Result := False;
+  aValue := '';
+  if not (aObject is TControl) then
+  begin
+    Exit;
+  end;
+
+  lControl := TControl(aObject);
+  if (aPropertyName = 'Caption') and ControlHasDirectCaption(lControl) then
+  begin
+    aValue := TAccessibilityText.Clean(TAccessibilityVclControlAccess(lControl).Caption);
+    Exit(True);
+  end;
+
+  if (aPropertyName = 'Text') and
+    ((lControl is TCustomEdit) or (lControl is TCustomMemo) or (lControl is TCustomComboBox)) then
+  begin
+    aValue := TAccessibilityText.Clean(TAccessibilityVclControlAccess(lControl).Text);
+    Exit(True);
+  end;
+
+  if aPropertyName = 'Hint' then
+  begin
+    aValue := TAccessibilityText.Clean(lControl.Hint);
+    Exit(True);
+  end;
+
+  if aPropertyName = 'TextHint' then
+  begin
+    if lControl is TCustomEdit then
+    begin
+      aValue := TAccessibilityText.Clean(TCustomEdit(lControl).TextHint);
+      Exit(True);
+    end;
+
+    if lControl is TCustomComboBox then
+    begin
+      aValue := TAccessibilityText.Clean(TCustomComboBox(lControl).TextHint);
+      Exit(True);
+    end;
+  end;
+end;
+
+function LookupRttiProperty(aObject: TObject; const aPropertyName: string): PPropInfo; forward;
 
 function ReadObjectProperty(aObject: TObject; const aPropertyName: string): TObject;
 var
   lPropInfo: PPropInfo;
 begin
   Result := nil;
-  lPropInfo := GetPropInfo(aObject.ClassInfo, aPropertyName);
+  if TryReadDirectObjectProperty(aObject, aPropertyName, Result) then
+  begin
+    Exit;
+  end;
+
+  lPropInfo := LookupRttiProperty(aObject, aPropertyName);
   if (lPropInfo <> nil) and (lPropInfo.PropType^.Kind = tkClass) then
   begin
     Result := GetObjectProp(aObject, lPropInfo);
@@ -702,7 +1097,12 @@ var
   lPropInfo: PPropInfo;
 begin
   Result := '';
-  lPropInfo := GetPropInfo(aObject.ClassInfo, aPropertyName);
+  if TryReadDirectStringProperty(aObject, aPropertyName, Result) then
+  begin
+    Exit;
+  end;
+
+  lPropInfo := LookupRttiProperty(aObject, aPropertyName);
   if (lPropInfo <> nil) and (lPropInfo.PropType^.Kind in [tkString, tkLString, tkWString, tkUString]) then
   begin
     Result := TAccessibilityText.Clean(GetStrProp(aObject, lPropInfo));
@@ -744,7 +1144,38 @@ var
   lPropInfo: PPropInfo;
 begin
   Result := False;
-  lPropInfo := GetPropInfo(aObject.ClassInfo, aPropertyName);
+  if aPropertyName = 'Checked' then
+  begin
+    if aObject is TCustomCheckBox then
+    begin
+      Exit(TAccessibilityVclCheckBoxAccess(aObject).Checked);
+    end;
+
+    if aObject is TRadioButton then
+    begin
+      Exit(TRadioButton(aObject).Checked);
+    end;
+  end;
+
+  if aPropertyName = 'ReadOnly' then
+  begin
+    if aObject is TCustomEdit then
+    begin
+      Exit(TCustomEdit(aObject).ReadOnly);
+    end;
+
+    if aObject is TCustomMemo then
+    begin
+      Exit(TCustomMemo(aObject).ReadOnly);
+    end;
+  end;
+
+  if (aPropertyName = 'AllowGrayed') and (aObject is TCustomCheckBox) then
+  begin
+    Exit(TAccessibilityVclCheckBoxAccess(aObject).AllowGrayed);
+  end;
+
+  lPropInfo := LookupRttiProperty(aObject, aPropertyName);
   if (lPropInfo <> nil) and (lPropInfo.PropType^.Kind = tkEnumeration) then
   begin
     Result := GetOrdProp(aObject, lPropInfo) <> 0;
@@ -756,7 +1187,22 @@ var
   lPropInfo: PPropInfo;
 begin
   Result := False;
-  lPropInfo := GetPropInfo(aObject.ClassInfo, aPropertyName);
+  if aPropertyName = 'Checked' then
+  begin
+    if aObject is TCustomCheckBox then
+    begin
+      TAccessibilityVclCheckBoxAccess(aObject).Checked := aValue;
+      Exit(True);
+    end;
+
+    if aObject is TRadioButton then
+    begin
+      TRadioButton(aObject).Checked := aValue;
+      Exit(True);
+    end;
+  end;
+
+  lPropInfo := LookupRttiProperty(aObject, aPropertyName);
   if (lPropInfo <> nil) and (lPropInfo.PropType^.Kind = tkEnumeration) then
   begin
     SetOrdProp(aObject, lPropInfo, Ord(aValue));
@@ -770,7 +1216,13 @@ var
 begin
   aValue := 0;
   Result := False;
-  lPropInfo := GetPropInfo(aObject.ClassInfo, aPropertyName);
+  if (aPropertyName = 'State') and (aObject is TCustomCheckBox) then
+  begin
+    aValue := Ord(TAccessibilityVclCheckBoxAccess(aObject).State);
+    Exit(True);
+  end;
+
+  lPropInfo := LookupRttiProperty(aObject, aPropertyName);
   if (lPropInfo <> nil) and (lPropInfo.PropType^.Kind = tkEnumeration) then
   begin
     aValue := GetOrdProp(aObject, lPropInfo);
@@ -783,7 +1235,14 @@ var
   lPropInfo: PPropInfo;
 begin
   Result := False;
-  lPropInfo := GetPropInfo(aObject.ClassInfo, aPropertyName);
+  if (aPropertyName = 'Text') and (aObject is TControl) and
+    ((aObject is TCustomEdit) or (aObject is TCustomMemo) or (aObject is TCustomComboBox)) then
+  begin
+    TAccessibilityVclControlAccess(aObject).Text := aValue;
+    Exit(True);
+  end;
+
+  lPropInfo := LookupRttiProperty(aObject, aPropertyName);
   if (lPropInfo <> nil) and (lPropInfo.PropType^.Kind in [tkString, tkLString, tkWString, tkUString]) then
   begin
     SetStrProp(aObject, lPropInfo, aValue);
@@ -796,7 +1255,13 @@ var
   lPropInfo: PPropInfo;
 begin
   Result := False;
-  lPropInfo := GetPropInfo(aObject.ClassInfo, aPropertyName);
+  if (aPropertyName = 'State') and (aObject is TCustomCheckBox) then
+  begin
+    TAccessibilityVclCheckBoxAccess(aObject).State := TCheckBoxState(aValue);
+    Exit(True);
+  end;
+
+  lPropInfo := LookupRttiProperty(aObject, aPropertyName);
   if (lPropInfo <> nil) and (lPropInfo.PropType^.Kind = tkEnumeration) then
   begin
     SetOrdProp(aObject, lPropInfo, aValue);
@@ -809,6 +1274,7 @@ var
   lControl: TControl;
   lTabSheet: TTabSheet;
 begin
+  TAccessibilityDiagnostics.RecordActiveVisibleTreeProbe;
   Result := False;
   lControl := aControl;
   while lControl <> nil do
@@ -836,6 +1302,9 @@ end;
 function GridRowIsVisible(aGrid: TStringGrid; aRow: Integer): Boolean;
 var
   lCol: Integer;
+  lFirstScrollableCol: Integer;
+  lFixedColCount: Integer;
+  lLastScrollableCol: Integer;
 begin
   Result := False;
   if (aGrid = nil) or not ControlIsInActiveVisibleTree(aGrid) or (aRow < 0) or (aRow >= aGrid.RowCount) then
@@ -843,9 +1312,25 @@ begin
     Exit;
   end;
 
-  for lCol := 0 to Pred(aGrid.ColCount) do
+  lFixedColCount := Min(aGrid.FixedCols, aGrid.ColCount);
+  for lCol := 0 to Pred(lFixedColCount) do
   begin
     if GridCellIsVisible(aGrid, lCol, aRow) then
+    begin
+      Exit(True);
+    end;
+  end;
+
+  if aGrid.ColCount <= 0 then
+  begin
+    Exit;
+  end;
+
+  lFirstScrollableCol := EnsureRange(aGrid.LeftCol, 0, Pred(aGrid.ColCount));
+  lLastScrollableCol := Min(Pred(aGrid.ColCount), lFirstScrollableCol + Max(0, aGrid.VisibleColCount) + 1);
+  for lCol := lFirstScrollableCol to lLastScrollableCol do
+  begin
+    if (lCol >= lFixedColCount) and GridCellIsVisible(aGrid, lCol, aRow) then
     begin
       Exit(True);
     end;
@@ -929,6 +1414,30 @@ begin
       Exit(True);
     end;
   end;
+end;
+
+function FallbackHasUsefulExplicitText(aControl: TControl; const aFallback: TAccessibilityTextInfo): Boolean;
+var
+  lControlName: string;
+begin
+  Result := False;
+  if aControl = nil then
+  begin
+    Exit;
+  end;
+
+  if aFallback.HelpText <> '' then
+  begin
+    Exit(True);
+  end;
+
+  if (aFallback.Name = '') or TAccessibilityText.IsIconFontOnly(aFallback.Name) then
+  begin
+    Exit;
+  end;
+
+  lControlName := TAccessibilityText.Clean(aControl.Name);
+  Result := not SameText(aFallback.Name, lControlName);
 end;
 
 function HasAccessibleDescendant(aControl: TWinControl): Boolean;
@@ -1043,6 +1552,12 @@ begin
   Result := UIA_TextControlTypeId;
 end;
 
+function ShouldPublishNativeWindowHandle(aControl: TControl): Boolean;
+begin
+  Result := (aControl is TCustomGroupBox) or (aControl is TPageControl) or ((aControl is TRadioButton) and
+    ((aControl.Parent is TRadioGroup) or (aControl.Parent is TCustomGroupBox)));
+end;
+
 function CreateProviderForNode(const aNode: IAccessibilityScanNode; const aRegistry: IAccessibilityAdapterRegistry;
   var aNextRuntimeId: Integer; const aApi: IAccessibilityUiaApi): IAccessibilityProviderNode;
 var
@@ -1076,6 +1591,11 @@ begin
   begin
     lChildProvider := CreateProviderForNode(aScanNode.Child(i), aRegistry, aNextRuntimeId, aApi);
     aProvider.AddChild(lChildProvider);
+    if aRootProvider <> nil then
+    begin
+      aRootProvider.RegisterControlProvider(aScanNode.Child(i).Control, lChildProvider.FragmentProvider);
+    end;
+
     lChildManagesOwnTree := Supports(lChildProvider.RawElementProvider, IRawElementProviderFragmentRoot,
       lChildHitTestRoot);
     if (aRootProvider <> nil) and lChildManagesOwnTree then
@@ -1093,7 +1613,7 @@ end;
 function TExplicitTextAdapter.CreateInfo(aControl: TControl; const aFallback: TAccessibilityTextInfo):
   TAccessibilityControlInfo;
 begin
-  if HasUsefulExplicitText(aControl) then
+  if FallbackHasUsefulExplicitText(aControl, aFallback) or HasUsefulExplicitText(aControl) then
   begin
     Result := TAccessibilityControlInfo.Include(aControl, aFallback.Name, aFallback.HelpText);
   end else begin
@@ -1104,14 +1624,9 @@ end;
 function TPanelAdapter.CreateInfo(aControl: TControl; const aFallback: TAccessibilityTextInfo):
   TAccessibilityControlInfo;
 begin
-  if HasUsefulExplicitText(aControl) then
+  if FallbackHasUsefulExplicitText(aControl, aFallback) or HasUsefulExplicitText(aControl) then
   begin
     Exit(TAccessibilityControlInfo.Include(aControl, aFallback.Name, aFallback.HelpText));
-  end;
-
-  if (aControl is TWinControl) and HasAccessibleDescendant(TWinControl(aControl)) then
-  begin
-    Exit(TAccessibilityControlInfo.Include(aControl, '', ''));
   end;
 
   Result := TAccessibilityControlInfo.Omit;
@@ -1120,7 +1635,7 @@ end;
 function TNamedContainerAdapter.CreateInfo(aControl: TControl; const aFallback: TAccessibilityTextInfo):
   TAccessibilityControlInfo;
 begin
-  if HasUsefulExplicitText(aControl) then
+  if FallbackHasUsefulExplicitText(aControl, aFallback) or HasUsefulExplicitText(aControl) then
   begin
     Exit(TAccessibilityControlInfo.Include(aControl, aFallback.Name, aFallback.HelpText));
   end;
@@ -1224,20 +1739,165 @@ type
     VisibleControl: IRawElementProviderFragment;
   end;
 
+var
+  gVclAdapterRttiPropertyCache: TVclAdapterRttiPropertyCache;
+
+constructor TVclAdapterRttiPropertyCache.Create;
+begin
+  inherited Create;
+  fPropsByClass := TObjectDictionary<NativeUInt, TDictionary<string, PPropInfo>>.Create([doOwnsValues]);
+end;
+
+destructor TVclAdapterRttiPropertyCache.Destroy;
+begin
+  fPropsByClass.Free;
+  inherited Destroy;
+end;
+
+function TVclAdapterRttiPropertyCache.Lookup(aObject: TObject; const aPropertyName: string): PPropInfo;
+var
+  lClassInfo: PTypeInfo;
+  lClassKey: NativeUInt;
+  lProperties: TDictionary<string, PPropInfo>;
+begin
+  Result := nil;
+  if aObject = nil then
+  begin
+    Exit;
+  end;
+
+  lClassInfo := aObject.ClassInfo;
+  if lClassInfo = nil then
+  begin
+    Exit;
+  end;
+
+  System.TMonitor.Enter(Self);
+  try
+    lClassKey := NativeUInt(lClassInfo);
+    if not fPropsByClass.TryGetValue(lClassKey, lProperties) then
+    begin
+      lProperties := TDictionary<string, PPropInfo>.Create;
+      fPropsByClass.Add(lClassKey, lProperties);
+    end;
+
+    if not lProperties.TryGetValue(aPropertyName, Result) then
+    begin
+      TAccessibilityDiagnostics.RecordVclAdapterRttiPropertyLookup;
+      Result := GetPropInfo(lClassInfo, aPropertyName);
+      lProperties.Add(aPropertyName, Result);
+    end;
+  finally
+    System.TMonitor.Exit(Self);
+  end;
+end;
+
+function LookupRttiProperty(aObject: TObject; const aPropertyName: string): PPropInfo;
+begin
+  Result := nil;
+  if aObject = nil then
+  begin
+    Exit;
+  end;
+
+  if gVclAdapterRttiPropertyCache <> nil then
+  begin
+    Exit(gVclAdapterRttiPropertyCache.Lookup(aObject, aPropertyName));
+  end;
+
+  TAccessibilityDiagnostics.RecordVclAdapterRttiPropertyLookup;
+  Result := GetPropInfo(aObject.ClassInfo, aPropertyName);
+end;
+
 function UiaRectContainsPoint(const aRect: UiaRect; aX: Double; aY: Double): Boolean;
 begin
   Result := (aX >= aRect.Left) and (aY >= aRect.Top) and (aX < aRect.Left + aRect.Width) and
     (aY < aRect.Top + aRect.Height);
 end;
 
+function TryGetControlBoundingRectangle(aControl: TControl; out aValue: UiaRect): Boolean;
+var
+  lPageControl: TPageControl;
+  lPoint: TPoint;
+  lTabRect: TRect;
+  lTabSheet: TTabSheet;
+begin
+  aValue := Default(UiaRect);
+  Result := False;
+  if aControl = nil then
+  begin
+    Exit;
+  end;
+
+  if aControl is TTabSheet then
+  begin
+    lTabSheet := TTabSheet(aControl);
+    lPageControl := lTabSheet.PageControl;
+    if not TabSheetHeaderIsVisible(lTabSheet) then
+    begin
+      Exit;
+    end;
+
+    lTabRect := lPageControl.TabRect(lTabSheet.TabIndex);
+    if not IsVisibleCellRect(lTabRect) then
+    begin
+      Exit;
+    end;
+
+    lPoint := lPageControl.ClientToScreen(lTabRect.TopLeft);
+    aValue.Left := lPoint.X;
+    aValue.Top := lPoint.Y;
+    aValue.Width := lTabRect.Width;
+    aValue.Height := lTabRect.Height;
+    Exit(True);
+  end;
+
+  if not ControlIsInActiveVisibleTree(aControl) then
+  begin
+    Exit;
+  end;
+
+  lPoint := aControl.ClientToScreen(Point(0, 0));
+  aValue.Left := lPoint.X;
+  aValue.Top := lPoint.Y;
+  aValue.Width := aControl.Width;
+  aValue.Height := aControl.Height;
+  Result := True;
+end;
+
+function TryProviderDirectChildAt(const aFragment: IRawElementProviderFragment; aIndex: Integer;
+  out aChild: IRawElementProviderFragment): Boolean;
+var
+  lChildAccess: IAccessibilityProviderChildAccess;
+  lSimple: IRawElementProviderSimple;
+begin
+  aChild := nil;
+  lSimple := nil;
+  Result := Supports(aFragment, IAccessibilityProviderChildAccess, lChildAccess) and
+    (lChildAccess.DirectChildAt(aIndex, lSimple) = S_OK) and
+    Supports(lSimple, IRawElementProviderFragment, aChild);
+end;
+
+function TryProviderDirectChildCount(const aFragment: IRawElementProviderFragment; out aCount: Integer): Boolean;
+var
+  lChildAccess: IAccessibilityProviderChildAccess;
+begin
+  aCount := 0;
+  Result := Supports(aFragment, IAccessibilityProviderChildAccess, lChildAccess) and
+    (lChildAccess.DirectChildCount(aCount) = S_OK);
+end;
+
 procedure FindHitTestCandidatesFromPoint(const aFragment: IRawElementProviderFragment; aX: Double; aY: Double;
   const aScreenPoint: TPoint; var aCandidates: THitTestCandidates);
 var
+  i: Integer;
   lBounds: UiaRect;
   lChild: IRawElementProviderFragment;
+  lChildCount: Integer;
   lControl: TControl;
   lInfo: IAccessibilityVclControlProviderInfo;
   lNextChild: IRawElementProviderFragment;
+  lNode: IAccessibilityProviderNode;
   lPageControl: TPageControl;
   lPoint: TPoint;
   lScreenRect: TRect;
@@ -1271,7 +1931,23 @@ begin
     end;
   end;
 
-  if aFragment.Navigate(NavigateDirection_FirstChild, lChild) = S_OK then
+  if TryProviderDirectChildCount(aFragment, lChildCount) then
+  begin
+    for i := 0 to Pred(lChildCount) do
+    begin
+      lChild := nil;
+      if not TryProviderDirectChildAt(aFragment, i, lChild) then
+      begin
+        Continue;
+      end;
+
+      FindHitTestCandidatesFromPoint(lChild, aX, aY, aScreenPoint, aCandidates);
+      if aCandidates.TabHeader <> nil then
+      begin
+        Exit;
+      end;
+    end;
+  end else if aFragment.Navigate(NavigateDirection_FirstChild, lChild) = S_OK then
   begin
     while lChild <> nil do
     begin
@@ -1292,7 +1968,12 @@ begin
 
   if (aCandidates.VisibleControl = nil) and (lControl <> nil) then
   begin
-    if ControlIsInActiveVisibleTree(lControl) and (aFragment.Get_BoundingRectangle(lBounds) = S_OK) and
+    if Supports(aFragment, IAccessibilityProviderNode, lNode) and lNode.IsDisconnected then
+    begin
+      Exit;
+    end;
+
+    if TryGetControlBoundingRectangle(lControl, lBounds) and
       UiaRectContainsPoint(lBounds, aX, aY) then
     begin
       aCandidates.VisibleControl := aFragment;
@@ -1311,31 +1992,150 @@ end;
 constructor TAccessibilityVclFormProviderRoot.Create(aForm: TCustomForm; const aApi: IAccessibilityUiaApi);
 begin
   inherited CreateNode([1], aForm.Handle, aApi, aForm);
+  fForm := aForm;
   fHitTestRoots := TList<IRawElementProviderFragmentRoot>.Create;
+  fProvidersByControl := TDictionary<TControl, IRawElementProviderFragment>.Create;
 end;
 
 destructor TAccessibilityVclFormProviderRoot.Destroy;
 begin
+  fProvidersByControl.Free;
   fHitTestRoots.Free;
   inherited Destroy;
+end;
+
+procedure TAccessibilityVclFormProviderRoot.RegisterControlProvider(aControl: TControl;
+  const aProvider: IRawElementProviderFragment);
+begin
+  if (aControl <> nil) and (aProvider <> nil) then
+  begin
+    fProvidersByControl.AddOrSetValue(aControl, aProvider);
+  end;
+end;
+
+function TAccessibilityVclFormProviderRoot.TryFindProviderForControl(aControl: TControl;
+  out aProvider: IRawElementProviderSimple): Boolean;
+var
+  lFragment: IRawElementProviderFragment;
+begin
+  aProvider := nil;
+  lFragment := nil;
+  Result := TryFindControlProvider(aControl, lFragment) and Supports(lFragment, IRawElementProviderSimple,
+    aProvider);
+end;
+
+function TAccessibilityVclFormProviderRoot.CanUseDirectHitTarget(aControl: TControl): Boolean;
+begin
+  Result := (aControl <> nil) and not (aControl is TPageControl) and not (aControl is TTabSheet);
+end;
+
+function TAccessibilityVclFormProviderRoot.ControlFromPoint(const aScreenPoint: TPoint): TControl;
+var
+  lClientPoint: TPoint;
+begin
+  Result := nil;
+  if fForm <> nil then
+  begin
+    lClientPoint := fForm.ScreenToClient(aScreenPoint);
+    if PtInRect(fForm.ClientRect, lClientPoint) then
+    begin
+      Result := fForm.ControlAtPos(lClientPoint, True, True, True);
+    end;
+
+    if Result <> nil then
+    begin
+      Exit;
+    end;
+  end;
+
+  Result := FindDragTarget(aScreenPoint, True);
+end;
+
+function TAccessibilityVclFormProviderRoot.TryFindControlProvider(aControl: TControl;
+  out aProvider: IRawElementProviderFragment): Boolean;
+var
+  lControl: TControl;
+begin
+  aProvider := nil;
+  Result := False;
+  if not ControlIsInActiveVisibleTree(aControl) then
+  begin
+    Exit;
+  end;
+
+  lControl := aControl;
+  while lControl <> nil do
+  begin
+    if fProvidersByControl.TryGetValue(lControl, aProvider) and (aProvider <> nil) then
+    begin
+      Exit(True);
+    end;
+
+    lControl := lControl.Parent;
+  end;
+
+  aProvider := nil;
+end;
+
+function TAccessibilityVclFormProviderRoot.TryFindTabHeaderProviderFromPoint(const aScreenPoint: TPoint;
+  out aProvider: IRawElementProviderFragment): Boolean;
+var
+  lClientPoint: TPoint;
+  lPageControl: TPageControl;
+  lTabIndex: Integer;
+  lTabSheet: TTabSheet;
+  lWindow: TWinControl;
+begin
+  aProvider := nil;
+  Result := False;
+  lPageControl := nil;
+  lWindow := FindVCLWindow(aScreenPoint);
+  while lWindow <> nil do
+  begin
+    if lWindow is TPageControl then
+    begin
+      lPageControl := TPageControl(lWindow);
+      Break;
+    end;
+
+    lWindow := lWindow.Parent;
+  end;
+
+  if lPageControl = nil then
+  begin
+    Exit;
+  end;
+
+  if (lPageControl = nil) or ((fForm <> nil) and not fForm.ContainsControl(lPageControl)) then
+  begin
+    Exit;
+  end;
+
+  lClientPoint := lPageControl.ScreenToClient(aScreenPoint);
+  lTabIndex := lPageControl.IndexOfTabAt(lClientPoint.X, lClientPoint.Y);
+  if (lTabIndex < 0) or (lTabIndex >= lPageControl.PageCount) then
+  begin
+    Exit;
+  end;
+
+  lTabSheet := lPageControl.Pages[lTabIndex];
+  Result := TabSheetHeaderIsVisible(lTabSheet) and TryFindControlProvider(lTabSheet, aProvider);
 end;
 
 function TAccessibilityVclFormProviderRoot.DoElementProviderFromPoint(aX: Double; aY: Double;
   out aProvider: IRawElementProviderFragment): HResult;
 var
-  lCandidates: THitTestCandidates;
   i: Integer;
+  lCandidates: THitTestCandidates;
   lProvider: IRawElementProviderFragment;
   lResult: HResult;
   lScreenPoint: TPoint;
+  lTarget: TControl;
 begin
   aProvider := nil;
-  lCandidates := Default(THitTestCandidates);
   lScreenPoint := Point(Integer(Round(aX)), Integer(Round(aY)));
-  FindHitTestCandidatesFromPoint(FragmentProvider, aX, aY, lScreenPoint, lCandidates);
-  if lCandidates.TabHeader <> nil then
+  if TryFindTabHeaderProviderFromPoint(lScreenPoint, aProvider) then
   begin
-    aProvider := lCandidates.TabHeader;
     Exit(S_OK);
   end;
 
@@ -1359,6 +2159,21 @@ begin
       aProvider := lProvider;
       Exit(S_OK);
     end;
+  end;
+
+  lTarget := ControlFromPoint(lScreenPoint);
+  if CanUseDirectHitTarget(lTarget) and ((fForm = nil) or fForm.ContainsControl(lTarget)) and
+    TryFindControlProvider(lTarget, aProvider) then
+  begin
+    Exit(S_OK);
+  end;
+
+  lCandidates := Default(THitTestCandidates);
+  FindHitTestCandidatesFromPoint(FragmentProvider, aX, aY, lScreenPoint, lCandidates);
+  if lCandidates.TabHeader <> nil then
+  begin
+    aProvider := lCandidates.TabHeader;
+    Exit(S_OK);
   end;
 
   if lCandidates.VisibleControl <> nil then
@@ -1407,6 +2222,8 @@ end;
 
 constructor TAccessibilityVclControlProvider.Create(aControl: TControl; const aRuntimeId: array of Integer;
   aControlTypeId: Integer; const aName: string; const aHelpText: string; const aApi: IAccessibilityUiaApi);
+var
+  lPublishNativeWindowHandle: Boolean;
 begin
   inherited CreateNode(aRuntimeId, NativeWindowHandleForControl(aControl), aApi, aControl);
   fControl := aControl;
@@ -1414,6 +2231,12 @@ begin
   SetProperty(UIA_ControlTypePropertyId, aControlTypeId);
   SetProperty(UIA_ClassNamePropertyId, aControl.ClassName);
   SetProperty(UIA_HelpTextPropertyId, aHelpText);
+  lPublishNativeWindowHandle := ShouldPublishNativeWindowHandle(aControl);
+  SetOverrideNativeProvider(lPublishNativeWindowHandle);
+  if lPublishNativeWindowHandle then
+  begin
+    SetPublishNativeWindowHandle(True);
+  end;
 end;
 
 function TAccessibilityVclControlProvider.Control: TControl;
@@ -1422,16 +2245,6 @@ begin
 end;
 
 function TAccessibilityVclControlProvider.DoGetBoundingRectangle(out aValue: UiaRect): Boolean;
-var
-  lBottom: Integer;
-  lLeft: Integer;
-  lPageControl: TPageControl;
-  lPoint: TPoint;
-  lRight: Integer;
-  lTabPoint: TPoint;
-  lTabRect: TRect;
-  lTabSheet: TTabSheet;
-  lTop: Integer;
 begin
   aValue := Default(UiaRect);
   Result := False;
@@ -1440,45 +2253,7 @@ begin
     Exit;
   end;
 
-  if fControl is TTabSheet then
-  begin
-    lTabSheet := TTabSheet(fControl);
-    lPageControl := lTabSheet.PageControl;
-    if not TabSheetHeaderIsVisible(lTabSheet) then
-    begin
-      Exit;
-    end;
-
-    lTabRect := lPageControl.TabRect(lTabSheet.TabIndex);
-    if not IsVisibleCellRect(lTabRect) then
-    begin
-      Exit;
-    end;
-
-    lTabPoint := lPageControl.ClientToScreen(lTabRect.TopLeft);
-    lLeft := lTabPoint.X;
-    lTop := lTabPoint.Y;
-    lRight := lTabPoint.X + lTabRect.Width;
-    lBottom := lTabPoint.Y + lTabRect.Height;
-
-    aValue.Left := lLeft;
-    aValue.Top := lTop;
-    aValue.Width := lRight - lLeft;
-    aValue.Height := lBottom - lTop;
-    Exit(True);
-  end;
-
-  if not ControlIsInActiveVisibleTree(fControl) then
-  begin
-    Exit;
-  end;
-
-  lPoint := fControl.ClientToScreen(Point(0, 0));
-  aValue.Left := lPoint.X;
-  aValue.Top := lPoint.Y;
-  aValue.Width := fControl.Width;
-  aValue.Height := fControl.Height;
-  Result := True;
+  Result := TryGetControlBoundingRectangle(fControl, aValue);
 end;
 
 function TAccessibilityVclControlProvider.DoGetPatternProvider(aPatternId: PATTERNID): IUnknown;
@@ -1513,6 +2288,8 @@ end;
 
 function TAccessibilityVclControlProvider.DoGetPropertyValue(aPropertyId: PROPERTYID; out aValue: OleVariant):
   Boolean;
+var
+  lTabSheet: TTabSheet;
 begin
   Result := True;
   case aPropertyId of
@@ -1528,6 +2305,32 @@ begin
         aValue := not TabSheetHeaderIsVisible(TTabSheet(fControl));
       end else begin
         aValue := not ControlIsInActiveVisibleTree(fControl);
+      end;
+    UIA_SelectionItemIsSelectedPropertyId:
+      if fControl is TRadioButton then
+      begin
+        aValue := ReadBooleanProperty(fControl, 'Checked');
+      end else if fControl is TTabSheet then
+      begin
+        lTabSheet := TTabSheet(fControl);
+        aValue := (lTabSheet.PageControl <> nil) and (lTabSheet.PageControl.ActivePage = lTabSheet);
+      end else begin
+        Result := inherited DoGetPropertyValue(aPropertyId, aValue);
+      end;
+    UIA_ToggleToggleStatePropertyId:
+      if ControlSupportsToggle(fControl) then
+      begin
+        if fControl is TCustomCheckBox then
+        begin
+          aValue := Integer(CheckBoxToggleState(fControl));
+        end else if TSpeedButton(fControl).Down then
+        begin
+          aValue := Integer(ToggleState_On);
+        end else begin
+          aValue := Integer(ToggleState_Off);
+        end;
+      end else begin
+        Result := inherited DoGetPropertyValue(aPropertyId, aValue);
       end;
   else
     Result := inherited DoGetPropertyValue(aPropertyId, aValue);
@@ -1577,8 +2380,6 @@ begin
 end;
 
 function TAccessibilityVclControlProvider.Get_SelectionContainer(out aRetVal: IRawElementProviderSimple): HResult;
-var
-  lParent: IRawElementProviderFragment;
 begin
   aRetVal := nil;
   if IsDisconnected or not ((fControl is TTabSheet) or (fControl is TRadioButton)) then
@@ -1586,11 +2387,7 @@ begin
     Exit(UIA_E_ELEMENTNOTAVAILABLE);
   end;
 
-  if (Navigate(NavigateDirection_Parent, lParent) = S_OK) and (lParent <> nil) then
-  begin
-    aRetVal := lParent as IRawElementProviderSimple;
-  end;
-
+  aRetVal := ParentRawElementProvider;
   Result := S_OK;
 end;
 
@@ -1614,19 +2411,33 @@ begin
 end;
 
 function TAccessibilityVclControlProvider.Get_Value(out aRetVal: WideString): HResult;
+var
+  lValue: string;
 begin
   aRetVal := '';
-  if IsDisconnected or not SupportsValue(fControl) then
+  if not TryGetValueText(lValue) then
   begin
     Exit(UIA_E_ELEMENTNOTAVAILABLE);
   end;
 
-  aRetVal := ReadStringProperty(fControl, 'Text');
-  if (aRetVal = '') and (fControl is TCustomEdit) then
-  begin
-    aRetVal := ReadStringProperty(fControl, 'TextHint');
-  end;
+  aRetVal := lValue;
   Result := S_OK;
+end;
+
+function TAccessibilityVclControlProvider.TryGetValueText(out aValue: string): Boolean;
+begin
+  aValue := '';
+  Result := (not IsDisconnected) and SupportsValue(fControl);
+  if not Result then
+  begin
+    Exit;
+  end;
+
+  aValue := ReadStringProperty(fControl, 'Text');
+  if (aValue = '') and (fControl is TCustomEdit) then
+  begin
+    aValue := ReadStringProperty(fControl, 'TextHint');
+  end;
 end;
 
 function TAccessibilityVclControlProvider.Invoke: HResult;
@@ -1891,6 +2702,7 @@ constructor TAccessibilityMemoProvider.Create(aMemo: TCustomMemo; aRuntimeId: In
   const aHelpText: string; const aApi: IAccessibilityUiaApi);
 begin
   inherited Create(aMemo, [aRuntimeId], UIA_EditControlTypeId, aName, aHelpText, aApi);
+  SetPublishNativeWindowHandle(True);
   fMemo := aMemo;
   fRuntimeId := aRuntimeId;
   fUiaApi := aApi;
@@ -1901,6 +2713,28 @@ destructor TAccessibilityMemoProvider.Destroy;
 begin
   fLines.Free;
   inherited Destroy;
+end;
+
+function TAccessibilityMemoProvider.CanUsePreparedSiblingNavigation(aChild: TAccessibilityProviderNode): Boolean;
+begin
+  Result := ChildrenPreparationIsCurrent and HasCurrentChildIndex(aChild);
+end;
+
+function TAccessibilityMemoProvider.ChildrenPreparationIsCurrent: Boolean;
+var
+  lFirstVisibleLineResult: LRESULT;
+begin
+  Result := False;
+  if (fMemo = nil) or (not fPreparedValid) or IsDisconnected or not ControlIsInActiveVisibleTree(fMemo) then
+  begin
+    Exit;
+  end;
+
+  lFirstVisibleLineResult := SendMessage(fMemo.Handle, EM_GETFIRSTVISIBLELINE, 0, 0);
+  Result := (fPreparedHandle = fMemo.Handle) and (fPreparedClientWidth = fMemo.ClientWidth) and
+    (fPreparedClientHeight = fMemo.ClientHeight) and
+    (fPreparedLineCount = MemoLineCount(fMemo)) and
+    (fPreparedFirstVisibleLine = Integer(lFirstVisibleLineResult));
 end;
 
 function TAccessibilityMemoProvider.ElementProviderFromPoint(aX: Double; aY: Double;
@@ -1936,7 +2770,25 @@ end;
 function TAccessibilityMemoProvider.EnsureLineProvider(aLine: Integer): IAccessibilityProviderNode;
 begin
   Result := nil;
-  if (fMemo = nil) or (aLine < 0) or (MemoLineText(fMemo, aLine) = '') then
+  if (fMemo = nil) or (aLine < 0) or not MemoLineExists(fMemo, aLine) then
+  begin
+    Exit;
+  end;
+
+  Result := LineProvider(aLine);
+  if Result = nil then
+  begin
+    Result := TAccessibilityMemoLineProvider.Create(fMemo, aLine, [fRuntimeId, aLine], fUiaApi) as
+      IAccessibilityProviderNode;
+    AddChild(Result);
+    fLines.Add(aLine, Result);
+  end;
+end;
+
+function TAccessibilityMemoProvider.EnsurePreparedLineProvider(aLine: Integer): IAccessibilityProviderNode;
+begin
+  Result := nil;
+  if (fMemo = nil) or (aLine < 0) then
   begin
     Exit;
   end;
@@ -1973,26 +2825,44 @@ begin
   end;
 end;
 
+procedure TAccessibilityMemoProvider.RememberChildrenPreparation(aLineCount: Integer; aFirstVisibleLine: Integer);
+begin
+  fPreparedValid := False;
+  if (fMemo = nil) or IsDisconnected or not ControlIsInActiveVisibleTree(fMemo) then
+  begin
+    Exit;
+  end;
+
+  fPreparedHandle := fMemo.Handle;
+  fPreparedClientWidth := fMemo.ClientWidth;
+  fPreparedClientHeight := fMemo.ClientHeight;
+  fPreparedFirstVisibleLine := aFirstVisibleLine;
+  fPreparedLineCount := aLineCount;
+  fPreparedValid := True;
+end;
+
 procedure TAccessibilityMemoProvider.PrepareChildrenForNavigation;
 var
-  lCaretLine: Integer;
-  lCaretLineResult: LRESULT;
   lCreatedCount: Integer;
   lExistingProvider: IAccessibilityProviderNode;
   lFirstVisibleLine: Integer;
   lFirstVisibleLineResult: LRESULT;
+  lLastLine: Integer;
   lLine: Integer;
-  lLineCount: LRESULT;
-  lLineCountInt: Integer;
+  lLineCount: Integer;
   lLineProbeCount: Integer;
   lLastVisibleLine: Integer;
   lLineHeight: Integer;
   lMetricsEnabled: Boolean;
-  lSelStart: Integer;
   lStopwatch: TStopwatch;
 begin
   inherited PrepareChildrenForNavigation;
   if (fMemo = nil) or not ControlIsInActiveVisibleTree(fMemo) then
+  begin
+    Exit;
+  end;
+
+  if ChildrenPreparationIsCurrent then
   begin
     Exit;
   end;
@@ -2005,25 +2875,31 @@ begin
     lStopwatch := TStopwatch.StartNew;
   end;
 
-  lLineCount := fMemo.Perform(EM_GETLINECOUNT, 0, 0);
+  lLineCount := MemoLineCount(fMemo);
   if lLineCount <= 0 then
   begin
+    if lMetricsEnabled then
+    begin
+      TAccessibilityDiagnostics.RecordMemoPrepareChildren(0, 0, lStopwatch.ElapsedTicks);
+    end;
+    RememberChildrenPreparation(lLineCount, 0);
     Exit;
   end;
-  lLineCountInt := lLineCount;
 
+  lLastLine := Pred(lLineCount);
   lLineHeight := TextLineHeight(fMemo);
   lFirstVisibleLineResult := SendMessage(fMemo.Handle, EM_GETFIRSTVISIBLELINE, 0, 0);
   if lFirstVisibleLineResult <= 0 then
   begin
     lFirstVisibleLine := 0;
-  end else if lFirstVisibleLineResult >= lLineCountInt then
-  begin
-    lFirstVisibleLine := Pred(lLineCountInt);
   end else begin
     lFirstVisibleLine := Integer(lFirstVisibleLineResult);
   end;
-  lLastVisibleLine := Min(Pred(lLineCountInt), lFirstVisibleLine + Max(1, fMemo.ClientHeight div lLineHeight) + 1);
+  if lFirstVisibleLine > lLastLine then
+  begin
+    lFirstVisibleLine := lLastLine;
+  end;
+  lLastVisibleLine := Min(lLastLine, lFirstVisibleLine + Max(1, fMemo.ClientHeight div lLineHeight) + 1);
 
   for lLine := lFirstVisibleLine to lLastVisibleLine do
   begin
@@ -2031,38 +2907,13 @@ begin
     begin
       Inc(lLineProbeCount);
       lExistingProvider := LineProvider(lLine);
-      EnsureLineProvider(lLine);
+      EnsurePreparedLineProvider(lLine);
       if (lExistingProvider = nil) and (LineProvider(lLine) <> nil) then
       begin
         Inc(lCreatedCount);
       end;
     end else begin
-      EnsureLineProvider(lLine);
-    end;
-  end;
-
-  lSelStart := fMemo.SelStart;
-  if lSelStart >= 0 then
-  begin
-    lCaretLineResult := fMemo.Perform(EM_LINEFROMCHAR, WPARAM(lSelStart), 0);
-    if (lCaretLineResult >= 0) and (lCaretLineResult < lLineCount) then
-    begin
-      lCaretLine := Integer(lCaretLineResult);
-      if (lCaretLine < lFirstVisibleLine) or (lCaretLine > lLastVisibleLine) then
-      begin
-        if lMetricsEnabled then
-        begin
-          Inc(lLineProbeCount);
-          lExistingProvider := LineProvider(lCaretLine);
-          EnsureLineProvider(lCaretLine);
-          if (lExistingProvider = nil) and (LineProvider(lCaretLine) <> nil) then
-          begin
-            Inc(lCreatedCount);
-          end;
-        end else begin
-          EnsureLineProvider(lCaretLine);
-        end;
-      end;
+      EnsurePreparedLineProvider(lLine);
     end;
   end;
 
@@ -2070,6 +2921,20 @@ begin
   begin
     TAccessibilityDiagnostics.RecordMemoPrepareChildren(lLineProbeCount, lCreatedCount, lStopwatch.ElapsedTicks);
   end;
+  RememberChildrenPreparation(lLineCount, lFirstVisibleLine);
+end;
+
+constructor TAccessibilityListBoxItemProvider.Create(aOwner: TAccessibilityListBoxProvider; aListBox: TCustomListBox;
+  aIndex: Integer; const aRuntimeId: array of Integer; const aApi: IAccessibilityUiaApi; const aRawText: string;
+  const aCleanText: string);
+begin
+  inherited CreateNode(aRuntimeId, 0, aApi, aListBox);
+  fOwner := aOwner;
+  fListBox := aListBox;
+  fIndex := aIndex;
+  SetProperty(UIA_ControlTypePropertyId, UIA_ListItemControlTypeId);
+  SetProperty(UIA_ClassNamePropertyId, 'TListBoxItem');
+  RefreshTextCache(aRawText, aCleanText);
 end;
 
 function TAccessibilityListBoxItemProvider.AddToSelection: HResult;
@@ -2077,14 +2942,24 @@ begin
   Result := Select;
 end;
 
-constructor TAccessibilityListBoxItemProvider.Create(aListBox: TCustomListBox; aIndex: Integer;
-  const aRuntimeId: array of Integer; const aApi: IAccessibilityUiaApi);
+function TAccessibilityListBoxItemProvider.CurrentText: string;
+var
+  lRawText: string;
 begin
-  inherited CreateNode(aRuntimeId, 0, aApi, aListBox);
-  fListBox := aListBox;
-  fIndex := aIndex;
-  SetProperty(UIA_ControlTypePropertyId, UIA_ListItemControlTypeId);
-  SetProperty(UIA_ClassNamePropertyId, 'TListBoxItem');
+  Result := '';
+  if not ListBoxItemIndexExists(fListBox, fIndex) then
+  begin
+    Exit;
+  end;
+
+  lRawText := ListBoxRawItemText(fListBox, fIndex);
+  if fTextCacheValid and (fCachedRawText = lRawText) then
+  begin
+    Exit(fCachedCleanText);
+  end;
+
+  Result := CleanListBoxItemText(lRawText);
+  RefreshTextCache(lRawText, Result);
 end;
 
 function TAccessibilityListBoxItemProvider.DoGetBoundingRectangle(out aValue: UiaRect): Boolean;
@@ -2094,12 +2969,17 @@ var
 begin
   aValue := Default(UiaRect);
   Result := False;
-  if IsDisconnected or not IsVisibleItem then
+  if IsDisconnected then
   begin
     Exit;
   end;
 
-  lItemRect := fListBox.ItemRect(fIndex);
+  if ((fOwner = nil) or not fOwner.TryGetPreparedItemRect(fIndex, lItemRect)) and
+    not ListBoxVisibleItemRect(fListBox, fIndex, lItemRect) then
+  begin
+    Exit;
+  end;
+
   lPoint := fListBox.ClientToScreen(lItemRect.TopLeft);
   aValue.Left := lPoint.X;
   aValue.Top := lPoint.Y;
@@ -2128,7 +3008,7 @@ begin
   Result := True;
   case aPropertyId of
     UIA_NamePropertyId:
-      aValue := ListBoxItemText(fListBox, fIndex);
+      aValue := CurrentText;
     UIA_HasKeyboardFocusPropertyId:
       aValue := (fListBox <> nil) and (fListBox.ItemIndex = fIndex) and ListBoxOwnsKeyboardFocus(fListBox);
     UIA_IsOffscreenPropertyId:
@@ -2156,25 +3036,27 @@ begin
 end;
 
 function TAccessibilityListBoxItemProvider.Get_SelectionContainer(out aRetVal: IRawElementProviderSimple): HResult;
-var
-  lParent: IRawElementProviderFragment;
 begin
   aRetVal := nil;
-  if IsDisconnected then
+  if IsDisconnected or (fOwner = nil) then
   begin
     Exit(UIA_E_ELEMENTNOTAVAILABLE);
   end;
 
-  if (Navigate(NavigateDirection_Parent, lParent) = S_OK) and (lParent <> nil) then
-  begin
-    aRetVal := lParent as IRawElementProviderSimple;
-  end;
+  aRetVal := fOwner.RawElementProvider;
   Result := S_OK;
 end;
 
 function TAccessibilityListBoxItemProvider.IsVisibleItem: Boolean;
 begin
   Result := ListBoxItemIsVisible(fListBox, fIndex);
+end;
+
+procedure TAccessibilityListBoxItemProvider.RefreshTextCache(const aRawText: string; const aCleanText: string);
+begin
+  fCachedRawText := aRawText;
+  fCachedCleanText := aCleanText;
+  fTextCacheValid := True;
 end;
 
 function TAccessibilityListBoxItemProvider.RemoveFromSelection: HResult;
@@ -2210,6 +3092,7 @@ constructor TAccessibilityListBoxProvider.Create(aListBox: TCustomListBox; aRunt
   const aName: string; const aHelpText: string; const aApi: IAccessibilityUiaApi);
 begin
   inherited Create(aListBox, [aRuntimeId], UIA_ListControlTypeId, aName, aHelpText, aApi);
+  SetUseHostRawElementProvider(False);
   fItems := TDictionary<Integer, IAccessibilityProviderNode>.Create;
   fItemRawTexts := TDictionary<Integer, string>.Create;
   fListBox := aListBox;
@@ -2217,22 +3100,98 @@ begin
   fUiaApi := aApi;
 end;
 
+function TAccessibilityListBoxProvider.CanUsePreparedSiblingNavigation(
+  aChild: TAccessibilityProviderNode): Boolean;
+begin
+  Result := fPreparedValid and HasCurrentChildIndex(aChild);
+end;
+
 function TAccessibilityListBoxProvider.ChildrenPreparationIsCurrent: Boolean;
 begin
   Result := fPreparedValid and (fListBox <> nil) and (fPreparedHandle = fListBox.Handle) and
     (fPreparedItemCount = fListBox.Items.Count) and (fPreparedTopIndex = fListBox.TopIndex) and
-    (fPreparedFocusedIndex = fListBox.ItemIndex) and (fPreparedClientWidth = fListBox.ClientWidth) and
-    (fPreparedClientHeight = fListBox.ClientHeight) and (fPreparedItemHeight = ListBoxWindowItemHeight(fListBox));
+    (fPreparedClientWidth = fListBox.ClientWidth) and (fPreparedClientHeight = fListBox.ClientHeight);
+  if Result and not ListBoxUsesUniformItemHeight(fListBox) then
+  begin
+    Result := fPreparedItemHeight = ListBoxWindowItemHeight(fListBox);
+  end;
 end;
 
-function TAccessibilityListBoxProvider.CreateSelectionArray(
-  const aProviders: TArray<IRawElementProviderSimple>): PSafeArray;
+function TAccessibilityListBoxProvider.CreateSelectionArrayForSelectedIndexes(const aSelectedIndexes: TArray<Integer>;
+  out aProviderCount: Integer): PSafeArray;
 var
   i: Integer;
   lData: Pointer;
+  lItem: IAccessibilityProviderNode;
+  lNewBounds: TSafeArrayBound;
   lUnknown: IUnknown;
 begin
-  Result := SafeArrayCreateVector(VT_UNKNOWN, 0, Length(aProviders));
+  aProviderCount := 0;
+  Result := SafeArrayCreateVector(VT_UNKNOWN, 0, Length(aSelectedIndexes));
+  if Result = nil then
+  begin
+    Exit;
+  end;
+
+  if Length(aSelectedIndexes) = 0 then
+  begin
+    Exit;
+  end;
+
+  lData := nil;
+  if (SafeArrayAccessData(Result, lData) <> S_OK) or (lData = nil) then
+  begin
+    SafeArrayDestroy(Result);
+    Result := nil;
+    Exit;
+  end;
+
+  try
+    for i := 0 to High(aSelectedIndexes) do
+    begin
+      lItem := EnsureItemProvider(aSelectedIndexes[i]);
+      if lItem <> nil then
+      begin
+        lUnknown := lItem.RawElementProvider as IUnknown;
+        PPointer(NativeUInt(lData) + NativeUInt(aProviderCount) * SizeOf(Pointer))^ := Pointer(lUnknown);
+        lUnknown._AddRef;
+        Inc(aProviderCount);
+      end;
+    end;
+  finally
+    SafeArrayUnaccessData(Result);
+  end;
+
+  if aProviderCount = 0 then
+  begin
+    SafeArrayDestroy(Result);
+    Exit(SafeArrayCreateVector(VT_UNKNOWN, 0, 0));
+  end;
+
+  if aProviderCount < Length(aSelectedIndexes) then
+  begin
+    lNewBounds.lLbound := 0;
+    lNewBounds.cElements := aProviderCount;
+    if SafeArrayRedim(Result, @lNewBounds) <> S_OK then
+    begin
+      SafeArrayDestroy(Result);
+      Result := nil;
+    end;
+  end;
+end;
+
+function TAccessibilityListBoxProvider.CreateSelectionArray(
+  const aProvider: IRawElementProviderSimple): PSafeArray;
+var
+  lData: Pointer;
+  lUnknown: IUnknown;
+begin
+  if aProvider = nil then
+  begin
+    Exit(SafeArrayCreateVector(VT_UNKNOWN, 0, 0));
+  end;
+
+  Result := SafeArrayCreateVector(VT_UNKNOWN, 0, 1);
   if Result = nil then
   begin
     Exit;
@@ -2247,12 +3206,9 @@ begin
   end;
 
   try
-    for i := 0 to High(aProviders) do
-    begin
-      lUnknown := aProviders[i] as IUnknown;
-      PPointer(NativeUInt(lData) + NativeUInt(i) * SizeOf(Pointer))^ := Pointer(lUnknown);
-      lUnknown._AddRef;
-    end;
+    lUnknown := aProvider as IUnknown;
+    PPointer(lData)^ := Pointer(lUnknown);
+    lUnknown._AddRef;
   finally
     SafeArrayUnaccessData(Result);
   end;
@@ -2312,6 +3268,8 @@ end;
 function TAccessibilityListBoxProvider.EnsureItemProvider(aIndex: Integer): IAccessibilityProviderNode;
 var
   lCachedRawText: string;
+  lCache: IAccessibilityListBoxItemTextCache;
+  lCleanText: string;
   lCreated: Boolean;
   lRawText: string;
 begin
@@ -2332,7 +3290,8 @@ begin
       Exit;
     end;
 
-    if ListBoxItemText(fListBox, aIndex) = '' then
+    lCleanText := CleanListBoxItemText(lRawText);
+    if lCleanText = '' then
     begin
       RemoveChildNode(Result, True);
       fItems.Remove(aIndex);
@@ -2341,12 +3300,17 @@ begin
       Exit;
     end;
 
+    if Supports(Result.RawElementProvider, IAccessibilityListBoxItemTextCache, lCache) then
+    begin
+      lCache.RefreshTextCache(lRawText, lCleanText);
+    end;
     fItemRawTexts.AddOrSetValue(aIndex, lRawText);
     TAccessibilityDiagnostics.RecordListBoxEnsureItemProvider(False);
     Exit;
   end;
 
-  if ListBoxItemText(fListBox, aIndex) = '' then
+  lCleanText := CleanListBoxItemText(lRawText);
+  if lCleanText = '' then
   begin
     Exit;
   end;
@@ -2354,8 +3318,8 @@ begin
   if Result = nil then
   begin
     lCreated := True;
-    Result := TAccessibilityListBoxItemProvider.Create(fListBox, aIndex, [fRuntimeId, aIndex], fUiaApi) as
-      IAccessibilityProviderNode;
+    Result := TAccessibilityListBoxItemProvider.Create(Self, fListBox, aIndex, [fRuntimeId, aIndex], fUiaApi,
+      lRawText, lCleanText) as IAccessibilityProviderNode;
     AddChild(Result);
     fItems.Add(aIndex, Result);
     fItemRawTexts.AddOrSetValue(aIndex, lRawText);
@@ -2410,12 +3374,12 @@ end;
 
 function TAccessibilityListBoxProvider.GetSelection(out aRetVal: PSafeArray): HResult;
 var
-  i: Integer;
   lItemProbeCount: Integer;
   lItem: IAccessibilityProviderNode;
   lMetricsEnabled: Boolean;
+  lProvider: IRawElementProviderSimple;
   lProviderCount: Integer;
-  lSelectedProviders: TList<IRawElementProviderSimple>;
+  lSelectedIndexes: TArray<Integer>;
   lStopwatch: TStopwatch;
 begin
   aRetVal := nil;
@@ -2433,50 +3397,28 @@ begin
     lStopwatch := TStopwatch.StartNew;
   end;
 
-  lSelectedProviders := TList<IRawElementProviderSimple>.Create;
-  try
-    if fListBox.MultiSelect then
+  if fListBox.MultiSelect then
+  begin
+    lSelectedIndexes := ListBoxSelectedIndexes(fListBox);
+    lItemProbeCount := Length(lSelectedIndexes);
+    aRetVal := CreateSelectionArrayForSelectedIndexes(lSelectedIndexes, lProviderCount);
+  end else begin
+    if lMetricsEnabled then
     begin
-      for i := 0 to Pred(fListBox.Items.Count) do
-      begin
-        if lMetricsEnabled then
-        begin
-          Inc(lItemProbeCount);
-        end;
-
-        if fListBox.Selected[i] then
-        begin
-          lItem := EnsureItemProvider(i);
-          if lItem <> nil then
-          begin
-            lSelectedProviders.Add(lItem.RawElementProvider);
-            if lMetricsEnabled then
-            begin
-              Inc(lProviderCount);
-            end;
-          end;
-        end;
-      end;
-    end else begin
-      if lMetricsEnabled then
-      begin
-        Inc(lItemProbeCount);
-      end;
-
-      lItem := EnsureItemProvider(fListBox.ItemIndex);
-      if lItem <> nil then
-      begin
-        lSelectedProviders.Add(lItem.RawElementProvider);
-        if lMetricsEnabled then
-        begin
-          Inc(lProviderCount);
-        end;
-      end;
+      Inc(lItemProbeCount);
     end;
 
-    aRetVal := CreateSelectionArray(lSelectedProviders.ToArray);
-  finally
-    lSelectedProviders.Free;
+    lProvider := nil;
+    lItem := EnsureItemProvider(fListBox.ItemIndex);
+    if lItem <> nil then
+    begin
+      lProvider := lItem.RawElementProvider;
+      if lMetricsEnabled then
+      begin
+        Inc(lProviderCount);
+      end;
+    end;
+    aRetVal := CreateSelectionArray(lProvider);
   end;
 
   if lMetricsEnabled then
@@ -2522,11 +3464,33 @@ begin
   fPreparedHandle := fListBox.Handle;
   fPreparedItemCount := fListBox.Items.Count;
   fPreparedTopIndex := fListBox.TopIndex;
-  fPreparedFocusedIndex := fListBox.ItemIndex;
   fPreparedClientWidth := fListBox.ClientWidth;
   fPreparedClientHeight := fListBox.ClientHeight;
   fPreparedItemHeight := ListBoxWindowItemHeight(fListBox);
   fPreparedValid := True;
+end;
+
+function TAccessibilityListBoxProvider.TryGetPreparedItemRect(aIndex: Integer; out aItemRect: TRect): Boolean;
+var
+  lTop: Integer;
+begin
+  aItemRect := TRect.Empty;
+  Result := False;
+  if (fListBox = nil) or not fPreparedValid or not ListBoxUsesUniformItemHeight(fListBox) or
+    not ChildrenPreparationIsCurrent or not ControlIsInActiveVisibleTree(fListBox) then
+  begin
+    Exit;
+  end;
+
+  if (aIndex < fPreparedTopIndex) or (aIndex >= fPreparedItemCount) or (fPreparedItemHeight <= 0) or
+    (fPreparedClientWidth <= 0) then
+  begin
+    Exit;
+  end;
+
+  lTop := (aIndex - fPreparedTopIndex) * fPreparedItemHeight;
+  aItemRect := Rect(0, lTop, fPreparedClientWidth, lTop + fPreparedItemHeight);
+  Result := ListBoxItemRectIsVisible(fListBox, aItemRect);
 end;
 
 procedure TAccessibilityListBoxProvider.PrepareChildrenForNavigation;
@@ -2534,9 +3498,12 @@ var
   lFocusedPrepared: Boolean;
   i: Integer;
   lFocusedIndex: Integer;
+  lItemHeight: Integer;
   lItemRect: TRect;
   lLastIndex: Integer;
   lTopIndex: Integer;
+  lVisibleCount: Integer;
+  lVisibleLastIndex: Integer;
 begin
   inherited PrepareChildrenForNavigation;
   if (fListBox = nil) or not ControlIsInActiveVisibleTree(fListBox) then
@@ -2560,19 +3527,37 @@ begin
 
   lLastIndex := Pred(fListBox.Items.Count);
   lTopIndex := EnsureRange(fListBox.TopIndex, 0, lLastIndex);
-  for i := lTopIndex to lLastIndex do
+  if ListBoxUsesUniformItemHeight(fListBox) then
   begin
-    TAccessibilityDiagnostics.RecordListBoxVisibleItemProbe;
-    lItemRect := fListBox.ItemRect(i);
-    if (i > lTopIndex) and (lItemRect.Top >= fListBox.ClientHeight) then
+    lItemHeight := ListBoxWindowItemHeight(fListBox);
+    if lItemHeight > 0 then
     begin
-      Break;
+      lVisibleCount := (Max(0, fListBox.ClientHeight) + lItemHeight - 1) div lItemHeight;
+      if lVisibleCount > 0 then
+      begin
+        lVisibleLastIndex := Min(lLastIndex, lTopIndex + lVisibleCount - 1);
+        for i := lTopIndex to lVisibleLastIndex do
+        begin
+          EnsureItemProvider(i);
+          lFocusedPrepared := lFocusedPrepared or (i = lFocusedIndex);
+        end;
+      end;
     end;
-
-    if ListBoxItemRectIsVisible(fListBox, lItemRect) then
+  end else begin
+    for i := lTopIndex to lLastIndex do
     begin
-      EnsureItemProvider(i);
-      lFocusedPrepared := lFocusedPrepared or (i = lFocusedIndex);
+      TAccessibilityDiagnostics.RecordListBoxVisibleItemProbe;
+      lItemRect := fListBox.ItemRect(i);
+      if (i > lTopIndex) and (lItemRect.Top >= fListBox.ClientHeight) then
+      begin
+        Break;
+      end;
+
+      if ListBoxItemRectIsVisible(fListBox, lItemRect) then
+      begin
+        EnsureItemProvider(i);
+        lFocusedPrepared := lFocusedPrepared or (i = lFocusedIndex);
+      end;
     end;
   end;
 
@@ -2587,6 +3572,7 @@ constructor TAccessibilityStatusBarProvider.Create(aStatusBar: TCustomStatusBar;
   const aHelpText: string; const aApi: IAccessibilityUiaApi);
 begin
   inherited CreateNode(aRuntimeId, NativeWindowHandleForControl(aStatusBar), aApi, aStatusBar);
+  SetPublishNativeWindowHandle(True);
   fStatusBar := aStatusBar;
   fHelpText := aHelpText;
 end;
@@ -2663,23 +3649,49 @@ end;
 
 function TAccessibilityStringGridCellProvider.DoGetBoundingRectangle(out aValue: UiaRect): Boolean;
 var
+  lCellProbeCount: Integer;
   lCellRect: TRect;
+  lMetricsEnabled: Boolean;
+  lStopwatch: TStopwatch;
   lTopLeft: TPoint;
 begin
   aValue := Default(UiaRect);
   Result := False;
-  if (fGrid = nil) or IsDisconnected or not IsVisibleCell then
+  if (fGrid = nil) or IsDisconnected then
   begin
     Exit;
   end;
 
-  lCellRect := fGrid.CellRect(fCol, fRow);
-  lTopLeft := fGrid.ClientToScreen(lCellRect.TopLeft);
-  aValue.Left := lTopLeft.X;
-  aValue.Top := lTopLeft.Y;
-  aValue.Width := lCellRect.Width;
-  aValue.Height := lCellRect.Height;
-  Result := True;
+  lCellProbeCount := 0;
+  lMetricsEnabled := TAccessibilityDiagnostics.ProviderHotspotMetricsEnabled;
+  if lMetricsEnabled then
+  begin
+    lStopwatch := TStopwatch.StartNew;
+  end;
+
+  try
+    if lMetricsEnabled then
+    begin
+      Inc(lCellProbeCount);
+    end;
+
+    if not TryGetVisibleGridCellRect(fGrid, fCol, fRow, lCellRect) then
+    begin
+      Exit;
+    end;
+
+    lTopLeft := fGrid.ClientToScreen(lCellRect.TopLeft);
+    aValue.Left := lTopLeft.X;
+    aValue.Top := lTopLeft.Y;
+    aValue.Width := lCellRect.Width;
+    aValue.Height := lCellRect.Height;
+    Result := True;
+  finally
+    if lMetricsEnabled then
+    begin
+      TAccessibilityDiagnostics.RecordStringGridCellBounds(lCellProbeCount, lStopwatch.ElapsedTicks);
+    end;
+  end;
 end;
 
 function TAccessibilityStringGridCellProvider.DoGetPatternProvider(aPatternId: PATTERNID): IUnknown;
@@ -2852,18 +3864,24 @@ end;
 
 function TAccessibilityStringGridRowProvider.DoGetBoundingRectangle(out aValue: UiaRect): Boolean;
 var
-  lCellRect: TRect;
+  lCellProbeCount: Integer;
+  lCol: Integer;
+  lFirstScrollableCol: Integer;
+  lFixedColCount: Integer;
   lHeight: Integer;
+  lLastScrollableCol: Integer;
   lLeft: Integer;
+  lMetricsEnabled: Boolean;
   lRight: Integer;
+  lStopwatch: TStopwatch;
   lTop: Integer;
   lTopLeft: TPoint;
   lVisibleCellFound: Boolean;
-  lCol: Integer;
 begin
   aValue := Default(UiaRect);
   Result := False;
-  if (fGrid = nil) or IsDisconnected or not IsVisibleRow then
+  if (fGrid = nil) or IsDisconnected or not ControlIsInActiveVisibleTree(fGrid) or
+    (fRow < 0) or (fRow >= fGrid.RowCount) then
   begin
     Exit;
   end;
@@ -2873,19 +3891,38 @@ begin
   lTop := 0;
   lHeight := 0;
   lVisibleCellFound := False;
-  for lCol := 0 to Pred(fGrid.ColCount) do
+  lCellProbeCount := 0;
+  lMetricsEnabled := TAccessibilityDiagnostics.ProviderHotspotMetricsEnabled;
+  if lMetricsEnabled then
   begin
-    if GridCellIsVisible(fGrid, lCol, fRow) then
+    lStopwatch := TStopwatch.StartNew;
+  end;
+
+  try
+    lFixedColCount := Min(fGrid.FixedCols, fGrid.ColCount);
+    for lCol := 0 to Pred(lFixedColCount) do
     begin
-      lCellRect := fGrid.CellRect(lCol, fRow);
-      lLeft := Min(lLeft, lCellRect.Left);
-      lRight := Max(lRight, lCellRect.Right);
-      if not lVisibleCellFound then
+      IncludeGridRowBoundsCell(fGrid, fRow, lCol, lLeft, lRight, lTop, lHeight, lVisibleCellFound,
+        lMetricsEnabled, lCellProbeCount);
+    end;
+
+    if fGrid.ColCount > 0 then
+    begin
+      lFirstScrollableCol := EnsureRange(fGrid.LeftCol, 0, Pred(fGrid.ColCount));
+      lLastScrollableCol := Min(Pred(fGrid.ColCount), lFirstScrollableCol + Max(0, fGrid.VisibleColCount) + 1);
+      for lCol := lFirstScrollableCol to lLastScrollableCol do
       begin
-        lTop := lCellRect.Top;
-        lHeight := lCellRect.Height;
+        if lCol >= lFixedColCount then
+        begin
+          IncludeGridRowBoundsCell(fGrid, fRow, lCol, lLeft, lRight, lTop, lHeight, lVisibleCellFound,
+            lMetricsEnabled, lCellProbeCount);
+        end;
       end;
-      lVisibleCellFound := True;
+    end;
+  finally
+    if lMetricsEnabled then
+    begin
+      TAccessibilityDiagnostics.RecordStringGridRowBounds(lCellProbeCount, lStopwatch.ElapsedTicks);
     end;
   end;
 
@@ -3041,6 +4078,12 @@ end;
 procedure TAccessibilityStringGridProvider.BuildVisibleCells;
 begin
   RefreshVisibleCells;
+  RememberChildrenPreparation;
+end;
+
+function TAccessibilityStringGridProvider.CanUsePreparedSiblingNavigation(aChild: TAccessibilityProviderNode): Boolean;
+begin
+  Result := ChildrenPreparationIsCurrent and HasCurrentChildIndex(aChild);
 end;
 
 function TAccessibilityStringGridProvider.CellProvider(aCol: Integer; aRow: Integer): IAccessibilityProviderNode;
@@ -3052,6 +4095,27 @@ begin
   begin
     Result := nil;
   end;
+end;
+
+function TAccessibilityStringGridProvider.ChildrenPreparationIsCurrent: Boolean;
+begin
+  Result := False;
+  if (fGrid = nil) or (not fPreparedValid) or IsDisconnected or not ControlIsInActiveVisibleTree(fGrid) then
+  begin
+    Exit;
+  end;
+
+  if GridUsesRowSelection(fGrid) and (fRows.Count = 0) then
+  begin
+    Exit;
+  end;
+
+  Result := (fPreparedHandle = fGrid.Handle) and (fPreparedClientWidth = fGrid.ClientWidth) and
+    (fPreparedClientHeight = fGrid.ClientHeight) and (fPreparedColCount = fGrid.ColCount) and
+    (fPreparedRowCount = fGrid.RowCount) and (fPreparedFixedCols = fGrid.FixedCols) and
+    (fPreparedFixedRows = fGrid.FixedRows) and (fPreparedLeftCol = fGrid.LeftCol) and
+    (fPreparedTopRow = fGrid.TopRow) and (fPreparedVisibleColCount = fGrid.VisibleColCount) and
+    (fPreparedVisibleRowCount = fGrid.VisibleRowCount) and (fPreparedOptions = fGrid.Options);
 end;
 
 procedure TAccessibilityStringGridProvider.ClearRowProviders;
@@ -3084,31 +4148,116 @@ end;
 function TAccessibilityStringGridProvider.EnsureCellProvider(aCol: Integer; aRow: Integer):
   IAccessibilityProviderNode;
 begin
-  RefreshVisibleCells;
   Result := CellProvider(aCol, aRow);
+  if (Result <> nil) and ChildrenPreparationIsCurrent then
+  begin
+    Exit;
+  end;
+
+  RefreshVisibleCells;
+  fPreparedValid := False;
+  Result := EnsureCellProviderDirect(aCol, aRow);
+end;
+
+function TAccessibilityStringGridProvider.EnsureCellProviderDirect(aCol: Integer; aRow: Integer):
+  IAccessibilityProviderNode;
+var
+  lKey: Int64;
+begin
+  lKey := CellKey(aCol, aRow);
+  Result := CellProvider(aCol, aRow);
+  if Result = nil then
+  begin
+    fCells.Remove(lKey);
+  end;
+
   if (Result = nil) and (fGrid <> nil) and (aCol >= 0) and (aCol < fGrid.ColCount) and
     (aRow >= 0) and (aRow < fGrid.RowCount) then
   begin
     Result := TAccessibilityStringGridCellProvider.Create(Self, fGrid, aCol, aRow, [fRuntimeId, aRow, aCol], fUiaApi) as
       IAccessibilityProviderNode;
     AddChild(Result);
-    fCells.Add(CellKey(aCol, aRow), Result);
+    fCells.Add(lKey, Result);
   end;
 end;
 
 function TAccessibilityStringGridProvider.EnsureRowProvider(aRow: Integer): IAccessibilityProviderNode;
 begin
   RefreshVisibleRows;
+  fPreparedValid := False;
+  Result := EnsureRowProviderDirect(aRow);
+end;
+
+function TAccessibilityStringGridProvider.EnsureRowProviderDirect(aRow: Integer): IAccessibilityProviderNode;
+begin
   Result := RowProvider(aRow);
+  if Result = nil then
+  begin
+    fRows.Remove(aRow);
+  end;
+
+  if (Result = nil) and (fGrid <> nil) and GridUsesRowSelection(fGrid) and GridRowIsVisible(fGrid, aRow) then
+  begin
+    Result := TAccessibilityStringGridRowProvider.Create(Self, fGrid, aRow, [fRuntimeId, aRow, fGrid.ColCount],
+      fUiaApi) as IAccessibilityProviderNode;
+    AddChild(Result);
+    fRows.Add(aRow, Result);
+  end;
+end;
+
+procedure TAccessibilityStringGridProvider.EnsureVisibleCellProvider(aCol: Integer; aRow: Integer;
+  aMetricsEnabled: Boolean; var aCellProbeCount: Integer; var aCreatedCount: Integer);
+var
+  lCell: IAccessibilityProviderNode;
+begin
+  if aMetricsEnabled then
+  begin
+    Inc(aCellProbeCount);
+  end;
+
+  if IsVisibleCell(aCol, aRow) and (CellProvider(aCol, aRow) = nil) then
+  begin
+    lCell := TAccessibilityStringGridCellProvider.Create(Self, fGrid, aCol, aRow,
+      [fRuntimeId, aRow, aCol], fUiaApi) as IAccessibilityProviderNode;
+    AddChild(lCell);
+    fCells.Add(CellKey(aCol, aRow), lCell);
+    if aMetricsEnabled then
+    begin
+      Inc(aCreatedCount);
+    end;
+  end;
+end;
+
+procedure TAccessibilityStringGridProvider.EnsureVisibleRowProvider(aRow: Integer; aMetricsEnabled: Boolean;
+  var aRowProbeCount: Integer; var aCreatedCount: Integer);
+var
+  lRowProvider: IAccessibilityProviderNode;
+begin
+  if aMetricsEnabled then
+  begin
+    Inc(aRowProbeCount);
+  end;
+
+  if GridRowIsVisible(fGrid, aRow) and (RowProvider(aRow) = nil) then
+  begin
+    lRowProvider := TAccessibilityStringGridRowProvider.Create(Self, fGrid, aRow,
+      [fRuntimeId, aRow, fGrid.ColCount], fUiaApi) as IAccessibilityProviderNode;
+    AddChild(lRowProvider);
+    fRows.Add(aRow, lRowProvider);
+    if aMetricsEnabled then
+    begin
+      Inc(aCreatedCount);
+    end;
+  end;
 end;
 
 procedure TAccessibilityStringGridProvider.RefreshVisibleCells;
 var
-  lCell: IAccessibilityProviderNode;
   lCellProbeCount: Integer;
   lCol: Integer;
-  lCols: TList<Integer>;
   lCreatedCount: Integer;
+  lFixedColCount: Integer;
+  lFixedRowCount: Integer;
   lFirstScrollableCol: Integer;
   lFirstScrollableRow: Integer;
   lKey: Int64;
@@ -3118,10 +4267,11 @@ var
   lMetricsEnabled: Boolean;
   lPair: TPair<Int64, IAccessibilityProviderNode>;
   lRow: Integer;
-  lRows: TList<Integer>;
+  lCell: IAccessibilityProviderNode;
   lStopwatch: TStopwatch;
 begin
-  if (fGrid = nil) or IsDisconnected or not ControlIsInActiveVisibleTree(fGrid) then
+  if (fGrid = nil) or IsDisconnected or not ControlIsInActiveVisibleTree(fGrid) or (fGrid.ColCount <= 0) or
+    (fGrid.RowCount <= 0) then
   begin
     Exit;
   end;
@@ -3134,86 +4284,79 @@ begin
     lStopwatch := TStopwatch.StartNew;
   end;
 
-  lKeysToRemove := TList<Int64>.Create;
+  lKeysToRemove := nil;
   try
     for lPair in fCells do
     begin
       if lPair.Value.IsDisconnected or not IsVisibleCell(CellKeyCol(lPair.Key), CellKeyRow(lPair.Key)) then
       begin
+        if lKeysToRemove = nil then
+        begin
+          lKeysToRemove := TList<Int64>.Create;
+          if lMetricsEnabled then
+          begin
+            TAccessibilityDiagnostics.RecordStringGridRefreshScratchListAllocation(1);
+          end;
+        end;
         lKeysToRemove.Add(lPair.Key);
       end;
     end;
 
-    for lKey in lKeysToRemove do
+    if lKeysToRemove <> nil then
     begin
-      if fCells.TryGetValue(lKey, lCell) then
+      for lKey in lKeysToRemove do
       begin
-        RemoveChildNode(lCell, False);
-        fCells.Remove(lKey);
+        if fCells.TryGetValue(lKey, lCell) then
+        begin
+          RemoveChildNode(lCell, False);
+          fCells.Remove(lKey);
+        end;
       end;
     end;
   finally
     lKeysToRemove.Free;
   end;
 
-  lCols := TList<Integer>.Create;
-  lRows := TList<Integer>.Create;
-  try
-    for lCol := 0 to Pred(Min(fGrid.FixedCols, fGrid.ColCount)) do
+  lFixedColCount := Min(fGrid.FixedCols, fGrid.ColCount);
+  lFixedRowCount := Min(fGrid.FixedRows, fGrid.RowCount);
+  lFirstScrollableCol := EnsureRange(fGrid.LeftCol, 0, Pred(fGrid.ColCount));
+  lLastScrollableCol := Min(Pred(fGrid.ColCount), lFirstScrollableCol + Max(0, fGrid.VisibleColCount) + 1);
+  lFirstScrollableRow := EnsureRange(fGrid.TopRow, 0, Pred(fGrid.RowCount));
+  lLastScrollableRow := Min(Pred(fGrid.RowCount), lFirstScrollableRow + Max(0, fGrid.VisibleRowCount) + 1);
+
+  for lRow := 0 to Pred(lFixedRowCount) do
+  begin
+    for lCol := 0 to Pred(lFixedColCount) do
     begin
-      lCols.Add(lCol);
+      EnsureVisibleCellProvider(lCol, lRow, lMetricsEnabled, lCellProbeCount, lCreatedCount);
     end;
 
-    lFirstScrollableCol := EnsureRange(fGrid.LeftCol, 0, Pred(fGrid.ColCount));
-    lLastScrollableCol := Min(Pred(fGrid.ColCount), lFirstScrollableCol + Max(0, fGrid.VisibleColCount) + 1);
     for lCol := lFirstScrollableCol to lLastScrollableCol do
     begin
-      if not lCols.Contains(lCol) then
+      if lCol >= lFixedColCount then
       begin
-        lCols.Add(lCol);
+        EnsureVisibleCellProvider(lCol, lRow, lMetricsEnabled, lCellProbeCount, lCreatedCount);
       end;
     end;
+  end;
 
-    for lRow := 0 to Pred(Min(fGrid.FixedRows, fGrid.RowCount)) do
+  for lRow := lFirstScrollableRow to lLastScrollableRow do
+  begin
+    if lRow >= lFixedRowCount then
     begin
-      lRows.Add(lRow);
-    end;
-
-    lFirstScrollableRow := EnsureRange(fGrid.TopRow, 0, Pred(fGrid.RowCount));
-    lLastScrollableRow := Min(Pred(fGrid.RowCount), lFirstScrollableRow + Max(0, fGrid.VisibleRowCount) + 1);
-    for lRow := lFirstScrollableRow to lLastScrollableRow do
-    begin
-      if not lRows.Contains(lRow) then
+      for lCol := 0 to Pred(lFixedColCount) do
       begin
-        lRows.Add(lRow);
+        EnsureVisibleCellProvider(lCol, lRow, lMetricsEnabled, lCellProbeCount, lCreatedCount);
       end;
-    end;
 
-    for lRow in lRows do
-    begin
-      for lCol in lCols do
+      for lCol := lFirstScrollableCol to lLastScrollableCol do
       begin
-        if lMetricsEnabled then
+        if lCol >= lFixedColCount then
         begin
-          Inc(lCellProbeCount);
-        end;
-
-        if IsVisibleCell(lCol, lRow) and (CellProvider(lCol, lRow) = nil) then
-        begin
-          lCell := TAccessibilityStringGridCellProvider.Create(Self, fGrid, lCol, lRow,
-            [fRuntimeId, lRow, lCol], fUiaApi) as IAccessibilityProviderNode;
-          AddChild(lCell);
-          fCells.Add(CellKey(lCol, lRow), lCell);
-          if lMetricsEnabled then
-          begin
-            Inc(lCreatedCount);
-          end;
+          EnsureVisibleCellProvider(lCol, lRow, lMetricsEnabled, lCellProbeCount, lCreatedCount);
         end;
       end;
     end;
-  finally
-    lRows.Free;
-    lCols.Free;
   end;
 
   if lMetricsEnabled then
@@ -3224,10 +4367,17 @@ end;
 
 procedure TAccessibilityStringGridProvider.RefreshVisibleRows;
 var
+  lCreatedCount: Integer;
+  lFixedRowCount: Integer;
+  lFirstScrollableRow: Integer;
+  lLastScrollableRow: Integer;
+  lMetricsEnabled: Boolean;
   lKeysToRemove: TList<Integer>;
   lPair: TPair<Integer, IAccessibilityProviderNode>;
   lRow: Integer;
+  lRowProbeCount: Integer;
   lRowProvider: IAccessibilityProviderNode;
+  lStopwatch: TStopwatch;
 begin
   if (fGrid = nil) or IsDisconnected or not ControlIsInActiveVisibleTree(fGrid) or not GridUsesRowSelection(fGrid) then
   begin
@@ -3235,38 +4385,96 @@ begin
     Exit;
   end;
 
-  lKeysToRemove := TList<Integer>.Create;
+  lCreatedCount := 0;
+  lRowProbeCount := 0;
+  lMetricsEnabled := TAccessibilityDiagnostics.ProviderHotspotMetricsEnabled;
+  if lMetricsEnabled then
+  begin
+    lStopwatch := TStopwatch.StartNew;
+  end;
+
+  lKeysToRemove := nil;
   try
     for lPair in fRows do
     begin
       if lPair.Value.IsDisconnected or not GridRowIsVisible(fGrid, lPair.Key) then
       begin
+        if lKeysToRemove = nil then
+        begin
+          lKeysToRemove := TList<Integer>.Create;
+          if lMetricsEnabled then
+          begin
+            TAccessibilityDiagnostics.RecordStringGridRowRefreshScratchListAllocation(1);
+          end;
+        end;
         lKeysToRemove.Add(lPair.Key);
       end;
     end;
 
-    for lRow in lKeysToRemove do
+    if lKeysToRemove <> nil then
     begin
-      if fRows.TryGetValue(lRow, lRowProvider) then
+      for lRow in lKeysToRemove do
       begin
-        RemoveChildNode(lRowProvider, False);
-        fRows.Remove(lRow);
+        if fRows.TryGetValue(lRow, lRowProvider) then
+        begin
+          RemoveChildNode(lRowProvider, False);
+          fRows.Remove(lRow);
+        end;
       end;
     end;
   finally
     lKeysToRemove.Free;
   end;
 
-  for lRow := 0 to Pred(fGrid.RowCount) do
+  if fGrid.RowCount <= 0 then
   begin
-    if GridRowIsVisible(fGrid, lRow) and (RowProvider(lRow) = nil) then
+    Exit;
+  end;
+
+  lFixedRowCount := Min(fGrid.FixedRows, fGrid.RowCount);
+  lFirstScrollableRow := EnsureRange(fGrid.TopRow, 0, Pred(fGrid.RowCount));
+  lLastScrollableRow := Min(Pred(fGrid.RowCount), lFirstScrollableRow + Max(0, fGrid.VisibleRowCount) + 1);
+
+  for lRow := 0 to Pred(lFixedRowCount) do
+  begin
+    EnsureVisibleRowProvider(lRow, lMetricsEnabled, lRowProbeCount, lCreatedCount);
+  end;
+
+  for lRow := lFirstScrollableRow to lLastScrollableRow do
+  begin
+    if lRow >= lFixedRowCount then
     begin
-      lRowProvider := TAccessibilityStringGridRowProvider.Create(Self, fGrid, lRow,
-        [fRuntimeId, lRow, fGrid.ColCount], fUiaApi) as IAccessibilityProviderNode;
-      AddChild(lRowProvider);
-      fRows.Add(lRow, lRowProvider);
+      EnsureVisibleRowProvider(lRow, lMetricsEnabled, lRowProbeCount, lCreatedCount);
     end;
   end;
+
+  if lMetricsEnabled then
+  begin
+    TAccessibilityDiagnostics.RecordStringGridRowRefresh(lRowProbeCount, lCreatedCount, lStopwatch.ElapsedTicks);
+  end;
+end;
+
+procedure TAccessibilityStringGridProvider.RememberChildrenPreparation;
+begin
+  fPreparedValid := False;
+  if (fGrid = nil) or IsDisconnected or not ControlIsInActiveVisibleTree(fGrid) then
+  begin
+    Exit;
+  end;
+
+  fPreparedHandle := fGrid.Handle;
+  fPreparedClientWidth := fGrid.ClientWidth;
+  fPreparedClientHeight := fGrid.ClientHeight;
+  fPreparedColCount := fGrid.ColCount;
+  fPreparedRowCount := fGrid.RowCount;
+  fPreparedFixedCols := fGrid.FixedCols;
+  fPreparedFixedRows := fGrid.FixedRows;
+  fPreparedLeftCol := fGrid.LeftCol;
+  fPreparedTopRow := fGrid.TopRow;
+  fPreparedVisibleColCount := fGrid.VisibleColCount;
+  fPreparedVisibleRowCount := fGrid.VisibleRowCount;
+  fPreparedOptions := fGrid.Options;
+  fPreparedValid := True;
 end;
 
 function TAccessibilityStringGridProvider.RowProvider(aRow: Integer): IAccessibilityProviderNode;
@@ -3284,6 +4492,7 @@ constructor TAccessibilityStringGridProvider.Create(aGrid: TStringGrid; aRuntime
   const aHelpText: string; const aApi: IAccessibilityUiaApi);
 begin
   inherited CreateNode([aRuntimeId], aGrid.Handle, aApi, aGrid);
+  SetPublishNativeWindowHandle(True);
   fCells := TDictionary<Int64, IAccessibilityProviderNode>.Create;
   fRows := TDictionary<Integer, IAccessibilityProviderNode>.Create;
   fGrid := aGrid;
@@ -3573,6 +4782,42 @@ begin
   end;
 end;
 
+function TAccessibilityStringGridProvider.TryGetFocusedItem(out aProvider: IRawElementProviderSimple;
+  out aName: string): Boolean;
+var
+  lItem: IAccessibilityProviderNode;
+begin
+  aProvider := nil;
+  aName := '';
+  Result := False;
+  if IsDisconnected or (fGrid = nil) or not ControlIsInActiveVisibleTree(fGrid) or not GridOwnsFocus then
+  begin
+    Exit;
+  end;
+
+  if GridUsesRowSelection(fGrid) then
+  begin
+    lItem := EnsureRowProviderDirect(fGrid.Row);
+    aName := GridRowAccessibleText(fGrid, fGrid.Row);
+  end else begin
+    lItem := EnsureCellProviderDirect(fGrid.Col, fGrid.Row);
+    if (fGrid.Col >= 0) and (fGrid.Col < fGrid.ColCount) and (fGrid.Row >= 0) and
+      (fGrid.Row < fGrid.RowCount) then
+    begin
+      aName := fGrid.Cells[fGrid.Col, fGrid.Row];
+    end;
+  end;
+
+  if lItem = nil then
+  begin
+    aName := '';
+    Exit;
+  end;
+
+  aProvider := lItem.RawElementProvider;
+  Result := aProvider <> nil;
+end;
+
 function TAccessibilityStringGridProvider.GridOwnsFocus: Boolean;
 var
   lActiveControl: TWinControl;
@@ -3616,8 +4861,14 @@ end;
 procedure TAccessibilityStringGridProvider.PrepareChildrenForNavigation;
 begin
   inherited PrepareChildrenForNavigation;
+  if ChildrenPreparationIsCurrent then
+  begin
+    Exit;
+  end;
+
   RefreshVisibleCells;
   RefreshVisibleRows;
+  RememberChildrenPreparation;
 end;
 
 class function TAccessibilityVclAdapters.CreateDefaultRegistry: IAccessibilityAdapterRegistry;
@@ -3680,7 +4931,7 @@ begin
   lTree := TAccessibilityScanner.ScanForm(aForm, lRegistry);
   Result := TAccessibilityVclFormProviderRoot.Create(aForm, aApi) as IAccessibilityProviderNode;
   Result.SetProperty(UIA_NamePropertyId, lTree.Root.Name);
-  Result.SetProperty(UIA_ControlTypePropertyId, UIA_PaneControlTypeId);
+  Result.SetProperty(UIA_ControlTypePropertyId, UIA_WindowControlTypeId);
   Result.SetProperty(UIA_ClassNamePropertyId, aForm.ClassName);
   Result.SetProperty(UIA_HelpTextPropertyId, lTree.Root.HelpText);
 
@@ -3688,5 +4939,13 @@ begin
   Supports(Result, IAccessibilityVclRootProvider, lRootProvider);
   AddProviderChildren(Result, lTree.Root, lRegistry, lNextRuntimeId, aApi, lRootProvider);
 end;
+
+initialization
+
+gVclAdapterRttiPropertyCache := TVclAdapterRttiPropertyCache.Create;
+
+finalization
+
+FreeAndNil(gVclAdapterRttiPropertyCache);
 
 end.

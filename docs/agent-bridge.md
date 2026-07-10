@@ -36,7 +36,7 @@ end;
 
 `Start` and `Stop` are idempotent when repeated for the same pipe name. The default pipe name is process-specific and available through `TAccessibilityAgentBridgePipeServer.DefaultPipeName`; the active pipe path is `\\.\pipe\` plus `TAccessibilityAgentBridgePipeServer.PipeName`.
 
-The pipe protocol is one UTF-8 JSON object per line in, one UTF-8 JSON object per line out. The server accepts one request per connection, executes `TAccessibilityAgentBridge.Execute` on the VCL main thread, writes the response line, then disconnects. This keeps the transport small while preserving the bridge rule that VCL state is only touched on the UI thread.
+The pipe protocol is one UTF-8 JSON object per line in, one UTF-8 JSON object per line out. The server executes each request through `TAccessibilityAgentBridge.Execute` on the VCL main thread and writes one response line before reading the next request. A client may send one request and close, or keep the connection open for a sequential request/response batch. Batching avoids repeated pipe connection setup during automation loops while preserving the bridge rule that VCL state is only touched on the UI thread.
 
 For legacy applications with their own existing shutdown flow, the longer explicit form is fine:
 
@@ -82,16 +82,56 @@ The response includes `ok`, `protocolVersion`, `frameworkName`, `processId`, and
 {"cmd":"window.info","target":"handle","handle":123456}
 {"cmd":"window.info","target":"name","name":"MainForm"}
 {"cmd":"form.map","target":"focused"}
+{"cmd":"form.map","target":"focused","includeAccessibility":false}
+{"cmd":"form.map","target":"focused","includeAccessibility":false,"visibleOnly":true}
+{"cmd":"form.map","target":"focused","detail":"geometry","visibleOnly":true}
 {"cmd":"form.map","target":"handle","handle":123456}
 {"cmd":"form.map","target":"name","name":"MainForm"}
+{"cmd":"provider.map","target":"focused","detail":"full","maxDepth":3,"maxChildren":200}
+{"cmd":"control.info","ref":"@a2"}
+{"cmd":"control.info","ref":"@a2","includeAccessibility":true}
+{"cmd":"controls.info","refs":["@a1","@a2","@a3"]}
 {"cmd":"hitTest","x":500,"y":300}
 ```
 
 `window.info` returns the selected form's name, class, caption, visibility, enabled and active state, native handle, `screenRect`, `clientRect`, `clientScreenRect`, `pixelsPerInch`, and `windowState`. Use this before taking screenshots or doing coordinate-sensitive automation because it reports process-local VCL geometry.
 
-`form.map` returns a snapshot with refs such as `@a0`, `@a1`, and `@a2`. Refs are scoped to the latest snapshot, like browser automation element refs. Controls include VCL name, class, caption, value, hint, accessible name/help text, enabled/visible/focus state, tab metadata, native handle, screen rectangle, and a center target point.
+`form.map` returns a snapshot with refs such as `@a0`, `@a1`, and `@a2`. Refs are scoped to the latest snapshot, like browser automation element refs. Controls include VCL name, class, UIA-equivalent control type, caption, value, hint, accessible name/help text, enabled/visible/focus state, tab metadata, native handle, role-specific native state such as checkbox toggle state or selected list item, screen rectangle, and a center target point. `handle` is `0` when a control has not allocated a HWND yet; the bridge does not create hidden or lazy control windows just to report a snapshot.
+
+`includeAccessibility` defaults to `true`. Set it to `false` for high-speed native VCL coordinate/state discovery: the bridge skips the accessibility scanner and returns process-local VCL fields only, with `accessibleName` and `helpText` blank. Use the default full snapshot when validating accessible naming, label association, or screen-reader-facing metadata.
+
+`visibleOnly` defaults to `false`. Set it to `true` when an automation run only needs controls in the currently visible active form state. The bridge skips hidden controls and inactive tab-sheet descendants, reducing snapshot size and JSON work on large tabbed legacy forms.
+
+`detail` defaults to `full`. Set it to `geometry` for the cheapest control-targeting map: the bridge returns refs, names, classes, UIA-equivalent role IDs/names, enabled/visible/focus state, tab metadata, native handles, screen rectangles, and center target points. Geometry detail forces `includeAccessibility:false` and skips caption/value/hint reads, accessible-name/help-text scanning, and role-specific native state. Use it when automation only needs coordinates or control identity. Use `full` when the run needs captions, hints, values, checkbox/list state, or screen-reader-facing metadata.
+
+For framework-enabled VCL applications, prefer `form.map` with `detail:"geometry"` over an external UIA tree walk when the task is target discovery, coordinates, or background control. The bridge reads process-local VCL state through normal RTL/VCL APIs such as `ControlCount`, `Controls[]`, `HandleAllocated`, `ClientToScreen`, and direct control properties. It deliberately avoids RTTI on the fast geometry path; RTTI is only a fallback for less common properties where no cheap typed VCL access exists.
+
+`provider.map` returns a capped in-process snapshot of the framework provider tree. Use it when automation or diagnostics need UIA-like semantic nodes, including virtual provider children such as visible listbox items, memo lines, radio-group items, and grid cells, but do not need to validate the external UIA client/provider boundary. It walks `IAccessibilityProviderChildAccess` directly and reads common properties from provider direct-access interfaces, so it avoids PowerShell/.NET UIAutomation startup, COM marshaling, TreeWalker `Navigate` calls, and per-property external UIA round trips. For forms already installed through `TAccessibilityManager`, it reuses the live provider tree and reports `providerTreeSource:"installed"`; otherwise it builds a temporary tree and reports `providerTreeSource:"transient"`. The response includes `source:"maxlogic-provider"`, `nodeCount`, timing fields, `screenRect`, UIA-equivalent control type fields, and VCL metadata such as `vclName`/`vclClassName` when a provider maps to a VCL control. Use `maxDepth` and `maxChildren` to keep virtual grids and long lists bounded.
+
+The desktop-control helper's `fast-semantic-map` command automatically tries the framework default pipe name and asks `provider.map` for a semantic provider-tree snapshot before falling back to cached external UIA. Its automatic bridge probe is longer than `fast-map`'s geometry probe because missing a busy but available provider bridge is much more expensive than waiting briefly. Use it when an agent needs UIA-like semantic discovery across arbitrary Windows applications: bridge-enabled VCL apps stay on process-local provider/RTL reads, while generic applications still get the normal UIA snapshot. Bridge responses include `mapSource:"maxlogic-provider"` and `semanticBypass:true`. Cached UIA fallback responses include `fallbackAttempts`, so diagnostics can show which bridge pipe was tried and why the process-local semantic bypass was not used.
+
+The desktop-control helper's `fast-map` command automatically tries the framework default pipe name `MaxLogicAccessibilityAgentBridge.<processId>` before falling back to the generic Win32 map. It can derive the process id from `--pid`, a `--target handle` HWND, the focused window, or a `--title-contains` match. For PID and title-based discovery, it resolves the visible top-level HWND with native Win32 enumeration and sends that handle to `form.map`, so background automation can target the intended form without depending on foreground focus. The automatic `fast-map` default-pipe probe is intentionally short; pass `--pipe-name` for custom pipe names or when a known bridge target should get the normal command timeout. The default `fast-map` detail is `geometry`; use `fast-map --detail full` when a bridge-enabled VCL app needs visible captions, values, hints, roles, and native checked/selected/list state without walking UIA. Helper wall time is reported as `elapsedMs`; when the bridge is used, the original in-process bridge timing is preserved as `bridgeElapsedMs` and `bridgeElapsedTicks`. Use that command when the agent knows the process or window target but has not separately discovered the pipe name.
+
+Use `control.info` after a geometry map when automation needs details for only one or a few controls. It resolves a current snapshot `ref` and returns the same process-local targeting fields plus caption, value, hint, and native role-specific state for that control only. `includeAccessibility` defaults to `false` for this command, so the common enrichment path uses direct VCL/RTL reads and RTTI fallbacks without scanning the whole form. Set `includeAccessibility:true` only when validating accessible names or help text.
+
+Use `controls.info` after a geometry map when automation needs details for several known refs. It returns a `controls` array in request order and shares one focused-HWND read, one RTTI cache, and, when `includeAccessibility:true` is requested, one accessibility scan for the batch. The default remains `includeAccessibility:false`, so the fast path enriches selected controls through process-local VCL/RTL reads without UIA traversal.
+
+A UIA `TreeWalker` sample is still useful when validating what UIA exposes, but the node count is not the real cost. Even a small visible tree can trigger hundreds or thousands of client/provider boundary calls (`Navigate`, `GetPropertyValue`, `GetProviderOptions`, `GetRuntimeId`, and host-provider queries), plus helper process startup when the probe is launched from a one-shot script. Provider-hotspot elapsed ticks measure only our in-process callback work; if those ticks are tiny while the external sample is slow, the correct optimization is to bypass the UIA tree walk with `form.map`, `fast-semantic-map`, `provider.map`, or `win32-map --detail geometry`, not to micro-optimize Delphi property reads. If `fast-semantic-map` returns a slow cached UIA result, inspect `fallbackAttempts` before treating the result as the preferred path. When a UIA tree really must be sampled, start from the target HWND, cap branch breadth, and use the desktop-control helper's default cached `uia-map` path so .NET UIAutomation passes a `CacheRequest` into the TreeWalker child/sibling calls and reads common descendant properties from cache instead of reading `Current.Name`, `Current.ClassName`, and similar properties one by one in the traversal loop. Use `uia-map --plain` only when comparing or debugging the slower Python `uiautomation` traversal.
 
 `hitTest` uses VCL control geometry from the current process, not UIA, and returns the matching snapshot ref. This is useful when UIA is the thing being tested and should not be the only coordinate source.
+
+## Diagnostics
+
+Provider-hotspot diagnostics can be enabled while an external UIA or Win32 probe drives the application:
+
+```json
+{"cmd":"diagnostics.providerHotspots.enable"}
+{"cmd":"diagnostics.providerHotspots.reset"}
+{"cmd":"diagnostics.providerHotspots"}
+{"cmd":"diagnostics.providerHotspots.disable"}
+```
+
+`diagnostics.providerHotspots` returns the current metrics as JSON, including provider boundary call counts such as `providerNavigateCount`, `providerGetPropertyValueCount`, `providerGetRuntimeIdCount`, `providerGetBoundingRectangleCount`, and `providerGetHostRawElementProviderCount`, plus matching `...TotalElapsedTicks` fields. It also exposes focused provider hotspots such as `stringGridCellProbeCount`, `stringGridRowProbeCount`, `tmsAdvStringGridCellProbeCount`, `memoLineProbeCount`, `listBoxSelectionItemProbeCount`, `agentBridgeChildClientOriginProbeCount`, `agentBridgeFocusProbeCount`, `providerFocusAnnouncementTextLastElapsedTicks`, `providerNotificationLastElapsedTicks`, `managerRetainedHookPassivateCount`, `managerRetainedHookLinearScanCount`, `providerRuntimeIdBlockCopyCount`, `providerRuntimeIdBlockCopyElementCount`, and `providerRuntimeIdElementCopyCount`. Use this to separate expensive UIA client/provider round trips from cheap process-local VCL reads, and to distinguish speech text construction from UIA notification dispatch when focus or hover speech feels delayed.
 
 ## Mutations
 

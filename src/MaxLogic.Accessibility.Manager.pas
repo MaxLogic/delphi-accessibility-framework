@@ -5,7 +5,7 @@ interface
 uses
   Winapi.Windows,
   Vcl.Forms,
-  MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.Scanner;
+  MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.Scanner, MaxLogic.Accessibility.UIAutomationCore;
 
 type
   IAccessibilityFormInstaller = interface
@@ -34,15 +34,17 @@ type
     class procedure SetFormInstaller(const aInstaller: IAccessibilityFormInstaller); static;
     class procedure SetUiaApi(const aApi: IAccessibilityUiaApi); static;
     class procedure SetWinEventSink(const aSink: IAccessibilityWinEventSink); static;
+    class function TryGetInstalledFormProvider(aForm: TCustomForm; out aProvider: IRawElementProviderSimple):
+      Boolean; static;
   end;
 
 implementation
 
 uses
-  System.Classes, System.Diagnostics, System.Generics.Collections, System.SysUtils, System.Types, Winapi.Messages, Vcl.ComCtrls,
-  Vcl.Controls, Vcl.ExtCtrls, Vcl.Grids, Vcl.StdCtrls, MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.Hints,
-  MaxLogic.Accessibility.Msaa, MaxLogic.Accessibility.UIAutomationCore,
-  MaxLogic.Accessibility.VclAdapters;
+  System.Classes, System.Diagnostics, System.Generics.Collections, System.SysUtils, System.Types, System.Variants,
+  Winapi.Messages, Vcl.ComCtrls, Vcl.Controls, Vcl.ExtCtrls, Vcl.Grids, Vcl.StdCtrls,
+  MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.Hints, MaxLogic.Accessibility.Msaa,
+  MaxLogic.Accessibility.Text, MaxLogic.Accessibility.VclAdapters;
 
 const
   cMsaaObjIdClient = Cardinal($FFFFFFFC);
@@ -76,11 +78,15 @@ type
   private
     fApi: IAccessibilityUiaApi;
     fChildHooks: TList<TAccessibilityControlWindowHook>;
+    fChildHooksByControl: TDictionary<TWinControl, TAccessibilityControlWindowHook>;
     fForm: TCustomForm;
+    fHasLastHoverLeafBounds: Boolean;
     fLastHoverAnnouncement: string;
+    fLastHoverLeafBounds: UiaRect;
     fOriginalWindowProc: TWndMethod;
     fPassive: Boolean;
     fProvider: IAccessibilityProviderNode;
+    fRetained: Boolean;
     function ControlIsHooked(aControl: TWinControl): Boolean;
     procedure Detach;
     procedure DisconnectProvider;
@@ -90,7 +96,7 @@ type
     procedure HookMissingWindowControls(aParent: TWinControl);
     procedure HookProviderWindow(const aProvider: IRawElementProviderSimple);
     procedure HookRadioGroupButtonWindows(aRadioGroup: TRadioGroup; const aProvider: IRawElementProviderSimple);
-    procedure MaybeRaiseProviderHover(aLParam: LPARAM);
+    procedure MaybeRaiseProviderHover(aLParam: LPARAM; aClientsKnown: Boolean; aClientsListening: Boolean);
     function Passivate: Boolean;
     procedure ReleaseChildHooks;
   protected
@@ -108,30 +114,41 @@ type
     fApi: IAccessibilityUiaApi;
     fControl: TWinControl;
     fHasLastGridCell: Boolean;
+    fHasLastHoverLeafBounds: Boolean;
     fHasLastListBoxIndex: Boolean;
     fHasLastRaisedProviderState: Boolean;
     fLastFocusAnnouncement: string;
     fLastGridCol: Integer;
     fLastGridRow: Integer;
     fLastHoverAnnouncement: string;
+    fLastHoverLeafBounds: UiaRect;
     fLastListBoxIndex: Integer;
     fLastRaisedProviderState: TProviderStateSnapshot;
     fOriginalWindowProc: TWndMethod;
     fPassive: Boolean;
     fPreserveNativeWindowAccessibility: Boolean;
     fProvider: IRawElementProviderSimple;
+    fProviderIsGrid: Boolean;
+    fProviderNativeWindowHandleCheckHwnd: HWND;
+    fProviderNativeWindowHandleCheckValid: Boolean;
+    fProviderPublishesNativeWindowHandle: Boolean;
     fProviderStateMessageDepth: Integer;
+    fRetained: Boolean;
     fRootProvider: IRawElementProviderSimple;
     procedure Detach;
     function GridCellChanged: Boolean;
     procedure InitializeGridCellTracking;
     procedure InitializeListBoxItemTracking;
     function ListBoxItemChanged: Boolean;
+    function NativeListBoxShouldHandleGetObject(const aMessage: TMessage): Boolean;
+    function NativeListBoxShouldHandleNavigationMessage(const aMessage: TMessage): Boolean;
+    function NativeFocusUsesOnlyNativeStateEvents: Boolean;
     procedure MaybeRaiseGridFocusChanged;
     procedure MaybeRaiseListBoxFocusChanged;
-    procedure MaybeRaiseProviderHover(aLParam: LPARAM);
+    procedure MaybeRaiseProviderHover(aLParam: LPARAM; aClientsKnown: Boolean; aClientsListening: Boolean);
     procedure MaybeRaiseRadioNavigationChanged(aPreviousRadio: TRadioButton);
     function Passivate: Boolean;
+    function ProviderPublishesControlNativeWindowHandle: Boolean;
     procedure RaiseFocusChanged;
     procedure NotifyFocusHint;
     procedure RaiseGridFocusChanged;
@@ -215,12 +232,37 @@ begin
   Result := aLeft = aRight;
 end;
 
+function TryProviderDirectChildAt(const aProvider: IRawElementProviderSimple; aIndex: Integer;
+  out aChild: IRawElementProviderSimple): Boolean;
+var
+  lChildAccess: IAccessibilityProviderChildAccess;
+begin
+  aChild := nil;
+  Result := Supports(aProvider, IAccessibilityProviderChildAccess, lChildAccess) and
+    (lChildAccess.DirectChildAt(aIndex, aChild) = S_OK) and (aChild <> nil);
+end;
+
+function TryProviderDirectChildCount(const aProvider: IRawElementProviderSimple; out aCount: Integer): Boolean;
+var
+  lChildAccess: IAccessibilityProviderChildAccess;
+begin
+  aCount := 0;
+  Result := Supports(aProvider, IAccessibilityProviderChildAccess, lChildAccess) and
+    (lChildAccess.DirectChildCount(aCount) = S_OK);
+end;
+
 function ProviderHasChildren(const aProvider: IRawElementProviderSimple): Boolean;
 var
   lChild: IRawElementProviderFragment;
+  lCount: Integer;
   lFragment: IRawElementProviderFragment;
 begin
   Result := False;
+  if TryProviderDirectChildCount(aProvider, lCount) then
+  begin
+    Exit(lCount > 0);
+  end;
+
   if Supports(aProvider, IRawElementProviderFragment, lFragment) then
   begin
     Result := (lFragment.Navigate(NavigateDirection_FirstChild, lChild) = S_OK) and (lChild <> nil);
@@ -321,6 +363,74 @@ begin
   Result := PointToMouseLParam(lPoint);
 end;
 
+function MouseScreenPoint(aControl: TWinControl; aLParam: LPARAM): TPoint;
+begin
+  Result := Point(SignedMouseCoordinate(MouseLParamLowWord(aLParam)),
+    SignedMouseCoordinate(MouseLParamHighWord(aLParam)));
+  if aControl <> nil then
+  begin
+    Result := aControl.ClientToScreen(Result);
+  end;
+end;
+
+function UiaRectContainsScreenPoint(const aRect: UiaRect; const aPoint: TPoint): Boolean;
+begin
+  Result := (aPoint.X >= aRect.Left) and (aPoint.Y >= aRect.Top) and (aPoint.X < aRect.Left + aRect.Width) and
+    (aPoint.Y < aRect.Top + aRect.Height);
+end;
+
+function TryGetVclLeafControlBounds(aControl: TControl; out aBounds: UiaRect): Boolean;
+var
+  lPoint: TPoint;
+begin
+  aBounds := Default(UiaRect);
+  Result := False;
+  if (aControl = nil) or (aControl.Width <= 0) or (aControl.Height <= 0) then
+  begin
+    Exit;
+  end;
+
+  if (aControl is TWinControl) and (TWinControl(aControl).ControlCount > 0) then
+  begin
+    Exit;
+  end;
+
+  lPoint := aControl.ClientToScreen(Point(0, 0));
+  aBounds.Left := lPoint.X;
+  aBounds.Top := lPoint.Y;
+  aBounds.Width := aControl.Width;
+  aBounds.Height := aControl.Height;
+  Result := True;
+end;
+
+function TryGetVclLeafProviderBounds(const aProvider: IRawElementProviderSimple; out aBounds: UiaRect): Boolean;
+var
+  lControl: TControl;
+  lInfo: IAccessibilityVclControlProviderInfo;
+begin
+  aBounds := Default(UiaRect);
+  Result := False;
+  if not Supports(aProvider, IAccessibilityVclControlProviderInfo, lInfo) then
+  begin
+    Exit;
+  end;
+
+  lControl := lInfo.Control;
+  Result := TryGetVclLeafControlBounds(lControl, aBounds);
+end;
+
+procedure ClearHoverCache(var aAnnouncement: string; var aHasLeafBounds: Boolean);
+begin
+  aAnnouncement := '';
+  aHasLeafBounds := False;
+end;
+
+function HoverLeafCacheMatches(const aAnnouncement: string; aHasLeafBounds: Boolean;
+  const aLeafBounds: UiaRect; const aScreenPoint: TPoint): Boolean;
+begin
+  Result := (aAnnouncement <> '') and aHasLeafBounds and UiaRectContainsScreenPoint(aLeafBounds, aScreenPoint);
+end;
+
 function ShouldInstallForm(aForm: TCustomForm): Boolean;
 begin
   // VCL keeps this sentinel in Screen.Forms when no real form is active.
@@ -329,12 +439,18 @@ end;
 
 function ProviderSupportsPattern(const aProvider: IRawElementProviderSimple; aPatternId: PATTERNID): Boolean;
 var
+  lDirectAccess: IAccessibilityProviderDirectAccess;
   lPattern: IUnknown;
 begin
   Result := False;
   if aProvider = nil then
   begin
     Exit;
+  end;
+
+  if Supports(aProvider, IAccessibilityProviderDirectAccess, lDirectAccess) then
+  begin
+    Exit(lDirectAccess.SupportsPatternDirect(aPatternId));
   end;
 
   lPattern := nil;
@@ -357,12 +473,58 @@ begin
   Result := lLeft = lRight;
 end;
 
+function TryGetProviderBounds(const aProvider: IRawElementProviderSimple; out aBounds: UiaRect): Boolean;
+var
+  lFragment: IRawElementProviderFragment;
+  lGeometryAccess: IAccessibilityProviderGeometryAccess;
+begin
+  aBounds := Default(UiaRect);
+  if Supports(aProvider, IAccessibilityProviderGeometryAccess, lGeometryAccess) and
+    lGeometryAccess.TryGetBoundingRectangle(aBounds) then
+  begin
+    Exit((aBounds.Width > 0) and (aBounds.Height > 0));
+  end;
+
+  Result := Supports(aProvider, IRawElementProviderFragment, lFragment) and
+    (lFragment.Get_BoundingRectangle(aBounds) = S_OK) and (aBounds.Width > 0) and (aBounds.Height > 0);
+end;
+
+procedure UpdateHoverLeafCache(const aProvider: IRawElementProviderSimple; var aHasLeafBounds: Boolean;
+  var aLeafBounds: UiaRect);
+var
+  lBounds: UiaRect;
+begin
+  aHasLeafBounds := False;
+  if aProvider = nil then
+  begin
+    Exit;
+  end;
+
+  if not TryGetVclLeafProviderBounds(aProvider, lBounds) then
+  begin
+    if ProviderHasChildren(aProvider) or not TryGetProviderBounds(aProvider, lBounds) then
+    begin
+      Exit;
+    end;
+  end;
+
+  aLeafBounds := lBounds;
+  aHasLeafBounds := True;
+end;
+
 function ProviderHelpText(const aProvider: IRawElementProviderSimple): string;
 var
+  lDirectAccess: IAccessibilityProviderDirectAccess;
   lValue: OleVariant;
 begin
   Result := '';
   if aProvider = nil then
+  begin
+    Exit;
+  end;
+
+  if Supports(aProvider, IAccessibilityProviderDirectAccess, lDirectAccess) and
+    lDirectAccess.TryGetStringProperty(UIA_HelpTextPropertyId, Result) then
   begin
     Exit;
   end;
@@ -375,10 +537,17 @@ end;
 
 function ProviderName(const aProvider: IRawElementProviderSimple): string;
 var
+  lDirectAccess: IAccessibilityProviderDirectAccess;
   lValue: OleVariant;
 begin
   Result := '';
   if aProvider = nil then
+  begin
+    Exit;
+  end;
+
+  if Supports(aProvider, IAccessibilityProviderDirectAccess, lDirectAccess) and
+    lDirectAccess.TryGetStringProperty(UIA_NamePropertyId, Result) then
   begin
     Exit;
   end;
@@ -391,10 +560,17 @@ end;
 
 function ProviderControlType(const aProvider: IRawElementProviderSimple): Integer;
 var
+  lDirectAccess: IAccessibilityProviderDirectAccess;
   lValue: OleVariant;
 begin
   Result := UIA_CustomControlTypeId;
   if aProvider = nil then
+  begin
+    Exit;
+  end;
+
+  if Supports(aProvider, IAccessibilityProviderDirectAccess, lDirectAccess) and
+    lDirectAccess.TryGetIntegerProperty(UIA_ControlTypePropertyId, Result) then
   begin
     Exit;
   end;
@@ -407,6 +583,7 @@ end;
 
 function ProviderNativeWindowHandle(const aProvider: IRawElementProviderSimple): HWND;
 var
+  lNativeWindow: IAccessibilityProviderNativeWindow;
   lValue: OleVariant;
 begin
   Result := 0;
@@ -415,10 +592,51 @@ begin
     Exit;
   end;
 
-  if aProvider.GetPropertyValue(UIA_NativeWindowHandlePropertyId, lValue) = S_OK then
+  if Supports(aProvider, IAccessibilityProviderNativeWindow, lNativeWindow) then
+  begin
+    Exit(lNativeWindow.NativeWindowHandle);
+  end;
+
+  if (aProvider.GetPropertyValue(UIA_NativeWindowHandlePropertyId, lValue) = S_OK) and not VarIsEmpty(lValue) and
+    not VarIsNull(lValue) then
   begin
     Result := HWND(NativeInt(lValue));
   end;
+end;
+
+function ProviderPublishesNativeWindowHandleForHwnd(const aProvider: IRawElementProviderSimple; aHwnd: HWND): Boolean;
+var
+  lDirectAccess: IAccessibilityProviderDirectAccess;
+  lNativeWindowHandle: Integer;
+  lValue: OleVariant;
+begin
+  Result := False;
+  if (aProvider = nil) or (aHwnd = 0) then
+  begin
+    Exit;
+  end;
+
+  if Supports(aProvider, IAccessibilityProviderDirectAccess, lDirectAccess) then
+  begin
+    if not lDirectAccess.TryGetIntegerProperty(UIA_NativeWindowHandlePropertyId, lNativeWindowHandle) then
+    begin
+      Exit(False);
+    end;
+
+    Exit(HWND(lNativeWindowHandle) = aHwnd);
+  end;
+
+  if aProvider.GetPropertyValue(UIA_NativeWindowHandlePropertyId, lValue) <> S_OK then
+  begin
+    Exit;
+  end;
+
+  if VarIsEmpty(lValue) or VarIsNull(lValue) then
+  begin
+    Exit;
+  end;
+
+  Result := HWND(NativeInt(lValue)) = aHwnd;
 end;
 
 procedure NotifyProviderNativeFocusAndState(const aProvider: IRawElementProviderSimple; aFallbackHwnd: HWND);
@@ -440,6 +658,7 @@ end;
 
 function ProviderValueText(const aProvider: IRawElementProviderSimple): string;
 var
+  lDirectAccess: IAccessibilityProviderDirectAccess;
   lPattern: IUnknown;
   lValue: WideString;
   lValueProvider: IValueProvider;
@@ -448,6 +667,19 @@ begin
   if aProvider = nil then
   begin
     Exit;
+  end;
+
+  if Supports(aProvider, IAccessibilityProviderDirectAccess, lDirectAccess) then
+  begin
+    if lDirectAccess.TryGetValueText(Result) then
+    begin
+      Exit;
+    end;
+
+    if not lDirectAccess.SupportsPatternDirect(UIA_ValuePatternId) then
+    begin
+      Exit;
+    end;
   end;
 
   lPattern := nil;
@@ -464,55 +696,68 @@ begin
   end;
 end;
 
-function RemoveLeadingSpeechDuplicate(const aText: string; const aDuplicate: string): string;
-begin
-  Result := Trim(aText);
-  if (Result = '') or (aDuplicate = '') or (CompareText(Copy(Result, 1, Length(aDuplicate)), aDuplicate) <> 0) then
-  begin
-    Exit;
-  end;
-
-  Delete(Result, 1, Length(aDuplicate));
-  Result := Trim(Result);
-  while (Result <> '') and CharInSet(Result[1], ['.', ',', ';', ':', '|', '-']) do
-  begin
-    Delete(Result, 1, 1);
-    Result := Trim(Result);
-  end;
-end;
-
 function ProviderFocusAnnouncementText(const aProvider: IRawElementProviderSimple): string;
 var
+  lDetailProbeCount: Integer;
   lHelpText: string;
+  lMetricsEnabled: Boolean;
   lName: string;
+  lSpeechAccess: IAccessibilityProviderSpeechAccess;
+  lStopwatch: TStopwatch;
   lValueText: string;
 begin
-  lName := ProviderName(aProvider);
-  lValueText := ProviderValueText(aProvider);
-  lHelpText := RemoveLeadingSpeechDuplicate(ProviderHelpText(aProvider), lValueText);
-
-  Result := '';
-  if lName <> '' then
+  lDetailProbeCount := 0;
+  lMetricsEnabled := TAccessibilityDiagnostics.ProviderHotspotMetricsEnabled;
+  if lMetricsEnabled then
   begin
-    Result := lName;
+    lStopwatch := TStopwatch.StartNew;
   end;
-
-  if (lValueText <> '') and (CompareText(Result, lValueText) <> 0) then
-  begin
-    if Result <> '' then
+  try
+    lName := '';
+    lValueText := '';
+    lHelpText := '';
+    if Supports(aProvider, IAccessibilityProviderSpeechAccess, lSpeechAccess) and
+      lSpeechAccess.TryGetSpeechProperties(lName, lValueText, lHelpText) then
     begin
-      Result := Result + ' ';
+      Inc(lDetailProbeCount);
+    end else begin
+      lName := ProviderName(aProvider);
+      Inc(lDetailProbeCount);
+      lValueText := ProviderValueText(aProvider);
+      Inc(lDetailProbeCount);
+      lHelpText := ProviderHelpText(aProvider);
+      Inc(lDetailProbeCount);
     end;
-    Result := Result + lValueText;
-  end;
+    lHelpText := TAccessibilityText.RemoveLeadingDuplicate(lHelpText, lValueText);
 
-  if (lHelpText <> '') and (CompareText(Result, lHelpText) <> 0) then
-  begin
-    if Result <> '' then
+    Result := '';
+    if lName <> '' then
     begin
-      Result := Result + '. ';
+      Result := lName;
     end;
-    Result := Result + lHelpText;
+
+    if (lValueText <> '') and (CompareText(Result, lValueText) <> 0) then
+    begin
+      if Result <> '' then
+      begin
+        Result := Result + ' ';
+      end;
+      Result := Result + lValueText;
+    end;
+
+    if (lHelpText <> '') and (CompareText(Result, lHelpText) <> 0) then
+    begin
+      if Result <> '' then
+      begin
+        Result := Result + '. ';
+      end;
+      Result := Result + lHelpText;
+    end;
+  finally
+    if lMetricsEnabled then
+    begin
+      TAccessibilityDiagnostics.RecordProviderFocusAnnouncementText(lDetailProbeCount, lStopwatch.ElapsedTicks);
+    end;
   end;
 end;
 
@@ -521,11 +766,110 @@ begin
   Result := ProviderFocusAnnouncementText(aProvider);
 end;
 
+function ProviderUsesPlatformStateEvents(const aProvider: IRawElementProviderSimple): Boolean; forward;
+function ProviderNeedsSupplementalRadioAnnouncements(const aProvider: IRawElementProviderSimple): Boolean; forward;
+
+function ProviderHoverResolutionText(const aProvider: IRawElementProviderSimple): string;
+begin
+  if ProviderUsesPlatformStateEvents(aProvider) and not ProviderNeedsSupplementalRadioAnnouncements(aProvider) then
+  begin
+    Exit(ProviderName(aProvider));
+  end;
+
+  Result := ProviderHoverAnnouncementText(aProvider);
+end;
+
+function HoverTargetControlFromPoint(aControl: TWinControl; const aScreenPoint: TPoint): TControl;
+var
+  lPoint: TPoint;
+begin
+  Result := nil;
+  if aControl = nil then
+  begin
+    Exit;
+  end;
+
+  lPoint := aControl.ScreenToClient(aScreenPoint);
+  if not PtInRect(aControl.ClientRect, lPoint) then
+  begin
+    Exit;
+  end;
+
+  Result := aControl.ControlAtPos(lPoint, True, True, True);
+  if Result = nil then
+  begin
+    Result := aControl;
+  end;
+end;
+
+function ProviderIsFragmentRoot(const aProvider: IRawElementProviderSimple): Boolean;
+var
+  lRoot: IRawElementProviderFragmentRoot;
+begin
+  Result := Supports(aProvider, IRawElementProviderFragmentRoot, lRoot);
+end;
+
+function TryResolveHoverProviderFromVclLookup(aControl: TWinControl; const aProvider: IRawElementProviderSimple;
+  const aScreenPoint: TPoint; out aHitProvider: IRawElementProviderSimple; out aAnnouncementText: string;
+  out aHasLeafBounds: Boolean; out aLeafBounds: UiaRect): Boolean;
+var
+  lHitProvider: IRawElementProviderSimple;
+  lInfo: IAccessibilityVclControlProviderInfo;
+  lLeafControl: TControl;
+  lLookup: IAccessibilityVclProviderLookup;
+  lTarget: TControl;
+begin
+  aHitProvider := nil;
+  aAnnouncementText := '';
+  aHasLeafBounds := False;
+  aLeafBounds := Default(UiaRect);
+  Result := False;
+  if not Supports(aProvider, IAccessibilityVclProviderLookup, lLookup) then
+  begin
+    Exit;
+  end;
+
+  lTarget := HoverTargetControlFromPoint(aControl, aScreenPoint);
+  if (lTarget = nil) or (lTarget is TPageControl) or (lTarget is TTabSheet) then
+  begin
+    Exit;
+  end;
+
+  lHitProvider := nil;
+  if not lLookup.TryFindProviderForControl(lTarget, lHitProvider) or (lHitProvider = nil) or
+    ProvidersAreSame(aProvider, lHitProvider) or ProviderIsGrid(lHitProvider) or
+    ProviderIsFragmentRoot(lHitProvider) or ProviderSupportsPattern(lHitProvider, UIA_GridItemPatternId) then
+  begin
+    Exit;
+  end;
+
+  aAnnouncementText := ProviderHoverResolutionText(lHitProvider);
+  if aAnnouncementText = '' then
+  begin
+    Exit;
+  end;
+
+  aHitProvider := lHitProvider;
+  lLeafControl := lTarget;
+  if Supports(lHitProvider, IAccessibilityVclControlProviderInfo, lInfo) and (lInfo.Control <> nil) then
+  begin
+    lLeafControl := lInfo.Control;
+  end;
+
+  aHasLeafBounds := TryGetVclLeafControlBounds(lLeafControl, aLeafBounds);
+  Result := True;
+end;
+
 procedure RaiseProviderAnnouncement(const aProvider: IRawElementProviderSimple; const aActivityId: string;
   const aApi: IAccessibilityUiaApi);
 var
   lAnnouncementText: string;
 begin
+  if not TAccessibilityProviderEvents.ClientsAreListening(aApi) then
+  begin
+    Exit;
+  end;
+
   lAnnouncementText := ProviderFocusAnnouncementText(aProvider);
   if lAnnouncementText = '' then
   begin
@@ -588,14 +932,28 @@ function TryFindProviderForControl(const aProvider: IRawElementProviderSimple; a
   out aControlProvider: IRawElementProviderSimple): Boolean;
 var
   lChild: IRawElementProviderFragment;
+  lDirectChildCount: Integer;
   lChildProvider: IRawElementProviderSimple;
   lFragment: IRawElementProviderFragment;
   lInfo: IAccessibilityVclControlProviderInfo;
+  lLookup: IAccessibilityVclProviderLookup;
   lNextChild: IRawElementProviderFragment;
+  i: Integer;
 begin
   aControlProvider := nil;
   Result := False;
-  if (aProvider = nil) or (aControl = nil) or ProviderIsGrid(aProvider) then
+  if (aProvider = nil) or (aControl = nil) then
+  begin
+    Exit;
+  end;
+
+  if Supports(aProvider, IAccessibilityVclProviderLookup, lLookup) and
+    lLookup.TryFindProviderForControl(aControl, aControlProvider) then
+  begin
+    Exit(True);
+  end;
+
+  if ProviderIsGrid(aProvider) then
   begin
     Exit;
   end;
@@ -604,6 +962,19 @@ begin
   begin
     aControlProvider := aProvider;
     Exit(True);
+  end;
+
+  if TryProviderDirectChildCount(aProvider, lDirectChildCount) then
+  begin
+    for i := 0 to Pred(lDirectChildCount) do
+    begin
+      if TryProviderDirectChildAt(aProvider, i, lChildProvider) and
+        TryFindProviderForControl(lChildProvider, aControl, aControlProvider) then
+      begin
+        Exit(True);
+      end;
+    end;
+    Exit;
   end;
 
   if not Supports(aProvider, IRawElementProviderFragment, lFragment) then
@@ -637,8 +1008,12 @@ end;
 function TryCaptureProviderState(const aProvider: IRawElementProviderSimple; out aState: TProviderStateSnapshot):
   Boolean;
 var
+  lDirectAccess: IAccessibilityProviderDirectAccess;
+  lCanProbeSelectionItem: Boolean;
+  lCanProbeToggle: Boolean;
   lIsSelected: BOOL;
   lPattern: IUnknown;
+  lPropertyValue: Integer;
   lSelectionItem: ISelectionItemProvider;
   lToggle: IToggleProvider;
   lToggleState: ToggleState;
@@ -650,8 +1025,34 @@ begin
     Exit;
   end;
 
+  lCanProbeSelectionItem := True;
+  lCanProbeToggle := True;
+  if Supports(aProvider, IAccessibilityProviderDirectAccess, lDirectAccess) then
+  begin
+    if lDirectAccess.TryGetIntegerProperty(UIA_ToggleToggleStatePropertyId, lPropertyValue) then
+    begin
+      aState.Kind := pskToggle;
+      aState.ToggleState := lPropertyValue;
+      Exit(True);
+    end;
+
+    if lDirectAccess.TryGetIntegerProperty(UIA_SelectionItemIsSelectedPropertyId, lPropertyValue) then
+    begin
+      aState.Kind := pskSelectionItem;
+      aState.IsSelected := lPropertyValue <> 0;
+      Exit(True);
+    end;
+
+    lCanProbeToggle := lDirectAccess.SupportsPatternDirect(UIA_TogglePatternId);
+    lCanProbeSelectionItem := lDirectAccess.SupportsPatternDirect(UIA_SelectionItemPatternId);
+    if not lCanProbeToggle and not lCanProbeSelectionItem then
+    begin
+      Exit(False);
+    end;
+  end;
+
   lPattern := nil;
-  if (aProvider.GetPatternProvider(UIA_TogglePatternId, lPattern) = S_OK) and
+  if lCanProbeToggle and (aProvider.GetPatternProvider(UIA_TogglePatternId, lPattern) = S_OK) and
     Supports(lPattern, IToggleProvider, lToggle) and (lToggle.Get_ToggleState(lToggleState) = S_OK) then
   begin
     aState.Kind := pskToggle;
@@ -660,7 +1061,7 @@ begin
   end;
 
   lPattern := nil;
-  if (aProvider.GetPatternProvider(UIA_SelectionItemPatternId, lPattern) = S_OK) and
+  if lCanProbeSelectionItem and (aProvider.GetPatternProvider(UIA_SelectionItemPatternId, lPattern) = S_OK) and
     Supports(lPattern, ISelectionItemProvider, lSelectionItem) and (lSelectionItem.Get_IsSelected(lIsSelected) = S_OK)
   then
   begin
@@ -739,25 +1140,31 @@ begin
   end;
 
   lChanged := False;
-  case aNewState.Kind of
-    pskToggle:
-      if aOldState.ToggleState <> aNewState.ToggleState then
-      begin
-        lChanged := True;
-        TAccessibilityProviderEvents.RaiseAutomationPropertyChanged(aProvider, UIA_ToggleToggleStatePropertyId,
-          Integer(aOldState.ToggleState), Integer(aNewState.ToggleState), aApi);
-      end;
-    pskSelectionItem:
-      if aOldState.IsSelected <> aNewState.IsSelected then
-      begin
-        lChanged := True;
-        TAccessibilityProviderEvents.RaiseAutomationPropertyChanged(aProvider, UIA_SelectionItemIsSelectedPropertyId,
-          aOldState.IsSelected, aNewState.IsSelected, aApi);
-        if aNewState.IsSelected then
+  TAccessibilityProviderEvents.BeginEventBatch;
+  try
+    case aNewState.Kind of
+      pskToggle:
+        if aOldState.ToggleState <> aNewState.ToggleState then
         begin
-          TAccessibilityProviderEvents.RaiseAutomationEvent(aProvider, UIA_SelectionItem_ElementSelectedEventId, aApi);
+          lChanged := True;
+          TAccessibilityProviderEvents.RaiseAutomationPropertyChanged(aProvider, UIA_ToggleToggleStatePropertyId,
+            Integer(aOldState.ToggleState), Integer(aNewState.ToggleState), aApi);
         end;
-      end;
+      pskSelectionItem:
+        if aOldState.IsSelected <> aNewState.IsSelected then
+        begin
+          lChanged := True;
+          TAccessibilityProviderEvents.RaiseAutomationPropertyChanged(aProvider,
+            UIA_SelectionItemIsSelectedPropertyId, aOldState.IsSelected, aNewState.IsSelected, aApi);
+          if aNewState.IsSelected then
+          begin
+            TAccessibilityProviderEvents.RaiseAutomationEvent(aProvider, UIA_SelectionItem_ElementSelectedEventId,
+              aApi);
+          end;
+        end;
+    end;
+  finally
+    TAccessibilityProviderEvents.EndEventBatch;
   end;
 
   if lChanged then
@@ -775,62 +1182,73 @@ procedure RaiseProviderHover(const aProvider: IRawElementProviderSimple; const a
 var
   lHwnd: HWND;
 begin
-  if ProviderUsesPlatformStateEvents(aProvider) then
-  begin
-    TAccessibilityProviderEvents.RaiseAutomationEvent(aProvider, UIA_AutomationFocusChangedEventId, aApi);
-    lHwnd := ProviderNativeWindowHandle(aProvider);
-    if lHwnd <> 0 then
+  TAccessibilityProviderEvents.BeginEventBatch;
+  try
+    if ProviderUsesPlatformStateEvents(aProvider) then
     begin
-      NotifyAccessibilityWinEvent(EVENT_OBJECT_FOCUS, lHwnd, cMsaaObjIdClient, CHILDID_SELF);
-      NotifyAccessibilityWinEvent(EVENT_OBJECT_STATECHANGE, lHwnd, cMsaaObjIdClient, CHILDID_SELF);
-      if not ProviderNeedsSupplementalRadioAnnouncements(aProvider) then
+      TAccessibilityProviderEvents.RaiseAutomationEvent(aProvider, UIA_AutomationFocusChangedEventId, aApi);
+      lHwnd := ProviderNativeWindowHandle(aProvider);
+      if lHwnd <> 0 then
       begin
-        Exit;
+        NotifyAccessibilityWinEvent(EVENT_OBJECT_FOCUS, lHwnd, cMsaaObjIdClient, CHILDID_SELF);
+        NotifyAccessibilityWinEvent(EVENT_OBJECT_STATECHANGE, lHwnd, cMsaaObjIdClient, CHILDID_SELF);
+        if not ProviderNeedsSupplementalRadioAnnouncements(aProvider) then
+        begin
+          Exit;
+        end;
       end;
     end;
-  end;
 
-  if ProviderUsesHoverFocusEvent(aProvider) then
-  begin
-    TAccessibilityProviderEvents.RaiseAutomationEvent(aProvider, UIA_AutomationFocusChangedEventId, aApi);
-  end;
+    if ProviderUsesHoverFocusEvent(aProvider) then
+    begin
+      TAccessibilityProviderEvents.RaiseAutomationEvent(aProvider, UIA_AutomationFocusChangedEventId, aApi);
+    end;
 
-  TAccessibilityProviderEvents.RaiseNotification(aProvider, NotificationKind_Other,
-    NotificationProcessing_MostRecent, aAnnouncementText, 'vcl-hover', aApi);
+    TAccessibilityProviderEvents.RaiseNotification(aProvider, NotificationKind_Other,
+      NotificationProcessing_MostRecent, aAnnouncementText, 'vcl-hover', aApi);
+  finally
+    TAccessibilityProviderEvents.EndEventBatch;
+  end;
 end;
 
 function TryResolveHoverProvider(aControl: TWinControl; const aProvider: IRawElementProviderSimple;
-  aLParam: LPARAM; out aHitProvider: IRawElementProviderSimple; out aAnnouncementText: string): Boolean;
+  const aScreenPoint: TPoint; out aHitProvider: IRawElementProviderSimple; out aAnnouncementText: string;
+  out aHasLeafBounds: Boolean; out aLeafBounds: UiaRect): Boolean;
 var
-  lClientPoint: TPoint;
   lHit: IRawElementProviderFragment;
   lRoot: IRawElementProviderFragmentRoot;
-  lScreenPoint: TPoint;
 begin
   aHitProvider := nil;
   aAnnouncementText := '';
+  aHasLeafBounds := False;
+  aLeafBounds := Default(UiaRect);
   Result := False;
   if (aControl = nil) or (aProvider = nil) or ProviderIsGrid(aProvider) then
   begin
     Exit;
   end;
 
+  if TryResolveHoverProviderFromVclLookup(aControl, aProvider, aScreenPoint, aHitProvider, aAnnouncementText,
+    aHasLeafBounds, aLeafBounds) then
+  begin
+    Exit(True);
+  end;
+
   if not Supports(aProvider, IRawElementProviderFragmentRoot, lRoot) then
   begin
-    aAnnouncementText := ProviderHoverAnnouncementText(aProvider);
+    aAnnouncementText := ProviderHoverResolutionText(aProvider);
     if aAnnouncementText <> '' then
     begin
       aHitProvider := aProvider;
+      aHasLeafBounds := TryGetVclLeafProviderBounds(aProvider, aLeafBounds);
       Exit(True);
     end;
 
     Exit;
   end;
 
-  lClientPoint := Point(SignedMouseCoordinate(MouseLParamLowWord(aLParam)), SignedMouseCoordinate(MouseLParamHighWord(aLParam)));
-  lScreenPoint := aControl.ClientToScreen(lClientPoint);
   lHit := nil;
-  if (lRoot.ElementProviderFromPoint(lScreenPoint.X, lScreenPoint.Y, lHit) <> S_OK) or (lHit = nil) or
+  if (lRoot.ElementProviderFromPoint(aScreenPoint.X, aScreenPoint.Y, lHit) <> S_OK) or (lHit = nil) or
     not Supports(lHit, IRawElementProviderSimple, aHitProvider) then
   begin
     Exit;
@@ -843,8 +1261,12 @@ begin
     Exit;
   end;
 
-  aAnnouncementText := ProviderHoverAnnouncementText(aHitProvider);
+  aAnnouncementText := ProviderHoverResolutionText(aHitProvider);
   Result := aAnnouncementText <> '';
+  if Result then
+  begin
+    aHasLeafBounds := TryGetVclLeafProviderBounds(aHitProvider, aLeafBounds);
+  end;
 end;
 
 function TryGetFocusedGridCell(const aProvider: IRawElementProviderSimple; out aCol: Integer;
@@ -908,6 +1330,25 @@ begin
   else
     Result := False;
   end;
+end;
+
+function ListBoxCurrentItemText(aListBox: TCustomListBox): string;
+var
+  lItemIndex: Integer;
+begin
+  Result := '';
+  if aListBox = nil then
+  begin
+    Exit;
+  end;
+
+  lItemIndex := aListBox.ItemIndex;
+  if (lItemIndex < 0) or (lItemIndex >= aListBox.Items.Count) then
+  begin
+    Exit;
+  end;
+
+  Result := TAccessibilityText.Clean(aListBox.Items[lItemIndex]);
 end;
 
 function ControlDescription(aControl: TControl): string;
@@ -1000,14 +1441,18 @@ begin
 
   fApi := aApi;
   fChildHooks := TList<TAccessibilityControlWindowHook>.Create;
+  fChildHooksByControl := TDictionary<TWinControl, TAccessibilityControlWindowHook>.Create;
   fForm := aForm;
   fProvider := aProvider;
   fOriginalWindowProc := aForm.WindowProc;
   HookChildProviderWindows;
   fForm.FreeNotification(Self);
   fForm.WindowProc := WindowProc;
-  TAccessibilityDiagnostics.Log(Format('Installed form hook form=%s hwnd=%d childHooks=%d',
-    [ControlDescription(aForm), aForm.Handle, fChildHooks.Count]));
+  if TAccessibilityDiagnostics.Enabled then
+  begin
+    TAccessibilityDiagnostics.Log(Format('Installed form hook form=%s hwnd=%d childHooks=%d',
+      [ControlDescription(aForm), aForm.Handle, fChildHooks.Count]));
+  end;
 end;
 
 destructor TAccessibilityFormWindowHook.Destroy;
@@ -1019,6 +1464,7 @@ begin
 
   DisconnectProvider;
   ReleaseChildHooks;
+  fChildHooksByControl.Free;
   fChildHooks.Free;
   inherited Destroy;
 end;
@@ -1039,6 +1485,7 @@ end;
 
 procedure TAccessibilityFormWindowHook.DisconnectProvider;
 begin
+  ClearHoverCache(fLastHoverAnnouncement, fHasLastHoverLeafBounds);
   if fProvider <> nil then
   begin
     fProvider.Disconnect;
@@ -1049,19 +1496,25 @@ end;
 function TAccessibilityFormWindowHook.ControlIsHooked(aControl: TWinControl): Boolean;
 var
   lHook: TAccessibilityControlWindowHook;
+  lProbeCount: Integer;
 begin
   Result := False;
+  lProbeCount := 0;
   if aControl = nil then
   begin
     Exit;
   end;
 
-  for lHook in fChildHooks do
-  begin
-    if lHook.fControl = aControl then
+  try
+    Inc(lProbeCount);
+    lHook := nil;
+    Result := fChildHooksByControl.TryGetValue(aControl, lHook) and (lHook <> nil) and (lHook.fControl = aControl);
+    if (not Result) and (lHook <> nil) then
     begin
-      Exit(True);
+      fChildHooksByControl.Remove(aControl);
     end;
+  finally
+    TAccessibilityDiagnostics.RecordManagerHookLookup(lProbeCount);
   end;
 end;
 
@@ -1076,14 +1529,18 @@ end;
 
 procedure TAccessibilityFormWindowHook.HookControlWindow(aControl: TWinControl;
   const aProvider: IRawElementProviderSimple; aPreserveNativeWindowAccessibility: Boolean);
+var
+  lHook: TAccessibilityControlWindowHook;
 begin
   if (aControl = nil) or (aControl = fForm) or (fProvider = nil) or ControlIsHooked(aControl) then
   begin
     Exit;
   end;
 
-  fChildHooks.Add(TAccessibilityControlWindowHook.Create(aControl, aProvider, fApi, fProvider.RawElementProvider,
-    aPreserveNativeWindowAccessibility));
+  lHook := TAccessibilityControlWindowHook.Create(aControl, aProvider, fApi, fProvider.RawElementProvider,
+    aPreserveNativeWindowAccessibility);
+  fChildHooks.Add(lHook);
+  fChildHooksByControl.AddOrSetValue(aControl, lHook);
 end;
 
 procedure TAccessibilityFormWindowHook.HookMissingWindowControls(aParent: TWinControl);
@@ -1118,9 +1575,11 @@ end;
 
 procedure TAccessibilityFormWindowHook.HookProviderWindow(const aProvider: IRawElementProviderSimple);
 var
+  i: Integer;
   lChild: IRawElementProviderFragment;
   lChildProvider: IRawElementProviderSimple;
   lControl: TControl;
+  lDirectChildCount: Integer;
   lFragment: IRawElementProviderFragment;
   lInfo: IAccessibilityVclControlProviderInfo;
   lNextChild: IRawElementProviderFragment;
@@ -1157,6 +1616,18 @@ begin
 
   if ProviderIsGrid(aProvider) then
   begin
+    Exit;
+  end;
+
+  if TryProviderDirectChildCount(aProvider, lDirectChildCount) then
+  begin
+    for i := 0 to Pred(lDirectChildCount) do
+    begin
+      if TryProviderDirectChildAt(aProvider, i, lChildProvider) then
+      begin
+        HookProviderWindow(lChildProvider);
+      end;
+    end;
     Exit;
   end;
 
@@ -1205,16 +1676,46 @@ begin
   end;
 end;
 
-procedure TAccessibilityFormWindowHook.MaybeRaiseProviderHover(aLParam: LPARAM);
+procedure TAccessibilityFormWindowHook.MaybeRaiseProviderHover(aLParam: LPARAM; aClientsKnown: Boolean;
+  aClientsListening: Boolean);
 var
+  lClientsListening: Boolean;
+  lHasLeafBounds: Boolean;
   lHitProvider: IRawElementProviderSimple;
+  lLeafBounds: UiaRect;
   lName: string;
+  lScreenPoint: TPoint;
 begin
-  if (fProvider = nil) or not TryResolveHoverProvider(fForm, fProvider.RawElementProvider, aLParam, lHitProvider,
-    lName) then
+  lScreenPoint := MouseScreenPoint(fForm, aLParam);
+  if HoverLeafCacheMatches(fLastHoverAnnouncement, fHasLastHoverLeafBounds, fLastHoverLeafBounds, lScreenPoint) then
   begin
-    fLastHoverAnnouncement := '';
     Exit;
+  end;
+
+  lClientsListening := aClientsListening;
+  if not aClientsKnown then
+  begin
+    lClientsListening := TAccessibilityProviderEvents.ClientsAreListening(fApi);
+  end;
+  if not lClientsListening then
+  begin
+    ClearHoverCache(fLastHoverAnnouncement, fHasLastHoverLeafBounds);
+    Exit;
+  end;
+
+  if (fProvider = nil) or not TryResolveHoverProvider(fForm, fProvider.RawElementProvider, lScreenPoint,
+    lHitProvider, lName, lHasLeafBounds, lLeafBounds) then
+  begin
+    ClearHoverCache(fLastHoverAnnouncement, fHasLastHoverLeafBounds);
+    Exit;
+  end;
+
+  if lHasLeafBounds then
+  begin
+    fLastHoverLeafBounds := lLeafBounds;
+    fHasLastHoverLeafBounds := True;
+  end else begin
+    UpdateHoverLeafCache(lHitProvider, fHasLastHoverLeafBounds, fLastHoverLeafBounds);
   end;
 
   if SameText(fLastHoverAnnouncement, lName) then
@@ -1263,9 +1764,11 @@ begin
       gRetainedFormHooks := TList<TAccessibilityFormWindowHook>.Create;
     end;
 
-    if not gRetainedFormHooks.Contains(Self) then
+    TAccessibilityDiagnostics.RecordManagerRetainedHookPassivation(0);
+    if not fRetained then
     begin
       gRetainedFormHooks.Add(Self);
+      fRetained := True;
     end;
   end;
 end;
@@ -1283,11 +1786,16 @@ begin
   begin
     lHook := fChildHooks[Pred(fChildHooks.Count)];
     fChildHooks.Delete(Pred(fChildHooks.Count));
+    if lHook.fControl <> nil then
+    begin
+      fChildHooksByControl.Remove(lHook.fControl);
+    end;
     if not lHook.Passivate then
     begin
       lHook.Free;
     end;
   end;
+  fChildHooksByControl.Clear;
 end;
 
 class procedure TAccessibilityFormWindowHook.ReleaseRetainedHooks;
@@ -1303,6 +1811,7 @@ begin
   begin
     lHook := gRetainedFormHooks[Pred(gRetainedFormHooks.Count)];
     gRetainedFormHooks.Delete(Pred(gRetainedFormHooks.Count));
+    lHook.fRetained := False;
     lHook.fPassive := False;
     lHook.Detach;
     lHook.Free;
@@ -1311,16 +1820,22 @@ end;
 
 procedure TAccessibilityFormWindowHook.WindowProc(var aMessage: TMessage);
 var
+  lClientsAreListening: Boolean;
   lIsMouseMoveMessage: Boolean;
+  lMouseParam: LPARAM;
   lResult: Winapi.Windows.LRESULT;
+  lScreenPoint: TPoint;
 begin
   lIsMouseMoveMessage := (aMessage.Msg = WM_MOUSEMOVE) or (aMessage.Msg = WM_NCMOUSEMOVE);
   if (not fPassive) and (fForm <> nil) and (fProvider <> nil) and (aMessage.Msg = WM_GETOBJECT) and
     TAccessibilityProviderWindowMessages.TryHandleGetObject(fForm.Handle, aMessage.WParam, aMessage.LParam,
     fProvider.RawElementProvider, fApi, lResult) then
   begin
-    TAccessibilityDiagnostics.Log(Format('Form WM_GETOBJECT handled form=%s hwnd=%d lParam=%d',
-      [ControlDescription(fForm), fForm.Handle, aMessage.LParam]));
+    if TAccessibilityDiagnostics.Enabled then
+    begin
+      TAccessibilityDiagnostics.Log(Format('Form WM_GETOBJECT handled form=%s hwnd=%d lParam=%d',
+        [ControlDescription(fForm), fForm.Handle, aMessage.LParam]));
+    end;
     aMessage.Result := lResult;
     Exit;
   end;
@@ -1329,8 +1844,11 @@ begin
     TAccessibilityMsaaBridge.TryHandleGetObject(aMessage.WParam, aMessage.LParam, fProvider.RawElementProvider,
     lResult) then
   begin
-    TAccessibilityDiagnostics.Log(Format('Form MSAA WM_GETOBJECT handled form=%s hwnd=%d lParam=%d',
-      [ControlDescription(fForm), fForm.Handle, aMessage.LParam]));
+    if TAccessibilityDiagnostics.Enabled then
+    begin
+      TAccessibilityDiagnostics.Log(Format('Form MSAA WM_GETOBJECT handled form=%s hwnd=%d lParam=%d',
+        [ControlDescription(fForm), fForm.Handle, aMessage.LParam]));
+    end;
     aMessage.Result := lResult;
     Exit;
   end;
@@ -1338,7 +1856,26 @@ begin
   fOriginalWindowProc(aMessage);
   if (not fPassive) and (fForm <> nil) and (fProvider <> nil) and lIsMouseMoveMessage then
   begin
-    MaybeRaiseProviderHover(MouseMoveClientLParam(fForm, aMessage));
+    lMouseParam := MouseMoveClientLParam(fForm, aMessage);
+    lScreenPoint := MouseScreenPoint(fForm, lMouseParam);
+    if HoverLeafCacheMatches(fLastHoverAnnouncement, fHasLastHoverLeafBounds, fLastHoverLeafBounds, lScreenPoint) then
+    begin
+      Exit;
+    end;
+
+    lClientsAreListening := TAccessibilityProviderEvents.ClientsAreListening(fApi);
+    if not lClientsAreListening then
+    begin
+      ClearHoverCache(fLastHoverAnnouncement, fHasLastHoverLeafBounds);
+      Exit;
+    end;
+
+    TAccessibilityProviderEvents.BeginEventBatchWithKnownClientState(lClientsAreListening);
+    try
+      MaybeRaiseProviderHover(lMouseParam, True, lClientsAreListening);
+    finally
+      TAccessibilityProviderEvents.EndEventBatch;
+    end;
   end;
 end;
 
@@ -1356,15 +1893,23 @@ begin
   fApi := aApi;
   fControl := aControl;
   fProvider := aProvider;
+  fProviderIsGrid := ProviderIsGrid(fProvider);
   fRootProvider := aRootProvider;
   fPreserveNativeWindowAccessibility := aPreserveNativeWindowAccessibility;
   fOriginalWindowProc := aControl.WindowProc;
   InitializeGridCellTracking;
   InitializeListBoxItemTracking;
+  if (fControl is TCustomListBox) and fControl.HandleAllocated then
+  begin
+    ProviderPublishesControlNativeWindowHandle;
+  end;
   fControl.FreeNotification(Self);
   fControl.WindowProc := WindowProc;
-  TAccessibilityDiagnostics.Log(Format('Installed child hook control=%s hwnd=%d',
-    [ControlDescription(aControl), aControl.Handle]));
+  if TAccessibilityDiagnostics.Enabled then
+  begin
+    TAccessibilityDiagnostics.Log(Format('Installed child hook control=%s hwnd=%d',
+      [ControlDescription(aControl), aControl.Handle]));
+  end;
 end;
 
 destructor TAccessibilityControlWindowHook.Destroy;
@@ -1379,6 +1924,7 @@ end;
 
 procedure TAccessibilityControlWindowHook.Detach;
 begin
+  ClearHoverCache(fLastHoverAnnouncement, fHasLastHoverLeafBounds);
   if fControl <> nil then
   begin
     if SameWndMethod(fControl.WindowProc, WindowProc) then
@@ -1397,6 +1943,11 @@ var
   lRow: Integer;
 begin
   Result := False;
+  if fControl is TCustomListBox then
+  begin
+    TAccessibilityDiagnostics.RecordListBoxGridFocusProbe;
+  end;
+
   if (fProvider = nil) or not TryGetGridCell(fControl, fProvider, lCol, lRow) then
   begin
     Exit;
@@ -1415,7 +1966,7 @@ end;
 
 procedure TAccessibilityControlWindowHook.InitializeGridCellTracking;
 begin
-  fHasLastGridCell := (fProvider <> nil) and TryGetGridCell(fControl, fProvider, fLastGridCol, fLastGridRow);
+  fHasLastGridCell := fProviderIsGrid and TryGetGridCell(fControl, fProvider, fLastGridCol, fLastGridRow);
 end;
 
 procedure TAccessibilityControlWindowHook.InitializeListBoxItemTracking;
@@ -1440,6 +1991,7 @@ begin
     Exit;
   end;
 
+  TAccessibilityDiagnostics.RecordListBoxItemIndexProbe;
   lItemIndex := TCustomListBox(fControl).ItemIndex;
   if fHasLastListBoxIndex and (fLastListBoxIndex = lItemIndex) then
   begin
@@ -1449,6 +2001,52 @@ begin
   fLastListBoxIndex := lItemIndex;
   fHasLastListBoxIndex := True;
   Result := lItemIndex >= 0;
+end;
+
+function TAccessibilityControlWindowHook.NativeListBoxShouldHandleGetObject(const aMessage: TMessage): Boolean;
+begin
+  Result := (not fPassive) and (fControl is TCustomListBox) and (fProvider <> nil) and
+    (aMessage.Msg = WM_GETOBJECT) and not ProviderPublishesControlNativeWindowHandle;
+end;
+
+function TAccessibilityControlWindowHook.NativeListBoxShouldHandleNavigationMessage(
+  const aMessage: TMessage): Boolean;
+begin
+  Result := (not fPassive) and (fControl is TCustomListBox) and (fProvider <> nil) and
+    (aMessage.Msg = WM_KEYDOWN) and IsListBoxNavigationKey(aMessage.WParam) and
+    not ProviderPublishesControlNativeWindowHandle;
+end;
+
+function TAccessibilityControlWindowHook.NativeFocusUsesOnlyNativeStateEvents: Boolean;
+begin
+  Result := fPreserveNativeWindowAccessibility and (fProvider <> nil) and ProviderUsesPlatformStateEvents(fProvider) and
+    not ProviderNeedsSupplementalRadioAnnouncements(fProvider);
+end;
+
+function TAccessibilityControlWindowHook.ProviderPublishesControlNativeWindowHandle: Boolean;
+var
+  lHwnd: HWND;
+begin
+  Result := False;
+  if (fControl = nil) or (fProvider = nil) then
+  begin
+    Exit;
+  end;
+
+  lHwnd := fControl.Handle;
+  if fProviderNativeWindowHandleCheckValid and (fProviderNativeWindowHandleCheckHwnd = lHwnd) then
+  begin
+    Exit(fProviderPublishesNativeWindowHandle);
+  end;
+
+  if fControl is TCustomListBox then
+  begin
+    TAccessibilityDiagnostics.RecordListBoxNativeHandlePublicationCheck;
+  end;
+  fProviderPublishesNativeWindowHandle := ProviderPublishesNativeWindowHandleForHwnd(fProvider, lHwnd);
+  fProviderNativeWindowHandleCheckHwnd := lHwnd;
+  fProviderNativeWindowHandleCheckValid := True;
+  Result := fProviderPublishesNativeWindowHandle;
 end;
 
 procedure TAccessibilityControlWindowHook.MaybeRaiseGridFocusChanged;
@@ -1467,15 +2065,49 @@ begin
   end;
 end;
 
-procedure TAccessibilityControlWindowHook.MaybeRaiseProviderHover(aLParam: LPARAM);
+procedure TAccessibilityControlWindowHook.MaybeRaiseProviderHover(aLParam: LPARAM; aClientsKnown: Boolean;
+  aClientsListening: Boolean);
 var
+  lClientsKnown: Boolean;
+  lClientsListening: Boolean;
+  lHasLeafBounds: Boolean;
   lHitProvider: IRawElementProviderSimple;
+  lLeafBounds: UiaRect;
   lName: string;
+  lScreenPoint: TPoint;
 begin
-  if not TryResolveHoverProvider(fControl, fProvider, aLParam, lHitProvider, lName) then
+  lScreenPoint := MouseScreenPoint(fControl, aLParam);
+  if HoverLeafCacheMatches(fLastHoverAnnouncement, fHasLastHoverLeafBounds, fLastHoverLeafBounds, lScreenPoint) then
   begin
-    fLastHoverAnnouncement := '';
     Exit;
+  end;
+
+  lClientsKnown := aClientsKnown;
+  lClientsListening := aClientsListening;
+  if not lClientsKnown and not fPreserveNativeWindowAccessibility then
+  begin
+    lClientsKnown := True;
+    lClientsListening := TAccessibilityProviderEvents.ClientsAreListening(fApi);
+  end;
+  if (not fPreserveNativeWindowAccessibility) and not lClientsListening then
+  begin
+    ClearHoverCache(fLastHoverAnnouncement, fHasLastHoverLeafBounds);
+    Exit;
+  end;
+
+  if not TryResolveHoverProvider(fControl, fProvider, lScreenPoint, lHitProvider, lName, lHasLeafBounds,
+    lLeafBounds) then
+  begin
+    ClearHoverCache(fLastHoverAnnouncement, fHasLastHoverLeafBounds);
+    Exit;
+  end;
+
+  if lHasLeafBounds then
+  begin
+    fLastHoverLeafBounds := lLeafBounds;
+    fHasLastHoverLeafBounds := True;
+  end else begin
+    UpdateHoverLeafCache(lHitProvider, fHasLastHoverLeafBounds, fLastHoverLeafBounds);
   end;
 
   if SameText(fLastHoverAnnouncement, lName) then
@@ -1486,12 +2118,17 @@ begin
   fLastHoverAnnouncement := lName;
   if fPreserveNativeWindowAccessibility then
   begin
-    if ProviderUsesPlatformStateEvents(lHitProvider) then
+    if not lClientsKnown then
+    begin
+      lClientsListening := TAccessibilityProviderEvents.ClientsAreListening(fApi);
+    end;
+
+    if lClientsListening and ProviderUsesPlatformStateEvents(lHitProvider) then
     begin
       TAccessibilityProviderEvents.RaiseAutomationEvent(lHitProvider, UIA_AutomationFocusChangedEventId, fApi);
     end;
     NotifyProviderNativeFocusAndState(lHitProvider, fControl.Handle);
-    if ProviderNeedsSupplementalRadioAnnouncements(lHitProvider) then
+    if lClientsListening and ProviderNeedsSupplementalRadioAnnouncements(lHitProvider) then
     begin
       RaiseProviderAnnouncement(lHitProvider, 'vcl-hover', fApi);
     end;
@@ -1523,13 +2160,18 @@ begin
     Exit;
   end;
 
-  TAccessibilityProviderEvents.RaiseAutomationPropertyChanged(lProvider, UIA_SelectionItemIsSelectedPropertyId,
-    False, True, fApi);
-  TAccessibilityProviderEvents.RaiseAutomationEvent(lProvider, UIA_SelectionItem_ElementSelectedEventId, fApi);
-  TAccessibilityProviderEvents.RaiseAutomationEvent(lProvider, UIA_AutomationFocusChangedEventId, fApi);
-  NotifyAccessibilityWinEvent(EVENT_OBJECT_FOCUS, aSelectedRadio.Handle, cMsaaObjIdClient, CHILDID_SELF);
-  NotifyAccessibilityWinEvent(EVENT_OBJECT_STATECHANGE, aSelectedRadio.Handle, cMsaaObjIdClient, CHILDID_SELF);
-  RaiseProviderAnnouncement(lProvider, 'vcl-radio-navigation', fApi);
+  TAccessibilityProviderEvents.BeginEventBatch;
+  try
+    TAccessibilityProviderEvents.RaiseAutomationPropertyChanged(lProvider, UIA_SelectionItemIsSelectedPropertyId,
+      False, True, fApi);
+    TAccessibilityProviderEvents.RaiseAutomationEvent(lProvider, UIA_SelectionItem_ElementSelectedEventId, fApi);
+    TAccessibilityProviderEvents.RaiseAutomationEvent(lProvider, UIA_AutomationFocusChangedEventId, fApi);
+    NotifyAccessibilityWinEvent(EVENT_OBJECT_FOCUS, aSelectedRadio.Handle, cMsaaObjIdClient, CHILDID_SELF);
+    NotifyAccessibilityWinEvent(EVENT_OBJECT_STATECHANGE, aSelectedRadio.Handle, cMsaaObjIdClient, CHILDID_SELF);
+    RaiseProviderAnnouncement(lProvider, 'vcl-radio-navigation', fApi);
+  finally
+    TAccessibilityProviderEvents.EndEventBatch;
+  end;
 end;
 
 function TAccessibilityControlWindowHook.TryCurrentSelectedGroupedRadio(out aRadio: TRadioButton): Boolean;
@@ -1579,6 +2221,7 @@ begin
   inherited Notification(aComponent, aOperation);
   if (aOperation = opRemove) and (aComponent = fControl) then
   begin
+    ClearHoverCache(fLastHoverAnnouncement, fHasLastHoverLeafBounds);
     if SameWndMethod(fControl.WindowProc, WindowProc) then
     begin
       fControl.WindowProc := fOriginalWindowProc;
@@ -1586,6 +2229,7 @@ begin
 
     fControl := nil;
     fProvider := nil;
+    fProviderIsGrid := False;
     fRootProvider := nil;
   end;
 end;
@@ -1593,8 +2237,10 @@ end;
 function TAccessibilityControlWindowHook.Passivate: Boolean;
 begin
   Result := False;
+  ClearHoverCache(fLastHoverAnnouncement, fHasLastHoverLeafBounds);
   fApi := nil;
   fProvider := nil;
+  fProviderIsGrid := False;
   fRootProvider := nil;
   if fControl = nil then
   begin
@@ -1612,9 +2258,11 @@ begin
       gRetainedControlHooks := TList<TAccessibilityControlWindowHook>.Create;
     end;
 
-    if not gRetainedControlHooks.Contains(Self) then
+    TAccessibilityDiagnostics.RecordManagerRetainedHookPassivation(0);
+    if not fRetained then
     begin
       gRetainedControlHooks.Add(Self);
+      fRetained := True;
     end;
   end;
 end;
@@ -1629,6 +2277,16 @@ begin
   end;
 
   if ProviderUsesPlatformStateEvents(fProvider) and not ProviderNeedsSupplementalRadioAnnouncements(fProvider) then
+  begin
+    Exit;
+  end;
+
+  if not TAccessibilityProviderEvents.ClientsAreListening(fApi) then
+  begin
+    Exit;
+  end;
+
+  if fLastFocusAnnouncement <> '' then
   begin
     Exit;
   end;
@@ -1677,48 +2335,86 @@ end;
 
 procedure TAccessibilityControlWindowHook.RaiseGridFocusChanged;
 var
+  lFocusedItems: IAccessibilityFocusedItemProvider;
   lFocus: IRawElementProviderFragment;
   lFocusName: string;
   lFocusProvider: IRawElementProviderSimple;
   lRoot: IRawElementProviderFragmentRoot;
 begin
-  if (fProvider = nil) or not ProviderIsGrid(fProvider) or not Supports(fProvider, IRawElementProviderFragmentRoot,
-    lRoot) then
+  if (fProvider = nil) or not ProviderIsGrid(fProvider) then
   begin
     Exit;
   end;
 
-  if (lRoot.GetFocus(lFocus) <> S_OK) or (lFocus = nil) then
+  if not TAccessibilityProviderEvents.ClientsAreListening(fApi) then
   begin
     Exit;
   end;
 
-  if not Supports(lFocus, IRawElementProviderSimple, lFocusProvider) then
-  begin
-    Exit;
-  end;
+  TAccessibilityProviderEvents.BeginEventBatch;
+  try
+    if Supports(fProvider, IAccessibilityFocusedItemProvider, lFocusedItems) and
+      lFocusedItems.TryGetFocusedItem(lFocusProvider, lFocusName) then
+    begin
+      TAccessibilityProviderEvents.RaiseAutomationEvent(lFocusProvider, UIA_AutomationFocusChangedEventId, fApi);
+      TAccessibilityProviderEvents.RaiseAutomationEvent(lFocusProvider, UIA_SelectionItem_ElementSelectedEventId,
+        fApi);
+      if lFocusName <> '' then
+      begin
+        TAccessibilityProviderEvents.RaiseNotification(lFocusProvider, NotificationKind_Other,
+          NotificationProcessing_MostRecent, lFocusName, 'vcl-grid-cell-focus', fApi);
+      end;
+      Exit;
+    end;
 
-  TAccessibilityProviderEvents.RaiseAutomationEvent(lFocusProvider, UIA_AutomationFocusChangedEventId, fApi);
-  TAccessibilityProviderEvents.RaiseAutomationEvent(lFocusProvider, UIA_SelectionItem_ElementSelectedEventId, fApi);
-  lFocusName := ProviderName(lFocusProvider);
-  if lFocusName <> '' then
-  begin
-    TAccessibilityProviderEvents.RaiseNotification(lFocusProvider, NotificationKind_Other,
-      NotificationProcessing_MostRecent, lFocusName, 'vcl-grid-cell-focus', fApi);
+    if not Supports(fProvider, IRawElementProviderFragmentRoot, lRoot) then
+    begin
+      Exit;
+    end;
+
+    if (lRoot.GetFocus(lFocus) <> S_OK) or (lFocus = nil) then
+    begin
+      Exit;
+    end;
+
+    if not Supports(lFocus, IRawElementProviderSimple, lFocusProvider) then
+    begin
+      Exit;
+    end;
+
+    TAccessibilityProviderEvents.RaiseAutomationEvent(lFocusProvider, UIA_AutomationFocusChangedEventId, fApi);
+    TAccessibilityProviderEvents.RaiseAutomationEvent(lFocusProvider, UIA_SelectionItem_ElementSelectedEventId, fApi);
+    lFocusName := ProviderName(lFocusProvider);
+    if lFocusName <> '' then
+    begin
+      TAccessibilityProviderEvents.RaiseNotification(lFocusProvider, NotificationKind_Other,
+        NotificationProcessing_MostRecent, lFocusName, 'vcl-grid-cell-focus', fApi);
+    end;
+  finally
+    TAccessibilityProviderEvents.EndEventBatch;
   end;
 end;
 
 procedure TAccessibilityControlWindowHook.RaiseListBoxFocusChanged;
 var
-  lFocus: IRawElementProviderFragment;
-  lFocusProvider: IRawElementProviderSimple;
+  lFocusName: string;
+  lListBox: TCustomListBox;
   lMetricsEnabled: Boolean;
   lRecordedMovement: Boolean;
-  lRoot: IRawElementProviderFragmentRoot;
   lStopwatch: TStopwatch;
 begin
-  if (fProvider = nil) or not (fControl is TCustomListBox) or
-    not Supports(fProvider, IRawElementProviderFragmentRoot, lRoot) then
+  if (fProvider = nil) or not (fControl is TCustomListBox) then
+  begin
+    Exit;
+  end;
+
+  if not TAccessibilityProviderEvents.ClientsAreListening(fApi) then
+  begin
+    Exit;
+  end;
+
+  lListBox := TCustomListBox(fControl);
+  if not ProviderPublishesControlNativeWindowHandle then
   begin
     Exit;
   end;
@@ -1730,21 +2426,18 @@ begin
     lStopwatch := TStopwatch.StartNew;
   end;
   try
-    if (lRoot.GetFocus(lFocus) <> S_OK) or (lFocus = nil) then
-    begin
-      Exit;
-    end;
-
-    if not Supports(lFocus, IRawElementProviderSimple, lFocusProvider) then
+    lFocusName := ListBoxCurrentItemText(lListBox);
+    if lFocusName = '' then
     begin
       Exit;
     end;
 
     lRecordedMovement := True;
-    TAccessibilityDiagnostics.RecordListBoxAutomationEvent(UIA_AutomationFocusChangedEventId);
-    TAccessibilityProviderEvents.RaiseAutomationEvent(lFocusProvider, UIA_AutomationFocusChangedEventId, fApi);
-    TAccessibilityDiagnostics.RecordListBoxAutomationEvent(UIA_SelectionItem_ElementSelectedEventId);
-    TAccessibilityProviderEvents.RaiseAutomationEvent(lFocusProvider, UIA_SelectionItem_ElementSelectedEventId, fApi);
+    if (lFocusName <> '') and TAccessibilityProviderEvents.RaiseNotification(fProvider, NotificationKind_Other,
+      NotificationProcessing_ImportantMostRecent, lFocusName, 'vcl-listbox-focus', fApi) then
+    begin
+      TAccessibilityDiagnostics.RecordListBoxNotification(Length(lFocusName));
+    end;
   finally
     if lMetricsEnabled and lRecordedMovement then
     begin
@@ -1766,6 +2459,7 @@ begin
   begin
     lHook := gRetainedControlHooks[Pred(gRetainedControlHooks.Count)];
     gRetainedControlHooks.Delete(Pred(gRetainedControlHooks.Count));
+    lHook.fRetained := False;
     lHook.fPassive := False;
     lHook.Detach;
     lHook.Free;
@@ -1775,6 +2469,10 @@ end;
 procedure TAccessibilityControlWindowHook.WindowProc(var aMessage: TMessage);
 var
   lHasOldProviderState: Boolean;
+  lHasNonHoverPostMessageWork: Boolean;
+  lHasPostMessageWork: Boolean;
+  lHoverClientsKnown: Boolean;
+  lHoverClientsListening: Boolean;
   lIsBlurMessage: Boolean;
   lIsFocusMessage: Boolean;
   lIsGridNavigationMessage: Boolean;
@@ -1783,18 +2481,56 @@ var
   lIsOuterProviderStateMessage: Boolean;
   lIsProviderStateMessage: Boolean;
   lIsRadioNavigationMessage: Boolean;
+  lIsUiaOnlyPostMessageWork: Boolean;
+  lRadioNavigationClientsKnown: Boolean;
+  lRadioNavigationClientsListening: Boolean;
+  lUiaOnlyClientsKnown: Boolean;
+  lUiaOnlyClientsListening: Boolean;
+  lMouseParam: LPARAM;
   lNewProviderState: TProviderStateSnapshot;
   lOldProviderState: TProviderStateSnapshot;
   lOldSelectedRadio: TRadioButton;
   lResult: Winapi.Windows.LRESULT;
+  lScreenPoint: TPoint;
 begin
+  if NativeListBoxShouldHandleGetObject(aMessage) then
+  begin
+    if TAccessibilityDiagnostics.Enabled then
+    begin
+      TAccessibilityDiagnostics.Log(Format(
+        'Child WM_GETOBJECT passed to native listbox control=%s hwnd=%d; native handle not published',
+        [ControlDescription(fControl), fControl.Handle]));
+    end;
+    fOriginalWindowProc(aMessage);
+    Exit;
+  end;
+
+  if NativeListBoxShouldHandleNavigationMessage(aMessage) then
+  begin
+    fOriginalWindowProc(aMessage);
+    Exit;
+  end;
+
   if (not fPreserveNativeWindowAccessibility) and (not fPassive) and (fControl <> nil) and (fProvider <> nil) and
+    (aMessage.Msg = WM_GETOBJECT) and (aMessage.LParam = LPARAM(UiaRootObjectId)) and
+    not (fControl is TPageControl) and not ProviderPublishesControlNativeWindowHandle then
+  begin
+    if TAccessibilityDiagnostics.Enabled then
+    begin
+      TAccessibilityDiagnostics.Log(Format(
+        'Child WM_GETOBJECT skipped framework provider control=%s hwnd=%d; native handle not published',
+        [ControlDescription(fControl), fControl.Handle]));
+    end;
+  end else if (not fPreserveNativeWindowAccessibility) and (not fPassive) and (fControl <> nil) and (fProvider <> nil) and
     (aMessage.Msg = WM_GETOBJECT) and
     TAccessibilityProviderWindowMessages.TryHandleGetObject(fControl.Handle, aMessage.WParam, aMessage.LParam,
     fProvider, fApi, lResult) then
   begin
-    TAccessibilityDiagnostics.Log(Format('Child WM_GETOBJECT handled control=%s hwnd=%d lParam=%d',
-      [ControlDescription(fControl), fControl.Handle, aMessage.LParam]));
+    if TAccessibilityDiagnostics.Enabled then
+    begin
+      TAccessibilityDiagnostics.Log(Format('Child WM_GETOBJECT handled control=%s hwnd=%d lParam=%d',
+        [ControlDescription(fControl), fControl.Handle, aMessage.LParam]));
+    end;
     aMessage.Result := lResult;
     Exit;
   end;
@@ -1803,27 +2539,54 @@ begin
     (aMessage.Msg = WM_GETOBJECT) and
     TAccessibilityMsaaBridge.TryHandleGetObject(aMessage.WParam, aMessage.LParam, fProvider, lResult) then
   begin
-    TAccessibilityDiagnostics.Log(Format('Child MSAA WM_GETOBJECT handled control=%s hwnd=%d lParam=%d',
-      [ControlDescription(fControl), fControl.Handle, aMessage.LParam]));
+    if TAccessibilityDiagnostics.Enabled then
+    begin
+      TAccessibilityDiagnostics.Log(Format('Child MSAA WM_GETOBJECT handled control=%s hwnd=%d lParam=%d',
+        [ControlDescription(fControl), fControl.Handle, aMessage.LParam]));
+    end;
     aMessage.Result := lResult;
     Exit;
   end;
 
   lIsBlurMessage := aMessage.Msg = CM_EXIT;
   lIsFocusMessage := (aMessage.Msg = CM_ENTER) or (aMessage.Msg = WM_SETFOCUS);
-  lIsGridNavigationMessage := (aMessage.Msg = WM_KEYDOWN) and IsGridNavigationKey(aMessage.WParam);
+  lIsGridNavigationMessage := fProviderIsGrid and (aMessage.Msg = WM_KEYDOWN) and
+    IsGridNavigationKey(aMessage.WParam);
   lIsListBoxSelectionMessage := (fControl is TCustomListBox) and
     (((aMessage.Msg = WM_KEYDOWN) and IsListBoxNavigationKey(aMessage.WParam)) or
     (aMessage.Msg = WM_LBUTTONUP) or (aMessage.Msg = CM_CHANGED));
+  if lIsListBoxSelectionMessage then
+  begin
+    lIsListBoxSelectionMessage := ProviderPublishesControlNativeWindowHandle;
+  end;
+  lIsRadioNavigationMessage := RadioNavigationMessageMayChangeSelection(fControl, aMessage);
+  lRadioNavigationClientsKnown := False;
+  lRadioNavigationClientsListening := False;
+  lUiaOnlyClientsKnown := False;
+  lUiaOnlyClientsListening := False;
+  if lIsRadioNavigationMessage and (not fPassive) and (fControl <> nil) and (fProvider <> nil) then
+  begin
+    lRadioNavigationClientsKnown := True;
+    lRadioNavigationClientsListening := TAccessibilityProviderEvents.ClientsAreListening(fApi);
+  end;
   lIsMouseMoveMessage := (aMessage.Msg = WM_MOUSEMOVE) or (aMessage.Msg = WM_NCMOUSEMOVE);
-  lIsProviderStateMessage := (not fPreserveNativeWindowAccessibility) and ProviderStateMessageMayChangeState(aMessage);
+  lIsProviderStateMessage := (not fPreserveNativeWindowAccessibility) and (not fProviderIsGrid) and
+    ProviderStateMessageMayChangeState(aMessage) and
+    ((not (fControl is TCustomListBox)) or ProviderPublishesControlNativeWindowHandle) and
+    (not (lIsRadioNavigationMessage and lRadioNavigationClientsKnown and not lRadioNavigationClientsListening));
   lIsOuterProviderStateMessage := lIsProviderStateMessage and (fProviderStateMessageDepth = 0);
   lHasOldProviderState := lIsOuterProviderStateMessage and TryCaptureProviderState(fProvider, lOldProviderState);
-  lIsRadioNavigationMessage := RadioNavigationMessageMayChangeSelection(fControl, aMessage);
-  if not lIsRadioNavigationMessage or not TryCurrentSelectedGroupedRadio(lOldSelectedRadio) then
+  if (not lIsRadioNavigationMessage) or (not lRadioNavigationClientsListening) or
+    (not TryCurrentSelectedGroupedRadio(lOldSelectedRadio)) then
   begin
     lOldSelectedRadio := nil;
   end;
+  lHasNonHoverPostMessageWork := lIsOuterProviderStateMessage or lIsBlurMessage or lIsFocusMessage or
+    lIsGridNavigationMessage or (fProviderIsGrid and (aMessage.Msg = CM_CHANGED)) or lIsListBoxSelectionMessage or
+    lIsRadioNavigationMessage;
+  lHasPostMessageWork := lHasNonHoverPostMessageWork or lIsMouseMoveMessage;
+  lHoverClientsKnown := False;
+  lHoverClientsListening := False;
   if lIsProviderStateMessage then
   begin
     Inc(fProviderStateMessageDepth);
@@ -1836,46 +2599,125 @@ begin
       Dec(fProviderStateMessageDepth);
     end;
   end;
-  if (not fPassive) and (fControl <> nil) and (fProvider <> nil) then
+  if lIsBlurMessage or lIsFocusMessage or lIsOuterProviderStateMessage or lIsGridNavigationMessage or
+    (fProviderIsGrid and (aMessage.Msg = CM_CHANGED)) or lIsListBoxSelectionMessage or lIsRadioNavigationMessage then
   begin
-    if lIsOuterProviderStateMessage and lHasOldProviderState and TryCaptureProviderState(fProvider, lNewProviderState) and
-      not ProviderStatesEqual(lOldProviderState, lNewProviderState) and
-      (not fHasLastRaisedProviderState or not ProviderStatesEqual(fLastRaisedProviderState, lNewProviderState)) then
+    ClearHoverCache(fLastHoverAnnouncement, fHasLastHoverLeafBounds);
+  end;
+  if (not fPassive) and (fControl <> nil) and (fProvider <> nil) and lHasPostMessageWork then
+  begin
+    if lIsFocusMessage and NativeFocusUsesOnlyNativeStateEvents then
     begin
-      RaiseProviderStateChanged(fProvider, lOldProviderState, lNewProviderState, fApi);
-      fLastRaisedProviderState := lNewProviderState;
-      fHasLastRaisedProviderState := True;
+      RaiseFocusChanged;
+      Exit;
     end;
 
     if lIsMouseMoveMessage then
     begin
-      MaybeRaiseProviderHover(MouseMoveClientLParam(fControl, aMessage));
+      lMouseParam := MouseMoveClientLParam(fControl, aMessage);
+    end else begin
+      lMouseParam := 0;
     end;
 
-    if lIsBlurMessage then
+    if lIsMouseMoveMessage and (not lHasNonHoverPostMessageWork) then
     begin
-      fLastFocusAnnouncement := '';
+      lScreenPoint := MouseScreenPoint(fControl, lMouseParam);
+      if HoverLeafCacheMatches(fLastHoverAnnouncement, fHasLastHoverLeafBounds, fLastHoverLeafBounds, lScreenPoint) then
+      begin
+        Exit;
+      end;
+
+      lHoverClientsKnown := True;
+      lHoverClientsListening := TAccessibilityProviderEvents.ClientsAreListening(fApi);
+      if not lHoverClientsListening then
+      begin
+        if fPreserveNativeWindowAccessibility then
+        begin
+          MaybeRaiseProviderHover(lMouseParam, lHoverClientsKnown, lHoverClientsListening);
+        end else begin
+          ClearHoverCache(fLastHoverAnnouncement, fHasLastHoverLeafBounds);
+        end;
+        Exit;
+      end;
     end;
 
-    if lIsFocusMessage then
+    lIsUiaOnlyPostMessageWork := (not lIsOuterProviderStateMessage) and (not lIsBlurMessage) and
+      (not lIsFocusMessage) and
+      (lIsGridNavigationMessage or (fProviderIsGrid and (aMessage.Msg = CM_CHANGED)) or
+      lIsListBoxSelectionMessage or lIsRadioNavigationMessage);
+    if lIsUiaOnlyPostMessageWork then
     begin
-      RaiseFocusChanged;
-      NotifyFocusHint;
+      if lRadioNavigationClientsKnown then
+      begin
+        if not lRadioNavigationClientsListening then
+        begin
+          Exit;
+        end;
+      end else begin
+        lUiaOnlyClientsKnown := True;
+        lUiaOnlyClientsListening := TAccessibilityProviderEvents.ClientsAreListening(fApi);
+        if not lUiaOnlyClientsListening then
+        begin
+          Exit;
+        end;
+      end;
     end;
 
-    if lIsGridNavigationMessage or (aMessage.Msg = CM_CHANGED) then
+    if lHoverClientsKnown then
     begin
-      MaybeRaiseGridFocusChanged;
+      TAccessibilityProviderEvents.BeginEventBatchWithKnownClientState(lHoverClientsListening);
+    end else if lRadioNavigationClientsKnown then
+    begin
+      TAccessibilityProviderEvents.BeginEventBatchWithKnownClientState(lRadioNavigationClientsListening);
+    end else if lUiaOnlyClientsKnown then
+    begin
+      TAccessibilityProviderEvents.BeginEventBatchWithKnownClientState(lUiaOnlyClientsListening);
+    end else begin
+      TAccessibilityProviderEvents.BeginEventBatch;
     end;
+    try
+      if lIsOuterProviderStateMessage and lHasOldProviderState and
+        TryCaptureProviderState(fProvider, lNewProviderState) and
+        not ProviderStatesEqual(lOldProviderState, lNewProviderState) and
+        (not fHasLastRaisedProviderState or not ProviderStatesEqual(fLastRaisedProviderState, lNewProviderState)) then
+      begin
+        RaiseProviderStateChanged(fProvider, lOldProviderState, lNewProviderState, fApi);
+        fLastRaisedProviderState := lNewProviderState;
+        fHasLastRaisedProviderState := True;
+      end;
 
-    if lIsListBoxSelectionMessage then
-    begin
-      MaybeRaiseListBoxFocusChanged;
-    end;
+      if lIsMouseMoveMessage then
+      begin
+        MaybeRaiseProviderHover(lMouseParam, lHoverClientsKnown, lHoverClientsListening);
+      end;
 
-    if lIsRadioNavigationMessage then
-    begin
-      MaybeRaiseRadioNavigationChanged(lOldSelectedRadio);
+      if lIsBlurMessage then
+      begin
+        fLastFocusAnnouncement := '';
+      end;
+
+      if lIsFocusMessage then
+      begin
+        RaiseFocusChanged;
+        NotifyFocusHint;
+      end;
+
+      if lIsGridNavigationMessage or (fProviderIsGrid and (aMessage.Msg = CM_CHANGED)) then
+      begin
+        MaybeRaiseGridFocusChanged;
+      end;
+
+      if lIsListBoxSelectionMessage then
+      begin
+        MaybeRaiseListBoxFocusChanged;
+      end;
+
+      if lIsRadioNavigationMessage then
+      begin
+        MaybeRaiseRadioNavigationChanged(lOldSelectedRadio);
+      end;
+    finally
+      TAccessibilityProviderEvents.EndEventBatch;
     end;
   end;
 end;
@@ -2232,6 +3074,20 @@ end;
 class procedure TAccessibilityManagerInternals.SetWinEventSink(const aSink: IAccessibilityWinEventSink);
 begin
   gWinEventSink := aSink;
+end;
+
+class function TAccessibilityManagerInternals.TryGetInstalledFormProvider(aForm: TCustomForm;
+  out aProvider: IRawElementProviderSimple): Boolean;
+var
+  lMarker: TAccessibilityInstalledFormMarker;
+begin
+  aProvider := nil;
+  lMarker := TAccessibilityInstalledFormMarker.FindOn(aForm);
+  Result := (lMarker <> nil) and (lMarker.fHook <> nil) and (lMarker.fHook.fProvider <> nil);
+  if Result then
+  begin
+    aProvider := lMarker.fHook.fProvider.RawElementProvider;
+  end;
 end;
 
 initialization

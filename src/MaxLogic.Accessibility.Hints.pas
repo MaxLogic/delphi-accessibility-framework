@@ -22,10 +22,13 @@ type
     fProvider: IAccessibilityProviderNode;
     fPendingBalloonFollowUpHint: string;
     fReleaseAfterDispatch: Boolean;
+    fRetained: Boolean;
     procedure ApplicationHint(aSender: TObject);
     procedure ApplicationShowHint(var aHintStr: string; var aCanShow: Boolean;
       var aHintInfo: Vcl.Controls.THintInfo);
     procedure BeginDispatch;
+    function CanRaiseNotification: Boolean;
+    procedure ClearPendingBalloonFollowUp;
     procedure Detach;
     procedure DisconnectProvider;
     procedure EndDispatch;
@@ -33,9 +36,10 @@ type
     function NotifyBalloonHintCore(const aTitle: string; const aDescription: string;
       const aFollowUpHint: string): Boolean;
     procedure NotifyControlCustomHint(aControl: TControl);
-    function NotifyText(const aText: string; const aActivityId: WideString): Boolean;
+    function NotifyPreparedText(const aText: string; const aActivityId: WideString): Boolean;
     procedure ReleaseObservers;
     function ShouldSuppressVisibleHint(const aHint: string; const aHintInfo: Vcl.Controls.THintInfo): Boolean;
+    function TryBeginNotificationBatch: Boolean;
   public
     constructor Create(aApplication: TApplication; const aProvider: IAccessibilityProviderNode;
       const aApi: IAccessibilityUiaApi); reintroduce;
@@ -51,7 +55,7 @@ implementation
 
 uses
   System.SysUtils, Winapi.Messages, Vcl.StdActns,
-  MaxLogic.Accessibility.Text, MaxLogic.Accessibility.UIAutomationCore;
+  MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.Text, MaxLogic.Accessibility.UIAutomationCore;
 
 type
   TAccessibilityHintFormObserver = class;
@@ -64,6 +68,7 @@ type
     fOriginalWindowProc: TWndMethod;
     fPassive: Boolean;
     fReleaseAfterDispatch: Boolean;
+    fRetained: Boolean;
     procedure BeginDispatch;
     procedure Detach;
     procedure EndDispatch;
@@ -112,36 +117,37 @@ begin
   Result := (TMethod(aLeft).Code = TMethod(aRight).Code) and (TMethod(aLeft).Data = TMethod(aRight).Data);
 end;
 
+function CleanHintText(const aText: string): string;
+begin
+  TAccessibilityDiagnostics.RecordHintTextPreparation;
+  Result := TAccessibilityText.Clean(aText);
+end;
+
 procedure SplitVisibleHintParts(const aHint: string; out aShortHint: string; out aLongHint: string);
 begin
-  aShortHint := TAccessibilityText.Clean(GetShortHint(aHint));
-  aLongHint := TAccessibilityText.Clean(GetLongHint(aHint));
+  aShortHint := CleanHintText(GetShortHint(aHint));
+  aLongHint := CleanHintText(GetLongHint(aHint));
 end;
 
 function HintDisplayText(const aHint: string): string;
 begin
-  Result := TAccessibilityText.Clean(GetLongHint(aHint));
+  Result := CleanHintText(GetLongHint(aHint));
   if Result = '' then
   begin
-    Result := TAccessibilityText.Clean(GetShortHint(aHint));
+    Result := CleanHintText(GetShortHint(aHint));
   end;
 end;
 
-function BalloonDisplayText(const aTitle: string; const aDescription: string): string;
-var
-  lDescription: string;
-  lTitle: string;
+function PreparedBalloonDisplayText(const aTitle: string; const aDescription: string): string;
 begin
-  lTitle := TAccessibilityText.Clean(aTitle);
-  lDescription := TAccessibilityText.Clean(aDescription);
-  if (lTitle <> '') and (lDescription <> '') then
+  if (aTitle <> '') and (aDescription <> '') then
   begin
-    Result := lTitle + ': ' + lDescription;
-  end else if lTitle <> '' then
+    Result := aTitle + ': ' + aDescription;
+  end else if aTitle <> '' then
   begin
-    Result := lTitle;
+    Result := aTitle;
   end else begin
-    Result := lDescription;
+    Result := aDescription;
   end;
 end;
 
@@ -158,11 +164,11 @@ function StripBalloonImageIndex(const aDescription: string): string;
 var
   lDelimiter: Integer;
 begin
-  Result := TAccessibilityText.Clean(aDescription);
+  Result := CleanHintText(aDescription);
   lDelimiter := Pos('|', Result);
   if lDelimiter > 0 then
   begin
-    Result := TAccessibilityText.Clean(Copy(Result, 1, Pred(lDelimiter)));
+    Result := CleanHintText(Copy(Result, 1, Pred(lDelimiter)));
   end;
 end;
 
@@ -179,6 +185,7 @@ begin
   begin
     lHook := gRetainedHintControlHooks[Pred(gRetainedHintControlHooks.Count)];
     gRetainedHintControlHooks.Delete(Pred(gRetainedHintControlHooks.Count));
+    lHook.fRetained := False;
     lHook.fPassive := False;
     lHook.Detach;
     lHook.Free;
@@ -198,6 +205,7 @@ begin
   begin
     lController := gRetainedHintControllers[Pred(gRetainedHintControllers.Count)];
     gRetainedHintControllers.Delete(Pred(gRetainedHintControllers.Count));
+    lController.fRetained := False;
     lController.fPassive := False;
     lController.Detach;
     lController.Free;
@@ -319,9 +327,10 @@ begin
     gRetainedHintControlHooks := TList<TAccessibilityHintControlHook>.Create;
   end;
 
-  if not gRetainedHintControlHooks.Contains(Self) then
+  if not fRetained then
   begin
     gRetainedHintControlHooks.Add(Self);
+    fRetained := True;
   end;
 end;
 
@@ -517,15 +526,25 @@ begin
       Exit;
     end;
 
-    lCustomHint := CustomHintFor(aHintInfo.HintControl);
-    if lCustomHint <> nil then
+    if not TryBeginNotificationBatch then
     begin
-      NotifyBalloonHint(lCustomHint);
-    end else if ShouldSuppressVisibleHint(aHintStr, aHintInfo) then
-    begin
+      ClearPendingBalloonFollowUp;
       Exit;
-    end else begin
-      NotifyVisibleHint(aHintStr);
+    end;
+
+    try
+      lCustomHint := CustomHintFor(aHintInfo.HintControl);
+      if lCustomHint <> nil then
+      begin
+        NotifyBalloonHint(lCustomHint);
+      end else if ShouldSuppressVisibleHint(aHintStr, aHintInfo) then
+      begin
+        Exit;
+      end else begin
+        NotifyVisibleHint(aHintStr);
+      end;
+    finally
+      TAccessibilityProviderEvents.EndEventBatch;
     end;
   finally
     EndDispatch;
@@ -535,6 +554,17 @@ end;
 procedure TAccessibilityHintController.BeginDispatch;
 begin
   Inc(fDispatchDepth);
+end;
+
+function TAccessibilityHintController.CanRaiseNotification: Boolean;
+begin
+  Result := (fProvider <> nil) and TAccessibilityProviderEvents.ClientsAreListening(fApi);
+end;
+
+procedure TAccessibilityHintController.ClearPendingBalloonFollowUp;
+begin
+  fPendingBalloonFollowUpHint := '';
+  fPendingBalloonFollowUpText := '';
 end;
 
 procedure TAccessibilityHintController.Detach;
@@ -580,6 +610,7 @@ begin
     if gRetainedHintControllers <> nil then
     begin
       gRetainedHintControllers.Remove(Self);
+      fRetained := False;
     end;
 
     Free;
@@ -587,20 +618,20 @@ begin
 end;
 
 procedure TAccessibilityHintController.FireDefaultHintAction;
+var
+  lHintAction: THintAction;
 begin
   if fApplication = nil then
   begin
     Exit;
   end;
 
-  with THintAction.Create(fApplication) do
-  begin
-    Hint := fApplication.Hint;
-    try
-      Execute;
-    finally
-      Free;
-    end;
+  lHintAction := THintAction.Create(fApplication);
+  try
+    lHintAction.Hint := fApplication.Hint;
+    lHintAction.Execute;
+  finally
+    lHintAction.Free;
   end;
 end;
 
@@ -611,22 +642,42 @@ var
   lFollowUpHint: string;
   lTitle: string;
 begin
-  lTitle := TAccessibilityText.Clean(aTitle);
-  lDescription := TAccessibilityText.Clean(aDescription);
-  lFollowUpHint := TAccessibilityText.Clean(aFollowUpHint);
-  Result := NotifyText(BalloonDisplayText(aTitle, aDescription), 'vcl-balloon-hint');
-  if not Result then
+  Result := False;
+  if not TryBeginNotificationBatch then
   begin
+    ClearPendingBalloonFollowUp;
     Exit;
   end;
 
-  if lDescription <> '' then
-  begin
-    fPendingBalloonFollowUpText := lDescription;
-  end else begin
-    fPendingBalloonFollowUpText := lTitle;
+  try
+    lTitle := CleanHintText(aTitle);
+    lDescription := CleanHintText(aDescription);
+    if aFollowUpHint <> '' then
+    begin
+      lFollowUpHint := CleanHintText(aFollowUpHint);
+    end else if lDescription <> '' then
+    begin
+      lFollowUpHint := lDescription;
+    end else begin
+      lFollowUpHint := lTitle;
+    end;
+
+    Result := NotifyPreparedText(PreparedBalloonDisplayText(lTitle, lDescription), 'vcl-balloon-hint');
+    if not Result then
+    begin
+      Exit;
+    end;
+
+    if lDescription <> '' then
+    begin
+      fPendingBalloonFollowUpText := lDescription;
+    end else begin
+      fPendingBalloonFollowUpText := lTitle;
+    end;
+    fPendingBalloonFollowUpHint := lFollowUpHint;
+  finally
+    TAccessibilityProviderEvents.EndEventBatch;
   end;
-  fPendingBalloonFollowUpHint := lFollowUpHint;
 end;
 
 procedure TAccessibilityHintController.NotifyControlCustomHint(aControl: TControl);
@@ -652,35 +703,42 @@ begin
     Exit;
   end;
 
-  lTitle := TAccessibilityText.Clean(GetShortHint(aControl.Hint));
-  if Pos('|', aControl.Hint) <> 0 then
+  if not TryBeginNotificationBatch then
   begin
-    lFollowUpHint := GetLongHint(aControl.Hint);
-    lDescription := StripBalloonImageIndex(lFollowUpHint);
-  end else begin
-    lDescription := '';
-    lFollowUpHint := GetShortHint(aControl.Hint);
+    ClearPendingBalloonFollowUp;
+    Exit;
   end;
 
-  NotifyBalloonHintCore(lTitle, lDescription, lFollowUpHint);
+  try
+    lTitle := GetShortHint(aControl.Hint);
+    if Pos('|', aControl.Hint) <> 0 then
+    begin
+      lFollowUpHint := GetLongHint(aControl.Hint);
+      lDescription := StripBalloonImageIndex(lFollowUpHint);
+    end else begin
+      lDescription := '';
+      lFollowUpHint := lTitle;
+    end;
+
+    NotifyBalloonHintCore(lTitle, lDescription, lFollowUpHint);
+  finally
+    TAccessibilityProviderEvents.EndEventBatch;
+  end;
 end;
 
-function TAccessibilityHintController.NotifyText(const aText: string; const aActivityId: WideString): Boolean;
-var
-  lText: string;
+function TAccessibilityHintController.NotifyPreparedText(const aText: string; const aActivityId: WideString): Boolean;
 begin
   Result := False;
-  lText := TAccessibilityText.Clean(aText);
-  if (lText = '') or (lText = fLastNotificationText) or (fProvider = nil) then
+  if (aText = '') or (aText = fLastNotificationText) or (fProvider = nil) then
   begin
     Exit;
   end;
 
   Result := TAccessibilityProviderEvents.RaiseNotification(fProvider.RawElementProvider, NotificationKind_Other,
-    NotificationProcessing_MostRecent, lText, aActivityId, fApi);
+    NotificationProcessing_MostRecent, aText, aActivityId, fApi);
   if Result then
   begin
-    fLastNotificationText := lText;
+    fLastNotificationText := aText;
   end;
 end;
 
@@ -721,9 +779,10 @@ begin
       gRetainedHintControllers := TList<TAccessibilityHintController>.Create;
     end;
 
-    if not gRetainedHintControllers.Contains(Self) then
+    if not fRetained then
     begin
       gRetainedHintControllers.Add(Self);
+      fRetained := True;
     end;
     Exit;
   end;
@@ -745,9 +804,10 @@ begin
       gRetainedHintControllers := TList<TAccessibilityHintController>.Create;
     end;
 
-    if not gRetainedHintControllers.Contains(Self) then
+    if not fRetained then
     begin
       gRetainedHintControllers.Add(Self);
+      fRetained := True;
     end;
   end;
 end;
@@ -777,18 +837,13 @@ begin
   end;
 
   SplitVisibleHintParts(aHintInfo.HintControl.Hint, lShortHint, lLongHint);
-  Result := (lShortHint <> '') and (lLongHint <> '') and (TAccessibilityText.Clean(aHint) = lShortHint) and
+  Result := (lShortHint <> '') and (lLongHint <> '') and (CleanHintText(aHint) = lShortHint) and
     (lLongHint = fLastNotificationText);
 end;
 
 procedure TAccessibilityHintController.NotifyBalloonHint(const aTitle: string; const aDescription: string);
 begin
-  if TAccessibilityText.Clean(aDescription) <> '' then
-  begin
-    NotifyBalloonHintCore(aTitle, aDescription, aDescription);
-  end else begin
-    NotifyBalloonHintCore(aTitle, aDescription, aTitle);
-  end;
+  NotifyBalloonHintCore(aTitle, aDescription, '');
 end;
 
 procedure TAccessibilityHintController.NotifyBalloonHint(aHint: TCustomHint);
@@ -810,31 +865,49 @@ var
   lSuppressAsBalloonFollowUp: Boolean;
   lText: string;
 begin
-  lText := HintDisplayText(aHint);
-  lCleanHint := TAccessibilityText.Clean(aHint);
-  lStrippedHint := StripBalloonImageIndex(aHint);
-  lPendingFollowUpHint := fPendingBalloonFollowUpHint;
-  lPendingFollowUpText := fPendingBalloonFollowUpText;
-  lSuppressAsBalloonFollowUp := (lText <> '') and (lPendingFollowUpText <> '') and
-    ((lText = lPendingFollowUpText) or (lCleanHint = lPendingFollowUpText) or
-    (lStrippedHint = lPendingFollowUpText));
-  if (not lSuppressAsBalloonFollowUp) and (lText <> '') and (lPendingFollowUpHint <> '') then
+  if not TryBeginNotificationBatch then
   begin
-    lSuppressAsBalloonFollowUp := (lText = lPendingFollowUpHint) or (lCleanHint = lPendingFollowUpHint) or
-      (lStrippedHint = lPendingFollowUpHint);
-  end;
-  if lText <> '' then
-  begin
-    fPendingBalloonFollowUpHint := '';
-    fPendingBalloonFollowUpText := '';
-  end;
-
-  if lSuppressAsBalloonFollowUp then
-  begin
+    ClearPendingBalloonFollowUp;
     Exit;
   end;
 
-  NotifyText(lText, 'vcl-hint');
+  try
+    lText := HintDisplayText(aHint);
+    lCleanHint := CleanHintText(aHint);
+    lStrippedHint := StripBalloonImageIndex(aHint);
+    lPendingFollowUpHint := fPendingBalloonFollowUpHint;
+    lPendingFollowUpText := fPendingBalloonFollowUpText;
+    lSuppressAsBalloonFollowUp := (lText <> '') and (lPendingFollowUpText <> '') and
+      ((lText = lPendingFollowUpText) or (lCleanHint = lPendingFollowUpText) or
+      (lStrippedHint = lPendingFollowUpText));
+    if (not lSuppressAsBalloonFollowUp) and (lText <> '') and (lPendingFollowUpHint <> '') then
+    begin
+      lSuppressAsBalloonFollowUp := (lText = lPendingFollowUpHint) or (lCleanHint = lPendingFollowUpHint) or
+        (lStrippedHint = lPendingFollowUpHint);
+    end;
+    if lText <> '' then
+    begin
+      ClearPendingBalloonFollowUp;
+    end;
+
+    if lSuppressAsBalloonFollowUp then
+    begin
+      Exit;
+    end;
+
+    NotifyPreparedText(lText, 'vcl-hint');
+  finally
+    TAccessibilityProviderEvents.EndEventBatch;
+  end;
+end;
+
+function TAccessibilityHintController.TryBeginNotificationBatch: Boolean;
+begin
+  Result := CanRaiseNotification;
+  if Result then
+  begin
+    TAccessibilityProviderEvents.BeginEventBatchWithKnownClientState(True);
+  end;
 end;
 
 initialization

@@ -91,7 +91,7 @@ The default VCL adapter registry covers:
 - VCL hints: control `Hint` is exposed as UIA `HelpText`, and visible hint text raises a UIA notification when UIA clients are listening.
 - VCL balloon hints: title and description are exposed through UIA notification text without requiring MaxLogicFoundation.
 - `TMemo`: UIA edit provider with per-line mouse hit testing while keyboard caret navigation remains with the native edit behavior.
-- `TListBox`: UIA list/list-item providers for mouse hit testing, selection, and arrow-key item focus.
+- `TListBox`: UIA list/list-item providers remain available in the framework form tree for mouse hit testing and selection queries, while the real listbox HWND keeps the native accessibility path for fast arrow-key item focus speech.
 - `TStatusBar`: UIA status-bar provider using the visible simple-panel or panel text.
 - `TStringGrid`: UIA DataGrid/DataItem providers for visible cells, per-cell hit testing, current-cell focus, and hidden-cell omission.
 
@@ -146,7 +146,7 @@ MaxLogicFoundation remains independent. The framework can be used without MaxLog
 
 ## Native Fallback
 
-The manager only returns framework providers for controls that are part of the framework scan tree or for non-focusable containers needed to hit-test descendant providers. Focusable windowed controls without a framework adapter are left unhooked so their native `WM_GETOBJECT`/MSAA/UIA implementation can still answer screen readers. Standard VCL `TCheckBox` and standalone `TRadioButton` controls remain on their native HWND accessibility path even though the framework keeps provider fragments for form-tree traversal; their child window hook observes hover/focus but does not answer `WM_GETOBJECT`.
+The manager only returns framework providers for controls that are part of the framework scan tree or for non-focusable containers needed to hit-test descendant providers. Focusable windowed controls without a framework adapter are left unhooked so their native `WM_GETOBJECT`/MSAA/UIA implementation can still answer screen readers. Standard VCL `TCheckBox`, standalone `TRadioButton`, `TListBox`, and `TCheckListBox` controls remain on their native HWND accessibility path even though the framework keeps provider fragments for form-tree traversal; their child window hook observes hover/focus but does not answer `WM_GETOBJECT` for those native-HWND paths.
 
 For controls such as `TVirtualStringTree` that already provide their own accessibility, do not register a framework adapter unless the framework is meant to replace that native tree. If a custom adapter is registered, it becomes the explicit accessibility surface for that control.
 
@@ -154,9 +154,9 @@ For controls such as `TVirtualStringTree` that already provide their own accessi
 
 ### Agent Bridge
 
-`MaxLogic.Accessibility.AgentBridge` exposes a JSON command executor for diagnostic automation. It supports a `hello` probe, visible form listing, `form.map` snapshots with Playwright-style refs such as `@a1`, VCL coordinate hit testing, and gated mutation commands including `control.focus`, `control.click`, `control.setText`, `control.typeText`, and `keyboard.tab`.
+`MaxLogic.Accessibility.AgentBridge` exposes a JSON command executor for diagnostic automation. It supports a `hello` probe, visible form listing, `form.map` snapshots with Playwright-style refs such as `@a1`, VCL coordinate hit testing, and gated mutation commands including `control.focus`, `control.click`, `control.setText`, `control.typeText`, and `keyboard.tab`. For fast automation coordinate discovery, `form.map` also supports `detail:"geometry"` with `visibleOnly:true`, returning process-local VCL roles, handles, rectangles, and target points without UIA traversal or accessibility/text-state scanning.
 
-`MaxLogic.Accessibility.AgentBridge.PipeServer` provides the built-in local named pipe transport. `TAccessibilityAgentBridgePipeServer.Start` opens a process-specific pipe by default, accepts one UTF-8 JSON request line per connection, marshals the command onto the VCL main thread, and returns one UTF-8 JSON response line. `Start` and `Stop` are idempotent for the same pipe name.
+`MaxLogic.Accessibility.AgentBridge.PipeServer` provides the built-in local named pipe transport. `TAccessibilityAgentBridgePipeServer.Start` opens a process-specific pipe by default, accepts one or more sequential UTF-8 JSON request lines per connection, marshals each command onto the VCL main thread, and returns one UTF-8 JSON response line per request. `Start` and `Stop` are idempotent for the same pipe name.
 
 A large legacy application can still expose the core executor through its own pipe, local HTTP endpoint, or debug window-message handler and call `TAccessibilityAgentBridge.Execute` on the VCL main thread. Mutations are disabled by default and require `TAccessibilityAgentBridge.SetMutationEnabled(True)`.
 
@@ -174,7 +174,7 @@ UIA probe scenarios:
 
 - `BasicVclControls`: labels, buttons, speed buttons, checkboxes, panels, generic graphic controls, and decorative-control omission.
 - `Hints`: help text, visible hint notifications, duplicate throttling, and balloon hint notifications.
-- `MemoListStatus`: manager-installed memo line hit testing, listbox item hover/focus notifications, and statusbar text hover.
+- `MemoListStatus`: manager-installed memo line hit testing, listbox item provider coverage through the framework tree, native-HWND listbox focus speech, and statusbar text hover.
 - `TStringGridCells`: VCL `TStringGrid` DataGrid provider, visible cell providers, per-cell hit testing, current-cell focus, hidden-cell omission, and cell-only names.
 - `TAdvStringGridCells`: opt-in TMS `TAdvStringGrid` DataGrid provider, stripped HTML text, wide text fallback, per-cell hit testing, focus, hidden row/column remapping, hidden-cell omission, and scrolled-cell pruning.
 

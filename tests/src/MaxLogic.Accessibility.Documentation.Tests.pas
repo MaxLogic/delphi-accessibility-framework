@@ -23,6 +23,8 @@ type
     [Test]
     procedure DemoShutdownDisarmsAccessibilityHooksAndTimers;
     [Test]
+    procedure TmsAdvStringGridSelectionArrayAvoidsPerElementSafeArrayPutElement;
+    [Test]
     procedure UiaProbeDocumentationListsRunnableScenarios;
     [Test]
     procedure NvdaChecklistDocumentsExpectedSpeech;
@@ -77,6 +79,16 @@ begin
     sLineBreak + 'end;', 'demo form shutdown');
 end;
 
+procedure TAccessibilityDocumentationTests.TmsAdvStringGridSelectionArrayAvoidsPerElementSafeArrayPutElement;
+var
+  lText: string;
+begin
+  lText := ReadRepoText('src\MaxLogic.Accessibility.TmsAdvStringGridAdapters.pas');
+
+  RequireText(lText, 'SafeArrayAccessData', 'TMS AdvStringGrid selection SAFEARRAY hot path');
+  RejectText(lText, 'SafeArrayPutElement', 'TMS AdvStringGrid selection SAFEARRAY hot path');
+end;
+
 procedure TAccessibilityDocumentationTests.DemoDocumentsAndWiresAgentBridgeDiagnosticSwitch;
 var
   lDocText: string;
@@ -112,18 +124,24 @@ begin
   RequireText(lReadmeText, 'keyboard.tab', 'README');
   RequireText(lText, 'TAccessibilityAgentBridgePipeServer.Start', 'agent bridge documentation');
   RequireText(lText, 'one UTF-8 JSON object per line', 'agent bridge documentation');
+  RequireText(lText, 'sequential request/response batch', 'agent bridge documentation');
   RequireText(lText, 'Start` and `Stop` are idempotent', 'agent bridge documentation');
   RequireText(lText, '"cmd":"hello"', 'agent bridge documentation');
   RequireText(lText, '"cmd":"window.info"', 'agent bridge documentation');
   RequireText(lText, 'clientScreenRect', 'agent bridge documentation');
   RequireText(lText, 'pixelsPerInch', 'agent bridge documentation');
   RequireText(lText, '"cmd":"form.map"', 'agent bridge documentation');
+  RequireText(lText, '"detail":"geometry"', 'agent bridge documentation');
+  RequireText(lText, '"cmd":"controls.info"', 'agent bridge documentation');
+  RequireText(lText, 'hundreds or thousands of client/provider boundary calls', 'agent bridge documentation');
+  RequireText(lText, 'CacheRequest', 'agent bridge documentation');
   RequireText(lText, '"cmd":"hitTest"', 'agent bridge documentation');
   RequireText(lText, '"cmd":"control.focus"', 'agent bridge documentation');
   RequireText(lText, '"cmd":"control.click"', 'agent bridge documentation');
   RequireText(lText, '"cmd":"control.setText"', 'agent bridge documentation');
   RequireText(lText, '"cmd":"control.typeText"', 'agent bridge documentation');
   RequireText(lText, '"cmd":"keyboard.tab"', 'agent bridge documentation');
+  RequireText(lText, '"cmd":"diagnostics.providerHotspots"', 'agent bridge documentation');
   RequireText(lText, 'snapshotInvalidated', 'agent bridge documentation');
   RequireText(lText, 'VCL main thread', 'agent bridge documentation');
   RequireText(lText, 'should continue with generic UIA/Win32 control', 'agent bridge documentation');
@@ -148,6 +166,9 @@ begin
   RequireText(lSkillText, 'Background Drive Mode', 'desktop-control skill');
   RequireText(lSkillText, 'screenshot-window', 'desktop-control skill');
   RequireText(lSkillText, 'bridge-window-info', 'desktop-control skill');
+  RequireText(lSkillText, 'bridge-controls-info', 'desktop-control skill');
+  RequireText(lSkillText, 'bridge-batch', 'desktop-control skill');
+  RequireText(lSkillText, 'Prefer `bridge-form-map` over `uia-map`', 'desktop-control skill');
   RequireText(lSkillText, 'Do not mention machine-local evidence stores', 'desktop-control skill');
   RejectText(lSkillText, 'Shadow Journal', 'desktop-control skill');
 end;
@@ -295,9 +316,11 @@ begin
   RequireText(lText, 'TCheckBox', 'UIA probe documentation');
   RequireText(lText, 'Hints', 'UIA probe documentation');
   RequireText(lText, 'MemoListStatus', 'UIA probe documentation');
+  RequireText(lText, 'native-HWND listbox focus speech routing', 'UIA probe documentation');
   RequireText(lText, 'TStringGridCells', 'UIA probe documentation');
   RequireText(lText, 'TAdvStringGridCells', 'UIA probe documentation');
   RequireText(lText, 'UIA_PROBE_OK', 'UIA probe documentation');
+  RequireText(lText, 'CacheRequest', 'UIA probe documentation');
 end;
 
 initialization

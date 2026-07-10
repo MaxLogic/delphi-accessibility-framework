@@ -16,15 +16,16 @@ type
 implementation
 
 uses
-  System.Classes, System.SyncObjs, System.SysUtils,
+  System.Classes, System.Diagnostics, System.SyncObjs, System.SysUtils,
   Winapi.Windows,
-  MaxLogic.Accessibility.AgentBridge;
+  MaxLogic.Accessibility.AgentBridge, MaxLogic.Accessibility.Diagnostics;
 
 const
   cPipeBufferSize = 65536;
   cPipePrefix = '\\.\pipe\';
   cPipeRejectRemoteClients = $00000008;
   cReadyTimeoutMs = 5000;
+  cRequestReadInitialCapacity = 1024;
 
 type
   TAccessibilityAgentBridgePipeServerThread = class(TThread)
@@ -178,13 +179,11 @@ var
   lRequest: string;
   lResponse: string;
 begin
-  if not ReadRequest(aPipe, lRequest) then
+  while not Terminated and ReadRequest(aPipe, lRequest) do
   begin
-    Exit;
+    lResponse := ExecuteBridge(lRequest);
+    WriteResponse(aPipe, lResponse);
   end;
-
-  lResponse := ExecuteBridge(lRequest);
-  WriteResponse(aPipe, lResponse);
 end;
 
 procedure TAccessibilityAgentBridgePipeServerThread.MarkReady(const aError: string);
@@ -210,10 +209,24 @@ var
   lBuffer: array[0..511] of Byte;
   lBytes: TBytes;
   lBytesRead: DWORD;
+  lByteCount: Integer;
+  lCapacity: Integer;
   lError: DWORD;
   lLength: Integer;
+  lMetricsEnabled: Boolean;
+  lNewCapacity: Integer;
+  lResizeCount: Integer;
+  lStopwatch: TStopwatch;
 begin
-  SetLength(lBytes, 0);
+  lByteCount := 0;
+  lCapacity := 0;
+  lLength := 0;
+  lResizeCount := 0;
+  lMetricsEnabled := TAccessibilityDiagnostics.AgentBridgePipeMetricsEnabled;
+  if lMetricsEnabled then
+  begin
+    lStopwatch := TStopwatch.StartNew;
+  end;
   while not Terminated do
   begin
     if not ReadFile(aPipe, lBuffer, SizeOf(lBuffer), lBytesRead, nil) then
@@ -237,15 +250,36 @@ begin
     begin
       if lBuffer[i] = 10 then
       begin
-        aRequest := TEncoding.UTF8.GetString(lBytes);
+        aRequest := TEncoding.UTF8.GetString(lBytes, 0, lLength);
+        if lMetricsEnabled then
+        begin
+          TAccessibilityDiagnostics.RecordAgentBridgePipeRequestRead(lByteCount, lResizeCount,
+            lStopwatch.ElapsedTicks);
+        end;
         Exit(True);
       end;
 
       if lBuffer[i] <> 13 then
       begin
-        lLength := Length(lBytes);
-        SetLength(lBytes, Succ(lLength));
+        if lLength >= lCapacity then
+        begin
+          if lCapacity = 0 then
+          begin
+            lNewCapacity := cRequestReadInitialCapacity;
+          end else begin
+            lNewCapacity := lCapacity * 2;
+          end;
+          while lNewCapacity <= lLength do
+          begin
+            lNewCapacity := lNewCapacity * 2;
+          end;
+          SetLength(lBytes, lNewCapacity);
+          lCapacity := lNewCapacity;
+          Inc(lResizeCount);
+        end;
         lBytes[lLength] := lBuffer[i];
+        Inc(lLength);
+        Inc(lByteCount);
       end;
     end;
   end;
@@ -300,7 +334,6 @@ begin
   begin
     RaiseLastOSError;
   end;
-  FlushFileBuffers(aPipe);
 end;
 
 class function TAccessibilityAgentBridgePipeServer.DefaultPipeName: string;

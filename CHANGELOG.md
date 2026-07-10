@@ -5,6 +5,7 @@
 - The complex demo now enables file diagnostics only when launched with `--a11y-diagnostics`.
 
 ### Fixed
+- UI Automation Core wrapper calls now cache atomically published export pointers, avoiding repeated export-name conversion and `GetProcAddress`; the System32 module is pinned before publication so shutdown cannot invalidate concurrent cached calls.
 - Accessibility diagnostics now use a bounded background writer with shared-read logs, per-run truncation, an 8 MiB limit, and observable drop summaries instead of performing file I/O on accessibility callback threads.
 - Diagnostics calls now return immediately during configuration or shutdown contention, and provider hit-test logging no longer reads extra UIA properties solely to build trace text.
 - Agent bridge provider maps now query direct-access, geometry, VCL metadata, and child-access interfaces at most once per provider node and reuse those results while serializing the snapshot.

@@ -390,6 +390,14 @@ type
     class function RequiredExportsAvailable: Boolean; static;
   end;
 
+  TUIAutomationCoreInternals = record
+  public
+    class function ExportResolveCount(aExport: TUIAutomationCoreExport): Integer; static;
+    class function ModulePinned: Boolean; static;
+    class procedure ResetExportCache; static;
+    class function ResolveNamedExport(const aName: string): Pointer; static;
+  end;
+
 function UiaClientsAreListening: BOOL; stdcall;
 function UiaGetReservedNotSupportedValue(out aNotSupportedValue: IUnknown): HRESULT; stdcall;
 function UiaHostProviderFromHwnd(aHwnd: HWND; out aProvider: IRawElementProviderSimple): HRESULT; stdcall;
@@ -407,10 +415,15 @@ function UiaRaiseNotificationEvent(aProvider: IRawElementProviderSimple; aNotifi
 implementation
 
 uses
-  System.SysUtils;
+  System.SyncObjs, System.SysUtils;
 
 const
+  cGetModuleHandleExFlagPin = $00000001;
+  cGetModuleHandleExFlagFromAddress = $00000004;
   cLoadLibrarySearchSystem32 = $00000800;
+
+function GetModuleHandleExW(aFlags: DWORD; aModuleName: PWideChar; var aModule: HMODULE): BOOL; stdcall;
+  external kernel32 name 'GetModuleHandleExW';
 
 type
   TUiaClientsAreListeningProc = function: BOOL; stdcall;
@@ -430,11 +443,40 @@ type
 
 var
   gUIAutomationCoreModule: HMODULE;
-  gImportLock: TObject;
+  gUIAutomationCoreModulePinned: Boolean;
+  gUIAutomationCoreProcs: array[TUIAutomationCoreExport] of Pointer;
+  gUIAutomationCoreResolveCounts: array[TUIAutomationCoreExport] of Integer;
+  gImportLock: TLightweightMREW;
+
+function PinUIAutomationCoreModule(aModule: HMODULE): Boolean;
+var
+  lPinnedModule: HMODULE;
+begin
+  lPinnedModule := 0;
+  Result := GetModuleHandleExW(cGetModuleHandleExFlagPin or cGetModuleHandleExFlagFromAddress,
+    PWideChar(aModule), lPinnedModule);
+  Result := Result and (lPinnedModule = aModule);
+end;
 
 function LoadUIAutomationCoreLibrary: HMODULE;
+var
+  lError: DWORD;
 begin
   Result := LoadLibraryEx(PChar(UIAutomationCoreDll), 0, TUIAutomationCoreImports.LibraryLoadFlags);
+  if Result = 0 then
+  begin
+    Exit;
+  end;
+
+  if not PinUIAutomationCoreModule(Result) then
+  begin
+    lError := GetLastError;
+    FreeLibrary(Result);
+    SetLastError(lError);
+    Result := 0;
+    Exit;
+  end;
+  TInterlocked.Exchange(gUIAutomationCoreModulePinned, True);
 end;
 
 function UIAutomationCoreModule: HMODULE;
@@ -447,7 +489,7 @@ begin
     Exit;
   end;
 
-  TMonitor.Enter(gImportLock);
+  gImportLock.BeginWrite;
   try
     if gUIAutomationCoreModule = 0 then
     begin
@@ -462,19 +504,43 @@ begin
 
     Result := gUIAutomationCoreModule;
   finally
-    TMonitor.Exit(gImportLock);
+    gImportLock.EndWrite;
+  end;
+end;
+
+function ResolveUIAutomationCoreProc(aModule: HMODULE; const aName: AnsiString): Pointer;
+begin
+  Result := GetProcAddress(aModule, PAnsiChar(aName));
+  if Result = nil then
+  begin
+    raise EExternalException.CreateFmt('UI Automation Core export not found: %s', [string(aName)]);
   end;
 end;
 
 function GetUIAutomationCoreProc(aExport: TUIAutomationCoreExport): Pointer;
 var
+  lModule: HMODULE;
   lName: AnsiString;
 begin
-  lName := AnsiString(TUIAutomationCoreImports.ExportName(aExport));
-  Result := GetProcAddress(UIAutomationCoreModule, PAnsiChar(lName));
-  if Result = nil then
+  Result := TInterlocked.CompareExchange(gUIAutomationCoreProcs[aExport], nil, nil);
+  if Result <> nil then
   begin
-    raise EExternalException.CreateFmt('UI Automation Core export not found: %s', [string(lName)]);
+    Exit;
+  end;
+
+  lModule := UIAutomationCoreModule;
+  gImportLock.BeginWrite;
+  try
+    Result := gUIAutomationCoreProcs[aExport];
+    if Result = nil then
+    begin
+      lName := AnsiString(TUIAutomationCoreImports.ExportName(aExport));
+      Result := ResolveUIAutomationCoreProc(lModule, lName);
+      TInterlocked.Increment(gUIAutomationCoreResolveCounts[aExport]);
+      TInterlocked.Exchange(gUIAutomationCoreProcs[aExport], Result);
+    end;
+  finally
+    gImportLock.EndWrite;
   end;
 end;
 
@@ -546,6 +612,37 @@ begin
       Exit(False);
     end;
   end;
+end;
+
+class function TUIAutomationCoreInternals.ExportResolveCount(aExport: TUIAutomationCoreExport): Integer;
+begin
+  Result := TInterlocked.CompareExchange(gUIAutomationCoreResolveCounts[aExport], 0, 0);
+end;
+
+class function TUIAutomationCoreInternals.ModulePinned: Boolean;
+begin
+  Result := TInterlocked.CompareExchange(gUIAutomationCoreModulePinned, False, False);
+end;
+
+class procedure TUIAutomationCoreInternals.ResetExportCache;
+var
+  lExport: TUIAutomationCoreExport;
+begin
+  gImportLock.BeginWrite;
+  try
+    for lExport := Low(TUIAutomationCoreExport) to High(TUIAutomationCoreExport) do
+    begin
+      TInterlocked.Exchange(gUIAutomationCoreProcs[lExport], nil);
+      TInterlocked.Exchange(gUIAutomationCoreResolveCounts[lExport], 0);
+    end;
+  finally
+    gImportLock.EndWrite;
+  end;
+end;
+
+class function TUIAutomationCoreInternals.ResolveNamedExport(const aName: string): Pointer;
+begin
+  Result := ResolveUIAutomationCoreProc(UIAutomationCoreModule, AnsiString(aName));
 end;
 
 function UiaClientsAreListening: BOOL;
@@ -625,14 +722,12 @@ begin
 end;
 
 initialization
-  gImportLock := TObject.Create;
+  gUIAutomationCoreModule := 0;
 
 finalization
   if gUIAutomationCoreModule <> 0 then
   begin
     FreeLibrary(gUIAutomationCoreModule);
   end;
-
-  gImportLock.Free;
 
 end.

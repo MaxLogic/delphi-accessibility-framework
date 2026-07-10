@@ -28,6 +28,7 @@ The practical conclusion is that further micro-optimizing already-small provider
 | --- | --- | --- |
 | T-109 | Complete | Provider-map serialization queries direct-access, geometry, VCL metadata, and child-access interfaces once per node. Runtime tests cover query counts, failed child counts, depth limits, child limits, and detail levels. Debug correctness gates pass; no latency claim is made because Windows Defender was active during the run. |
 | T-110 | Complete | Diagnostics use a bounded non-blocking producer queue and one lazy background writer; the demo is opt-in, logs are share-readable and capped, and hot-path traces perform no extra provider reads. Debug tests pass 337/337, Release UIA probes pass 5/5, and shutdown tests pass 6/6. Defender remained active, so timing distributions below are evidence records rather than acceptance claims. |
+| T-111 | Complete | All nine real wrappers cache one atomically published export pointer, concurrent first use resolves once, and the System32 module is pinned before publication. Focused tests pass 9/9, the full Debug suite passes 342/342, and the final Release Basic UIA probe passes. |
 
 ### T-110 measurement record
 
@@ -53,6 +54,32 @@ External wall time was measured in Win32 Release with demo diagnostics disabled.
 | Disabled | Scan selected child | 0.052 ms | 0.074 ms | 0.081 ms | 0.085 ms |
 
 The external run recorded 15% CPU before and 23% after, with Microsoft Defender real-time protection active. Its `FromHandle` target surfaced as a UIA Pane with zero children, so these values measure boundary and main-thread wall time but are not semantic listbox acceptance evidence. The 28-node enabled tree sample took 315.670 ms and the 36-node disabled sample took 224.226 ms. All performance claims remain deferred until the machine is idle.
+
+### T-111 measurement record
+
+The process-local benchmark measures a warmed `UiaClientsAreListening` wrapper call in Win32 Release with diagnostics disabled. The baseline resolves the export on every call; the optimized path performs one atomic cached-pointer read.
+
+| Phase | Samples | Resolve count | Median | p95 | p99 | Maximum | CPU before/after | Antivirus |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| Uncached baseline | 200 | 201 | 2 ticks / 0.0002 ms | 3 / 0.0003 ms | 3 / 0.0003 ms | 13 / 0.0013 ms | 14% / 18% | Defender active |
+| Cached final | 200 | 1 | 0 ticks / 0.0000 ms | 1 / 0.0001 ms | 1 / 0.0001 ms | 79 / 0.0079 ms | 27% / 38% | Defender active |
+
+The current external run uses Win32 Release, diagnostics disabled, and 200 samples per framework mode.
+
+| Framework | Operation | Median | p95 | p99 | Maximum |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Enabled | Send `WM_KEYDOWN`/`WM_KEYUP` | 1.986 ms | 11.233 ms | 13.797 ms | 19.145 ms |
+| Enabled | `AutomationElement.FromHandle` | 1.745 ms | 11.168 ms | 13.209 ms | 67.233 ms |
+| Enabled | Current properties | 0.377 ms | 1.373 ms | 11.094 ms | 14.000 ms |
+| Enabled | `FindAll` children | 0.091 ms | 0.205 ms | 0.394 ms | 5.122 ms |
+| Enabled | Scan selected child | 0.098 ms | 0.147 ms | 0.179 ms | 5.034 ms |
+| Disabled | Send `WM_KEYDOWN`/`WM_KEYUP` | 1.697 ms | 9.204 ms | 13.516 ms | 17.721 ms |
+| Disabled | `AutomationElement.FromHandle` | 1.649 ms | 10.340 ms | 11.869 ms | 13.282 ms |
+| Disabled | Current properties | 0.343 ms | 1.714 ms | 7.906 ms | 9.919 ms |
+| Disabled | `FindAll` children | 0.056 ms | 0.122 ms | 0.164 ms | 0.235 ms |
+| Disabled | Scan selected child | 0.053 ms | 0.084 ms | 0.096 ms | 0.109 ms |
+
+The external run recorded CPU at 18% before and 23% after with Defender active. The enabled 28-node tree sample took 310.781 ms and the disabled 36-node sample took 202.193 ms. As in T-110, the target HWND surfaced as a UIA Pane with zero children; the distribution is boundary/main-thread evidence, not semantic listbox proof. The deterministic result is the reduction from 201 export resolutions to one; the final process-local maximum also rose under 27%/38% load, so idle-machine wall-time acceptance remains deferred.
 
 ## Ranked findings
 

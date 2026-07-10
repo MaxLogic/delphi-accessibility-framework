@@ -13,21 +13,85 @@ type
     procedure AssertInterfaceGuid(const aExpected: string; const aTypeInfo: Pointer);
   public
     [Test]
+    procedure CachedWrapperLatencyArtifactIsWritten;
+    [Test]
+    procedure ConcurrentFirstWrapperUseResolvesExportOnce;
+    [Test]
     procedure ConstantsMatchWindowsSdk;
     [Test]
     procedure InterfacesHaveExpectedGuids;
     [Test]
+    procedure LoadedModuleIsPinnedForFinalizationSafety;
+    [Test]
     procedure ImportWrapperFindsRequiredExports;
     [Test]
     procedure ImportWrapperUsesSystemDllSearchPolicy;
+    [Test]
+    procedure MissingExportKeepsDiagnosticException;
+    [Test]
+    procedure RepeatedWrapperCallsResolveEachExportOnce;
   end;
 
 implementation
 
 uses
-  System.SysUtils,
-  System.TypInfo,
+  System.Classes, System.Diagnostics, System.Generics.Collections, System.IOUtils, System.SyncObjs, System.SysUtils,
+  System.TypInfo, System.Variants, Winapi.Windows,
   MaxLogic.Accessibility.UIAutomationCore;
+
+function CachedWrapperArtifactFileName: string;
+var
+  lAgentsDir: string;
+  lRunsDir: string;
+begin
+  lAgentsDir := TPath.Combine(GetCurrentDir, '.agents');
+  lRunsDir := TPath.Combine(lAgentsDir, 'runs');
+  ForceDirectories(lRunsDir);
+  Result := TPath.Combine(lRunsDir, 't111-uia-export-current.json');
+end;
+
+function MillisecondsFromTicks(aTicks: Int64): Double;
+begin
+  Result := (aTicks * 1000.0) / TStopwatch.Frequency;
+end;
+
+function NearestRankIndex(aSampleCount: Integer; aPercentile: Integer): Integer;
+begin
+  Result := (((aSampleCount * aPercentile) + 99) div 100) - 1;
+end;
+
+procedure ExerciseAllWrappers(aCount: Integer);
+var
+  i: Integer;
+  lNewValue: OleVariant;
+  lNotSupportedValue: IUnknown;
+  lOldValue: OleVariant;
+  lProvider: IRawElementProviderSimple;
+  lResultText: string;
+  lRuntimeId: array[0..1] of Integer;
+begin
+  lNewValue := Unassigned;
+  lOldValue := Unassigned;
+  lResultText := '';
+  for i := 1 to aCount do
+  begin
+    lResultText := lResultText + IntToStr(Integer(UiaClientsAreListening));
+    lResultText := lResultText + IntToStr(UiaGetReservedNotSupportedValue(lNotSupportedValue));
+    lResultText := lResultText + IntToStr(UiaHostProviderFromHwnd(GetDesktopWindow, lProvider));
+    lResultText := lResultText + IntToStr(UiaReturnRawElementProvider(0, 0, UiaRootObjectId, nil));
+    lResultText := lResultText + IntToStr(UiaDisconnectProvider(nil));
+    lResultText := lResultText + IntToStr(UiaRaiseAutomationEvent(nil, UIA_AutomationFocusChangedEventId));
+    lResultText := lResultText +
+      IntToStr(UiaRaiseAutomationPropertyChangedEvent(nil, UIA_NamePropertyId, lOldValue, lNewValue));
+    lRuntimeId[0] := UiaAppendRuntimeId;
+    lRuntimeId[1] := i;
+    lResultText := lResultText + IntToStr(UiaRaiseStructureChangedEvent(nil,
+      StructureChangeType_ChildrenInvalidated, @lRuntimeId[0], Length(lRuntimeId)));
+    lResultText := lResultText + IntToStr(UiaRaiseNotificationEvent(nil, NotificationKind_Other,
+      NotificationProcessing_MostRecent, 'probe', 't111-' + IntToStr(i)));
+  end;
+  Assert.IsTrue(lResultText <> '', 'UIAutomationCore wrapper results were not observed.');
+end;
 
 procedure AssertExportAvailable(aExport: TUIAutomationCoreExport; const aName: string);
 begin
@@ -41,6 +105,119 @@ var
 begin
   lGuid := GetTypeData(aTypeInfo)^.Guid;
   Assert.AreEqual(aExpected, GUIDToString(lGuid));
+end;
+
+procedure TUIAutomationCoreTests.CachedWrapperLatencyArtifactIsWritten;
+const
+  cSampleCount = 200;
+{$IFDEF RELEASE}
+  cBuildConfiguration = 'Release';
+{$ELSE}
+  cBuildConfiguration = 'Debug';
+{$ENDIF}
+var
+  i: Integer;
+  lArtifactFile: string;
+  lJson: string;
+  lListening: BOOL;
+  lSamples: TArray<Int64>;
+  lStopwatch: TStopwatch;
+  lWarmupListening: BOOL;
+begin
+  TUIAutomationCoreInternals.ResetExportCache;
+  lWarmupListening := UiaClientsAreListening;
+  SetLength(lSamples, cSampleCount);
+  for i := 0 to Pred(cSampleCount) do
+  begin
+    lStopwatch := TStopwatch.StartNew;
+    lListening := UiaClientsAreListening;
+    lSamples[i] := lStopwatch.ElapsedTicks;
+  end;
+  Assert.AreEqual(1, TUIAutomationCoreInternals.ExportResolveCount(uiceClientsAreListening),
+    Format('The cached wrapper resolved more than once (warmup=%s, final=%s).',
+      [BoolToStr(lWarmupListening, True), BoolToStr(lListening, True)]));
+  TArray.Sort<Int64>(lSamples);
+
+  lJson := Format('{"scenario":"t111-uia-export-wrapper","buildConfiguration":"%s",' +
+    '"diagnosticsState":"disabled","sampleCount":%d,"stopwatchFrequency":%d,"medianTicks":%d,"p95Ticks":%d,' +
+    '"p99Ticks":%d,"maximumTicks":%d,"medianMs":%.6f,"p95Ms":%.6f,"p99Ms":%.6f,' +
+    '"maximumMs":%.6f,"resolveCount":%d}', [cBuildConfiguration, cSampleCount, TStopwatch.Frequency,
+    lSamples[NearestRankIndex(cSampleCount, 50)], lSamples[NearestRankIndex(cSampleCount, 95)],
+    lSamples[NearestRankIndex(cSampleCount, 99)], lSamples[Pred(cSampleCount)],
+    MillisecondsFromTicks(lSamples[NearestRankIndex(cSampleCount, 50)]),
+    MillisecondsFromTicks(lSamples[NearestRankIndex(cSampleCount, 95)]),
+    MillisecondsFromTicks(lSamples[NearestRankIndex(cSampleCount, 99)]),
+    MillisecondsFromTicks(lSamples[Pred(cSampleCount)]),
+    TUIAutomationCoreInternals.ExportResolveCount(uiceClientsAreListening)], TFormatSettings.Invariant);
+  lArtifactFile := CachedWrapperArtifactFileName;
+  TFile.WriteAllText(lArtifactFile, lJson, TEncoding.UTF8);
+
+  Assert.Contains(TFile.ReadAllText(lArtifactFile, TEncoding.UTF8), '"sampleCount":200');
+end;
+
+procedure TUIAutomationCoreTests.ConcurrentFirstWrapperUseResolvesExportOnce;
+const
+  cThreadCount = 16;
+var
+  i: Integer;
+  lClientsListeningCount: Integer;
+  lDone: TCountdownEvent;
+  lNoClientsListeningCount: Integer;
+  lStart: TEvent;
+  lThreads: TArray<TThread>;
+begin
+  TUIAutomationCoreInternals.ResetExportCache;
+  lClientsListeningCount := 0;
+  lNoClientsListeningCount := 0;
+  lDone := TCountdownEvent.Create(cThreadCount);
+  lStart := TEvent.Create(nil, True, False, '');
+  SetLength(lThreads, cThreadCount);
+  try
+    for i := 0 to Pred(cThreadCount) do
+    begin
+      lThreads[i] := TThread.CreateAnonymousThread(
+        procedure
+        begin
+          lStart.WaitFor(INFINITE);
+          try
+            if UiaClientsAreListening then
+            begin
+              TInterlocked.Increment(lClientsListeningCount);
+            end else begin
+              TInterlocked.Increment(lNoClientsListeningCount);
+            end
+          finally
+            lDone.Signal;
+          end;
+        end);
+      lThreads[i].FreeOnTerminate := False;
+      lThreads[i].Start;
+    end;
+
+    lStart.SetEvent;
+    Assert.AreEqual(wrSignaled, lDone.WaitFor(5000), 'Concurrent UIAutomationCore wrapper calls did not finish.');
+    for i := 0 to Pred(cThreadCount) do
+    begin
+      lThreads[i].WaitFor;
+      Assert.IsNull(lThreads[i].FatalException, Format('UIAutomationCore worker %d raised an exception.', [i]));
+    end;
+    Assert.AreEqual(cThreadCount, lClientsListeningCount + lNoClientsListeningCount,
+      'Not every concurrent wrapper call returned.');
+    Assert.AreEqual(1, TUIAutomationCoreInternals.ExportResolveCount(uiceClientsAreListening),
+      'Concurrent first use resolved UiaClientsAreListening more than once.');
+  finally
+    lStart.SetEvent;
+    for i := 0 to Pred(cThreadCount) do
+    begin
+      if lThreads[i] <> nil then
+      begin
+        lThreads[i].WaitFor;
+        lThreads[i].Free;
+      end;
+    end;
+    lStart.Free;
+    lDone.Free;
+  end;
 end;
 
 procedure TUIAutomationCoreTests.ConstantsMatchWindowsSdk;
@@ -106,6 +283,16 @@ begin
   Assert.AreEqual(SizeOf(Integer), SizeOf(TEXTATTRIBUTEID));
 end;
 
+procedure TUIAutomationCoreTests.LoadedModuleIsPinnedForFinalizationSafety;
+var
+  lListening: BOOL;
+begin
+  lListening := UiaClientsAreListening;
+  Assert.IsTrue(TUIAutomationCoreInternals.ModulePinned,
+    Format('Cached UIAutomationCore pointers require the loaded module to remain pinned through finalization ' +
+      '(clients listening=%s).', [BoolToStr(lListening, True)]));
+end;
+
 procedure TUIAutomationCoreTests.ImportWrapperFindsRequiredExports;
 begin
   Assert.AreEqual('UIAutomationCore.dll', TUIAutomationCoreImports.LibraryName);
@@ -126,6 +313,40 @@ end;
 procedure TUIAutomationCoreTests.ImportWrapperUsesSystemDllSearchPolicy;
 begin
   Assert.AreEqual(Integer($00000800), Integer(TUIAutomationCoreImports.LibraryLoadFlags));
+end;
+
+procedure TUIAutomationCoreTests.MissingExportKeepsDiagnosticException;
+var
+  lProc: Pointer;
+  lRaised: Boolean;
+begin
+  lProc := nil;
+  lRaised := False;
+  try
+    lProc := TUIAutomationCoreInternals.ResolveNamedExport('MaxLogicMissingUiaExport');
+  except
+    on E: EExternalException do
+    begin
+      lRaised := True;
+      Assert.Contains(E.Message, 'UI Automation Core export not found: MaxLogicMissingUiaExport');
+    end;
+  end;
+  Assert.IsNull(lProc, 'A missing UIAutomationCore export unexpectedly returned an address.');
+  Assert.IsTrue(lRaised, 'A missing UIAutomationCore export did not raise EExternalException.');
+end;
+
+procedure TUIAutomationCoreTests.RepeatedWrapperCallsResolveEachExportOnce;
+var
+  lExport: TUIAutomationCoreExport;
+begin
+  TUIAutomationCoreInternals.ResetExportCache;
+  ExerciseAllWrappers(2);
+
+  for lExport := Low(TUIAutomationCoreExport) to High(TUIAutomationCoreExport) do
+  begin
+    Assert.AreEqual(1, TUIAutomationCoreInternals.ExportResolveCount(lExport),
+      Format('%s resolved more than once.', [TUIAutomationCoreImports.ExportName(lExport)]));
+  end;
 end;
 
 procedure TUIAutomationCoreTests.InterfacesHaveExpectedGuids;

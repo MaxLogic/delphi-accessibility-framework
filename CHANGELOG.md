@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-07-10
+### Fixed
+- Agent bridge provider maps now query direct-access, geometry, VCL metadata, and child-access interfaces at most once per provider node and reuse those results while serializing the snapshot.
+- Provider-map child metadata is now written once per node, and failed child-count calls cannot leak a dirty out value into JSON.
+
 ## 2026-07-09
 ### Added
 - Agent bridge `provider.map` can now return a capped in-process framework provider-tree snapshot, including virtual children, without walking external UIA.

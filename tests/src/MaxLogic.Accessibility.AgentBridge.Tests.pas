@@ -25,6 +25,10 @@ type
     [Test]
     procedure ProviderMapReusesInstalledManagerProviderWithoutRescanningForm;
     [Test]
+    procedure ProviderMapQueriesDirectAccessOncePerNode;
+    [Test]
+    procedure ProviderMapWritesChildMetadataOnce;
+    [Test]
     procedure FormMapCanSkipAccessibilityScanForFastNativeSnapshot;
     [Test]
     procedure FormMapCanReturnOnlyVisibleActivePageControls;
@@ -65,10 +69,11 @@ type
 implementation
 
 uses
-  System.Diagnostics, System.Generics.Collections, System.IOUtils, System.JSON, System.SysUtils, System.Types, Vcl.ComCtrls,
-  Vcl.Controls, Vcl.ExtCtrls, Vcl.Forms, Vcl.Grids, Vcl.StdCtrls, MaxLogic.Accessibility.AgentBridge,
-  MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.Framework, MaxLogic.Accessibility.Manager,
-  MaxLogic.Accessibility.UIAutomationCore;
+  System.Diagnostics, System.Generics.Collections, System.IOUtils, System.JSON, System.SyncObjs, System.SysUtils,
+  System.Types, System.TypInfo, System.Variants, Winapi.Windows, Vcl.ComCtrls, Vcl.Controls, Vcl.ExtCtrls, Vcl.Forms,
+  Vcl.Grids, Vcl.StdCtrls, MaxLogic.Accessibility.AgentBridge, MaxLogic.Accessibility.Diagnostics,
+  MaxLogic.Accessibility.Framework, MaxLogic.Accessibility.Manager, MaxLogic.Accessibility.ProviderCore,
+  MaxLogic.Accessibility.UIAutomationCore, MaxLogic.Accessibility.VclAdapters;
 
 type
   TAgentBridgeClickRecorder = class
@@ -86,9 +91,202 @@ type
     property Text: string read fText write fText;
   end;
 
+  TAgentBridgeProviderQueryMetrics = record
+    ChildAccessQueries: Integer;
+    DirectAccessQueries: Integer;
+    GeometryAccessQueries: Integer;
+    VclInfoQueries: Integer;
+  end;
+
+  PAgentBridgeProviderQueryMetrics = ^TAgentBridgeProviderQueryMetrics;
+
+  TAgentBridgeCountingProvider = class(TObject, IInterface, IRawElementProviderSimple,
+    IAccessibilityProviderDirectAccess, IAccessibilityProviderGeometryAccess, IAccessibilityProviderChildAccess,
+    IAccessibilityVclControlProviderInfo)
+  private
+    fChild: IRawElementProviderSimple;
+    fChildCountResult: HResult;
+    fChildCountValue: Integer;
+    fMetrics: PAgentBridgeProviderQueryMetrics;
+    fRefCount: Integer;
+  public
+    constructor Create(aMetrics: PAgentBridgeProviderQueryMetrics; aChildCountResult: HResult;
+      aChildCountValue: Integer; const aChild: IRawElementProviderSimple);
+  protected
+    function QueryInterface(const aIID: TGUID; out aObject): HResult; stdcall;
+    function _AddRef: Integer; stdcall;
+    function _Release: Integer; stdcall;
+  public
+    function Control: TControl;
+    function DirectChildAt(aIndex: Integer; out aProvider: IRawElementProviderSimple): HResult;
+    function DirectChildCount(out aCount: Integer): HResult;
+    function Get_HostRawElementProvider(out aRetVal: IRawElementProviderSimple): HResult; stdcall;
+    function Get_ProviderOptions(out aRetVal: ProviderOptions): HResult; stdcall;
+    function GetPatternProvider(aPatternId: PATTERNID; out aRetVal: IUnknown): HResult; stdcall;
+    function GetPropertyValue(aPropertyId: PROPERTYID; out aRetVal: OleVariant): HResult; stdcall;
+    function SupportsPatternDirect(aPatternId: PATTERNID): Boolean;
+    function TryGetBoundingRectangle(out aValue: UiaRect): Boolean;
+    function TryGetIntegerProperty(aPropertyId: PROPERTYID; out aValue: Integer): Boolean;
+    function TryGetNativeWindowHandle(out aValue: HWND): Boolean;
+    function TryGetStringProperty(aPropertyId: PROPERTYID; out aValue: string): Boolean;
+    function TryGetValueText(out aValue: string): Boolean;
+  end;
+
 procedure TAgentBridgeClickRecorder.Click(aSender: TObject);
 begin
   Inc(fClicks);
+end;
+
+constructor TAgentBridgeCountingProvider.Create(aMetrics: PAgentBridgeProviderQueryMetrics;
+  aChildCountResult: HResult; aChildCountValue: Integer; const aChild: IRawElementProviderSimple);
+begin
+  inherited Create;
+  fChild := aChild;
+  fChildCountResult := aChildCountResult;
+  fChildCountValue := aChildCountValue;
+  fMetrics := aMetrics;
+end;
+
+function TAgentBridgeCountingProvider._AddRef: Integer;
+begin
+  Result := TInterlocked.Increment(fRefCount);
+end;
+
+function TAgentBridgeCountingProvider._Release: Integer;
+begin
+  Result := TInterlocked.Decrement(fRefCount);
+  if Result = 0 then
+  begin
+    Destroy;
+  end;
+end;
+
+function TAgentBridgeCountingProvider.Control: TControl;
+begin
+  Result := nil;
+end;
+
+function TAgentBridgeCountingProvider.DirectChildAt(aIndex: Integer;
+  out aProvider: IRawElementProviderSimple): HResult;
+begin
+  aProvider := nil;
+  if (aIndex = 0) and (fChild <> nil) then
+  begin
+    aProvider := fChild;
+    Exit(S_OK);
+  end;
+
+  Result := E_INVALIDARG;
+end;
+
+function TAgentBridgeCountingProvider.DirectChildCount(out aCount: Integer): HResult;
+begin
+  aCount := fChildCountValue;
+  Result := fChildCountResult;
+end;
+
+function TAgentBridgeCountingProvider.Get_HostRawElementProvider(
+  out aRetVal: IRawElementProviderSimple): HResult;
+begin
+  aRetVal := nil;
+  Result := S_FALSE;
+end;
+
+function TAgentBridgeCountingProvider.Get_ProviderOptions(out aRetVal: ProviderOptions): HResult;
+begin
+  aRetVal := ProviderOptions_ServerSideProvider;
+  Result := S_OK;
+end;
+
+function TAgentBridgeCountingProvider.GetPatternProvider(aPatternId: PATTERNID; out aRetVal: IUnknown): HResult;
+begin
+  aRetVal := nil;
+  Result := S_OK;
+end;
+
+function TAgentBridgeCountingProvider.GetPropertyValue(aPropertyId: PROPERTYID;
+  out aRetVal: OleVariant): HResult;
+begin
+  aRetVal := Unassigned;
+  Result := S_OK;
+end;
+
+function TAgentBridgeCountingProvider.QueryInterface(const aIID: TGUID; out aObject): HResult;
+begin
+  if not GetInterface(aIID, aObject) then
+  begin
+    Exit(E_NOINTERFACE);
+  end;
+
+  if fMetrics <> nil then
+  begin
+    if IsEqualGUID(aIID, GetTypeData(TypeInfo(IAccessibilityProviderDirectAccess))^.Guid) then
+    begin
+      Inc(fMetrics^.DirectAccessQueries);
+    end else if IsEqualGUID(aIID, GetTypeData(TypeInfo(IAccessibilityProviderGeometryAccess))^.Guid) then
+    begin
+      Inc(fMetrics^.GeometryAccessQueries);
+    end else if IsEqualGUID(aIID, GetTypeData(TypeInfo(IAccessibilityProviderChildAccess))^.Guid) then
+    begin
+      Inc(fMetrics^.ChildAccessQueries);
+    end else if IsEqualGUID(aIID, GetTypeData(TypeInfo(IAccessibilityVclControlProviderInfo))^.Guid) then
+    begin
+      Inc(fMetrics^.VclInfoQueries);
+    end;
+  end;
+
+  Result := S_OK;
+end;
+
+function TAgentBridgeCountingProvider.SupportsPatternDirect(aPatternId: PATTERNID): Boolean;
+begin
+  Result := False;
+end;
+
+function TAgentBridgeCountingProvider.TryGetBoundingRectangle(out aValue: UiaRect): Boolean;
+begin
+  aValue.Left := 10;
+  aValue.Top := 20;
+  aValue.Width := 100;
+  aValue.Height := 30;
+  Result := True;
+end;
+
+function TAgentBridgeCountingProvider.TryGetIntegerProperty(aPropertyId: PROPERTYID;
+  out aValue: Integer): Boolean;
+begin
+  aValue := 0;
+  if aPropertyId = UIA_ControlTypePropertyId then
+  begin
+    aValue := UIA_ButtonControlTypeId;
+    Exit(True);
+  end;
+
+  Result := False;
+end;
+
+function TAgentBridgeCountingProvider.TryGetNativeWindowHandle(out aValue: HWND): Boolean;
+begin
+  aValue := 0;
+  Result := False;
+end;
+
+function TAgentBridgeCountingProvider.TryGetStringProperty(aPropertyId: PROPERTYID; out aValue: string): Boolean;
+begin
+  aValue := '';
+  if aPropertyId = UIA_NamePropertyId then
+  begin
+    aValue := 'Counting provider';
+    Exit(True);
+  end;
+
+  Result := False;
+end;
+
+function TAgentBridgeCountingProvider.TryGetValueText(out aValue: string): Boolean;
+begin
+  aValue := '';
+  Result := False;
 end;
 
 function JsonObjectFrom(const aText: string): TJSONObject;
@@ -138,6 +336,26 @@ end;
 function JsonHasValue(aObject: TJSONObject; const aName: string): Boolean;
 begin
   Result := aObject.GetValue(aName) <> nil;
+end;
+
+function JsonPairCount(aObject: TJSONObject; const aName: string): Integer;
+var
+  i: Integer;
+begin
+  Result := 0;
+  for i := 0 to Pred(aObject.Count) do
+  begin
+    if SameText(aObject.Pairs[i].JsonString.Value, aName) then
+    begin
+      Inc(Result);
+    end;
+  end;
+end;
+
+function CreateCountingProvider(var aMetrics: TAgentBridgeProviderQueryMetrics; aChildCountResult: HResult;
+  aChildCountValue: Integer; const aChild: IRawElementProviderSimple): IRawElementProviderSimple;
+begin
+  Result := TAgentBridgeCountingProvider.Create(@aMetrics, aChildCountResult, aChildCountValue, aChild);
 end;
 
 function RepoRoot: string;
@@ -869,6 +1087,124 @@ begin
 
   Assert.IsFalse(Pos('Format(''@a%d''', lSourceText) > 0,
     'Agent bridge refs are generated for every mapped control; avoid Format parser and variant allocation here.');
+end;
+
+procedure TAccessibilityAgentBridgeTests.ProviderMapQueriesDirectAccessOncePerNode;
+var
+  lChild: IRawElementProviderSimple;
+  lChildJson: TJSONObject;
+  lChildMetrics: TAgentBridgeProviderQueryMetrics;
+  lChildren: TJSONArray;
+  lGeometryJson: TJSONObject;
+  lGeometryMetrics: TAgentBridgeProviderQueryMetrics;
+  lGeometryProvider: IRawElementProviderSimple;
+  lRoot: IRawElementProviderSimple;
+  lRootJson: TJSONObject;
+  lRootMetrics: TAgentBridgeProviderQueryMetrics;
+begin
+  lChildMetrics := Default(TAgentBridgeProviderQueryMetrics);
+  lRootMetrics := Default(TAgentBridgeProviderQueryMetrics);
+  lChild := CreateCountingProvider(lChildMetrics, E_FAIL, 0, nil);
+  lRoot := CreateCountingProvider(lRootMetrics, S_OK, 1, lChild);
+
+  lRootJson := JsonObjectFrom(TAccessibilityAgentBridgeInternals.SerializeProviderNode(lRoot, True, 2, 10));
+  try
+    Assert.AreEqual(1, lRootMetrics.DirectAccessQueries, 'Root direct access should be queried once.');
+    Assert.AreEqual(1, lRootMetrics.GeometryAccessQueries, 'Root geometry access should be queried once.');
+    Assert.AreEqual(1, lRootMetrics.VclInfoQueries, 'Root VCL info should be queried once in full detail.');
+    Assert.AreEqual(1, lRootMetrics.ChildAccessQueries, 'Root child access should be queried once.');
+
+    lChildren := JsonArrayValue(lRootJson, 'children');
+    Assert.AreEqual(1, lChildren.Count);
+    Assert.IsTrue(lChildren.Items[0] is TJSONObject);
+    lChildJson := TJSONObject(lChildren.Items[0]);
+    Assert.AreEqual('Counting provider', JsonText(lChildJson, 'name'));
+    Assert.AreEqual(1, lChildMetrics.DirectAccessQueries, 'Child direct access should be queried once.');
+    Assert.AreEqual(1, lChildMetrics.GeometryAccessQueries, 'Child geometry access should be queried once.');
+    Assert.AreEqual(1, lChildMetrics.VclInfoQueries, 'Child VCL info should be queried once in full detail.');
+    Assert.AreEqual(1, lChildMetrics.ChildAccessQueries, 'Child child-access support should be queried once.');
+  finally
+    lRootJson.Free;
+  end;
+
+  lGeometryMetrics := Default(TAgentBridgeProviderQueryMetrics);
+  lGeometryProvider := CreateCountingProvider(lGeometryMetrics, S_OK, 0, nil);
+  lGeometryJson := JsonObjectFrom(
+    TAccessibilityAgentBridgeInternals.SerializeProviderNode(lGeometryProvider, False, 0, 10));
+  try
+    Assert.AreEqual(1, lGeometryMetrics.DirectAccessQueries,
+      'Geometry detail should still query direct control-type access once.');
+    Assert.AreEqual(1, lGeometryMetrics.GeometryAccessQueries,
+      'Geometry detail should query geometry access once.');
+    Assert.AreEqual(0, lGeometryMetrics.VclInfoQueries,
+      'Geometry detail should not query VCL text metadata.');
+    Assert.AreEqual(0, lGeometryMetrics.ChildAccessQueries,
+      'A depth-truncated geometry node should not query child access.');
+  finally
+    lGeometryJson.Free;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.ProviderMapWritesChildMetadataOnce;
+var
+  lChild: IRawElementProviderSimple;
+  lChildMetrics: TAgentBridgeProviderQueryMetrics;
+  lChildren: TJSONArray;
+  lDepthJson: TJSONObject;
+  lDepthMetrics: TAgentBridgeProviderQueryMetrics;
+  lDepthProvider: IRawElementProviderSimple;
+  lFailureJson: TJSONObject;
+  lFailureMetrics: TAgentBridgeProviderQueryMetrics;
+  lFailureProvider: IRawElementProviderSimple;
+  lTruncatedJson: TJSONObject;
+  lTruncatedMetrics: TAgentBridgeProviderQueryMetrics;
+  lTruncatedProvider: IRawElementProviderSimple;
+begin
+  lFailureMetrics := Default(TAgentBridgeProviderQueryMetrics);
+  lFailureProvider := CreateCountingProvider(lFailureMetrics, E_FAIL, 73, nil);
+  lFailureJson := JsonObjectFrom(
+    TAccessibilityAgentBridgeInternals.SerializeProviderNode(lFailureProvider, False, 2, 10));
+  try
+    Assert.AreEqual(1, JsonPairCount(lFailureJson, 'childCount'));
+    Assert.AreEqual(1, JsonPairCount(lFailureJson, 'childrenTruncated'));
+    Assert.AreEqual(0, JsonInt(lFailureJson, 'childCount'),
+      'A failed child-count query must not publish an undefined out value.');
+    Assert.AreEqual('false', JsonText(lFailureJson, 'childrenTruncated'));
+  finally
+    lFailureJson.Free;
+  end;
+
+  lDepthMetrics := Default(TAgentBridgeProviderQueryMetrics);
+  lDepthProvider := CreateCountingProvider(lDepthMetrics, S_OK, 4, nil);
+  lDepthJson := JsonObjectFrom(TAccessibilityAgentBridgeInternals.SerializeProviderNode(lDepthProvider, False, 0, 10));
+  try
+    Assert.AreEqual(1, JsonPairCount(lDepthJson, 'childCount'));
+    Assert.AreEqual(1, JsonPairCount(lDepthJson, 'childrenTruncated'));
+    Assert.AreEqual(0, JsonInt(lDepthJson, 'childCount'));
+    Assert.AreEqual('false', JsonText(lDepthJson, 'childrenTruncated'));
+    Assert.AreEqual('true', JsonText(lDepthJson, 'depthTruncated'));
+    Assert.AreEqual(0, lDepthMetrics.ChildAccessQueries,
+      'Depth-truncated nodes should not query child access.');
+  finally
+    lDepthJson.Free;
+  end;
+
+  lChildMetrics := Default(TAgentBridgeProviderQueryMetrics);
+  lTruncatedMetrics := Default(TAgentBridgeProviderQueryMetrics);
+  lChild := CreateCountingProvider(lChildMetrics, E_FAIL, 0, nil);
+  lTruncatedProvider := CreateCountingProvider(lTruncatedMetrics, S_OK, 2, lChild);
+  lTruncatedJson := JsonObjectFrom(
+    TAccessibilityAgentBridgeInternals.SerializeProviderNode(lTruncatedProvider, False, 2, 1));
+  try
+    Assert.AreEqual(1, JsonPairCount(lTruncatedJson, 'childCount'));
+    Assert.AreEqual(1, JsonPairCount(lTruncatedJson, 'childrenTruncated'));
+    Assert.AreEqual(2, JsonInt(lTruncatedJson, 'childCount'));
+    Assert.AreEqual('true', JsonText(lTruncatedJson, 'childrenTruncated'));
+    lChildren := JsonArrayValue(lTruncatedJson, 'children');
+    Assert.AreEqual(1, lChildren.Count, 'The configured child cap should limit serialized children.');
+  finally
+    lTruncatedJson.Free;
+  end;
 end;
 
 procedure TAccessibilityAgentBridgeTests.FormMapReturnsNativeAccessibilityRoleAndState;

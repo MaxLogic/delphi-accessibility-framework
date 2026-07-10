@@ -2,12 +2,21 @@ unit MaxLogic.Accessibility.AgentBridge;
 
 interface
 
+uses
+  MaxLogic.Accessibility.UIAutomationCore;
+
 type
   TAccessibilityAgentBridge = record
   public
     class function Execute(const aRequestJson: string): string; static;
     class function MutationEnabled: Boolean; static;
     class procedure SetMutationEnabled(aValue: Boolean); static;
+  end;
+
+  TAccessibilityAgentBridgeInternals = record
+  public
+    class function SerializeProviderNode(const aProvider: IRawElementProviderSimple; aFullDetail: Boolean;
+      aMaxDepth: Integer; aMaxChildren: Integer): string; static;
   end;
 
 implementation
@@ -18,7 +27,7 @@ uses
   Winapi.Messages, Winapi.Windows, Vcl.Buttons, Vcl.ComCtrls, Vcl.Controls, Vcl.ExtCtrls, Vcl.Forms, Vcl.Grids,
   Vcl.StdCtrls,
   MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.Framework, MaxLogic.Accessibility.Manager,
-  MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.Scanner, MaxLogic.Accessibility.Text, MaxLogic.Accessibility.UIAutomationCore,
+  MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.Scanner, MaxLogic.Accessibility.Text,
   MaxLogic.Accessibility.VclAdapters;
 
 type
@@ -640,10 +649,9 @@ begin
   Result := (not VarIsEmpty(aValue)) and (not VarIsNull(aValue)) and TryStrToInt(VarToStr(aValue), aInteger);
 end;
 
-function TryProviderStringProperty(const aProvider: IRawElementProviderSimple; aPropertyId: PROPERTYID;
-  out aValue: string): Boolean;
+function TryProviderStringProperty(const aProvider: IRawElementProviderSimple;
+  const aDirectAccess: IAccessibilityProviderDirectAccess; aPropertyId: PROPERTYID; out aValue: string): Boolean;
 var
-  lDirectAccess: IAccessibilityProviderDirectAccess;
   lValue: OleVariant;
 begin
   aValue := '';
@@ -652,9 +660,9 @@ begin
     Exit(False);
   end;
 
-  if Supports(aProvider, IAccessibilityProviderDirectAccess, lDirectAccess) then
+  if aDirectAccess <> nil then
   begin
-    Exit(lDirectAccess.TryGetStringProperty(aPropertyId, aValue));
+    Exit(aDirectAccess.TryGetStringProperty(aPropertyId, aValue));
   end;
 
   if aProvider.GetPropertyValue(aPropertyId, lValue) <> S_OK then
@@ -669,10 +677,9 @@ begin
   end;
 end;
 
-function TryProviderIntegerProperty(const aProvider: IRawElementProviderSimple; aPropertyId: PROPERTYID;
-  out aValue: Integer): Boolean;
+function TryProviderIntegerProperty(const aProvider: IRawElementProviderSimple;
+  const aDirectAccess: IAccessibilityProviderDirectAccess; aPropertyId: PROPERTYID; out aValue: Integer): Boolean;
 var
-  lDirectAccess: IAccessibilityProviderDirectAccess;
   lValue: OleVariant;
 begin
   aValue := 0;
@@ -681,9 +688,9 @@ begin
     Exit(False);
   end;
 
-  if Supports(aProvider, IAccessibilityProviderDirectAccess, lDirectAccess) then
+  if aDirectAccess <> nil then
   begin
-    Exit(lDirectAccess.TryGetIntegerProperty(aPropertyId, aValue));
+    Exit(aDirectAccess.TryGetIntegerProperty(aPropertyId, aValue));
   end;
 
   if aProvider.GetPropertyValue(aPropertyId, lValue) <> S_OK then
@@ -694,28 +701,23 @@ begin
   Result := TryVariantToInteger(lValue, aValue);
 end;
 
-function TryProviderNativeWindowHandle(const aProvider: IRawElementProviderSimple; out aValue: HWND): Boolean;
-var
-  lDirectAccess: IAccessibilityProviderDirectAccess;
+function TryProviderNativeWindowHandle(const aDirectAccess: IAccessibilityProviderDirectAccess;
+  out aValue: HWND): Boolean;
 begin
   aValue := 0;
-  Result := Supports(aProvider, IAccessibilityProviderDirectAccess, lDirectAccess) and
-    lDirectAccess.TryGetNativeWindowHandle(aValue);
+  Result := (aDirectAccess <> nil) and aDirectAccess.TryGetNativeWindowHandle(aValue);
 end;
 
-function TryProviderValueText(const aProvider: IRawElementProviderSimple; out aValue: string): Boolean;
-var
-  lDirectAccess: IAccessibilityProviderDirectAccess;
+function TryProviderValueText(const aDirectAccess: IAccessibilityProviderDirectAccess; out aValue: string): Boolean;
 begin
   aValue := '';
-  Result := Supports(aProvider, IAccessibilityProviderDirectAccess, lDirectAccess) and
-    lDirectAccess.TryGetValueText(aValue);
+  Result := (aDirectAccess <> nil) and aDirectAccess.TryGetValueText(aValue);
 end;
 
-function TryProviderBoundingRectangle(const aProvider: IRawElementProviderSimple; out aValue: UiaRect): Boolean;
+function TryProviderBoundingRectangle(const aProvider: IRawElementProviderSimple;
+  const aGeometryAccess: IAccessibilityProviderGeometryAccess; out aValue: UiaRect): Boolean;
 var
   lFragment: IRawElementProviderFragment;
-  lGeometryAccess: IAccessibilityProviderGeometryAccess;
 begin
   aValue := Default(UiaRect);
   if aProvider = nil then
@@ -723,8 +725,7 @@ begin
     Exit(False);
   end;
 
-  if Supports(aProvider, IAccessibilityProviderGeometryAccess, lGeometryAccess) and
-    lGeometryAccess.TryGetBoundingRectangle(aValue) then
+  if (aGeometryAccess <> nil) and aGeometryAccess.TryGetBoundingRectangle(aValue) then
   begin
     Exit(True);
   end;
@@ -733,17 +734,16 @@ begin
     (lFragment.Get_BoundingRectangle(aValue) = S_OK);
 end;
 
-procedure AddProviderVclInfo(aJson: TJSONObject; const aProvider: IRawElementProviderSimple);
+procedure AddProviderVclInfo(aJson: TJSONObject; const aInfo: IAccessibilityVclControlProviderInfo);
 var
   lControl: TControl;
-  lInfo: IAccessibilityVclControlProviderInfo;
 begin
-  if not Supports(aProvider, IAccessibilityVclControlProviderInfo, lInfo) then
+  if aInfo = nil then
   begin
     Exit;
   end;
 
-  lControl := lInfo.Control;
+  lControl := aInfo.Control;
   if lControl = nil then
   begin
     Exit;
@@ -762,22 +762,32 @@ var
   lChildCount: Integer;
   lChildren: TJSONArray;
   lControlTypeId: Integer;
+  lDirectAccess: IAccessibilityProviderDirectAccess;
+  lGeometryAccess: IAccessibilityProviderGeometryAccess;
   lHwnd: HWND;
   lRect: UiaRect;
   lText: string;
+  lVclInfo: IAccessibilityVclControlProviderInfo;
 begin
   Inc(aNodeCount);
   Result := TJSONObject.Create;
   AddInt(Result, 'depth', aDepth);
 
-  if TryProviderBoundingRectangle(aProvider, lRect) then
+  Supports(aProvider, IAccessibilityProviderDirectAccess, lDirectAccess);
+  Supports(aProvider, IAccessibilityProviderGeometryAccess, lGeometryAccess);
+  if aDetail = abmdFull then
+  begin
+    Supports(aProvider, IAccessibilityVclControlProviderInfo, lVclInfo);
+  end;
+
+  if TryProviderBoundingRectangle(aProvider, lGeometryAccess, lRect) then
   begin
     Result.AddPair('screenRect', UiaRectJson(lRect));
   end else begin
     Result.AddPair('screenRect', RectJson(Rect(0, 0, 0, 0)));
   end;
 
-  if TryProviderIntegerProperty(aProvider, UIA_ControlTypePropertyId, lControlTypeId) then
+  if TryProviderIntegerProperty(aProvider, lDirectAccess, UIA_ControlTypePropertyId, lControlTypeId) then
   begin
     AddInt(Result, 'uiaControlTypeId', lControlTypeId);
     Result.AddPair('uiaControlType', NativeUiaControlTypeName(lControlTypeId));
@@ -786,7 +796,7 @@ begin
     Result.AddPair('uiaControlType', NativeUiaControlTypeName(UIA_CustomControlTypeId));
   end;
 
-  if TryProviderNativeWindowHandle(aProvider, lHwnd) then
+  if TryProviderNativeWindowHandle(lDirectAccess, lHwnd) then
   begin
     AddUInt(Result, 'handle', UInt64(NativeUInt(lHwnd)));
   end else begin
@@ -795,57 +805,58 @@ begin
 
   if aDetail = abmdFull then
   begin
-    if TryProviderStringProperty(aProvider, UIA_NamePropertyId, lText) then
+    if TryProviderStringProperty(aProvider, lDirectAccess, UIA_NamePropertyId, lText) then
     begin
       Result.AddPair('name', lText);
     end else begin
       Result.AddPair('name', '');
     end;
 
-    if TryProviderStringProperty(aProvider, UIA_AutomationIdPropertyId, lText) then
+    if TryProviderStringProperty(aProvider, lDirectAccess, UIA_AutomationIdPropertyId, lText) then
     begin
       Result.AddPair('automationId', lText);
     end else begin
       Result.AddPair('automationId', '');
     end;
 
-    if TryProviderStringProperty(aProvider, UIA_ClassNamePropertyId, lText) then
+    if TryProviderStringProperty(aProvider, lDirectAccess, UIA_ClassNamePropertyId, lText) then
     begin
       Result.AddPair('className', lText);
     end else begin
       Result.AddPair('className', '');
     end;
 
-    if TryProviderStringProperty(aProvider, UIA_FrameworkIdPropertyId, lText) then
+    if TryProviderStringProperty(aProvider, lDirectAccess, UIA_FrameworkIdPropertyId, lText) then
     begin
       Result.AddPair('frameworkId', lText);
     end else begin
       Result.AddPair('frameworkId', '');
     end;
 
-    if TryProviderStringProperty(aProvider, UIA_HelpTextPropertyId, lText) then
+    if TryProviderStringProperty(aProvider, lDirectAccess, UIA_HelpTextPropertyId, lText) then
     begin
       Result.AddPair('helpText', lText);
     end else begin
       Result.AddPair('helpText', '');
     end;
 
-    if TryProviderValueText(aProvider, lText) then
+    if TryProviderValueText(lDirectAccess, lText) then
     begin
       Result.AddPair('value', lText);
     end else begin
       Result.AddPair('value', '');
     end;
 
-    AddProviderVclInfo(Result, aProvider);
+    AddProviderVclInfo(Result, lVclInfo);
   end;
 
   lChildren := TJSONArray.Create;
   Result.AddPair('children', lChildren);
-  AddInt(Result, 'childCount', 0);
-  AddBool(Result, 'childrenTruncated', False);
+  lChildCount := 0;
   if aDepth >= aMaxDepth then
   begin
+    AddInt(Result, 'childCount', lChildCount);
+    AddBool(Result, 'childrenTruncated', False);
     AddBool(Result, 'depthTruncated', True);
     Exit;
   end;
@@ -853,11 +864,12 @@ begin
   if not Supports(aProvider, IAccessibilityProviderChildAccess, lChildAccess) or
     (lChildAccess.DirectChildCount(lChildCount) <> S_OK) then
   begin
+    lChildCount := 0;
+    AddInt(Result, 'childCount', lChildCount);
+    AddBool(Result, 'childrenTruncated', False);
     Exit;
   end;
 
-  Result.RemovePair('childCount').Free;
-  Result.RemovePair('childrenTruncated').Free;
   AddInt(Result, 'childCount', lChildCount);
   AddBool(Result, 'childrenTruncated', lChildCount > aMaxChildren);
 
@@ -873,6 +885,25 @@ begin
       lChildren.AddElement(ProviderNodeJson(lChild, Succ(aDepth), aMaxDepth, aMaxChildren, aDetail, aNodeCount));
     end;
   end;
+end;
+
+class function TAccessibilityAgentBridgeInternals.SerializeProviderNode(const aProvider: IRawElementProviderSimple;
+  aFullDetail: Boolean; aMaxDepth: Integer; aMaxChildren: Integer): string;
+var
+  lDetail: TAccessibilityAgentBridgeMapDetail;
+  lNodeCount: Integer;
+  lRoot: TJSONObject;
+begin
+  if aFullDetail then
+  begin
+    lDetail := abmdFull;
+  end else begin
+    lDetail := abmdGeometry;
+  end;
+
+  lNodeCount := 0;
+  lRoot := ProviderNodeJson(aProvider, 0, aMaxDepth, aMaxChildren, lDetail, lNodeCount);
+  Result := JsonObjectToString(lRoot);
 end;
 
 function CheckBoxStateName(aState: Integer; aChecked: Boolean): string;

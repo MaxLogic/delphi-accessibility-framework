@@ -22,6 +22,12 @@ This review covers the current dirty worktree. It does not treat the current ant
 
 The practical conclusion is that further micro-optimizing already-small provider callback bodies will not deliver the largest gain. We first need to remove work that blocks the VCL thread, reduce repeated boundary setup, and keep provider trees bounded.
 
+## Implementation status
+
+| Task | Status | Evidence |
+| --- | --- | --- |
+| T-109 | Complete | Provider-map serialization queries direct-access, geometry, VCL metadata, and child-access interfaces once per node. Runtime tests cover query counts, failed child counts, depth limits, child limits, and detail levels. Debug correctness gates pass; no latency claim is made because Windows Defender was active during the run. |
+
 ## Ranked findings
 
 ### 1. P0 - Synchronous diagnostics block accessibility requests

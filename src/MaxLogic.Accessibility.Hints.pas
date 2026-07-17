@@ -55,6 +55,7 @@ type
   TAccessibilityHintControllerInternals = record
   public
     class function ObserverCount(aController: TAccessibilityHintController): Integer; static;
+    class function ObserverHookCount(aController: TAccessibilityHintController): Integer; static;
     class function ObserverRefreshCount(aController: TAccessibilityHintController): Integer; static;
   end;
 
@@ -100,7 +101,7 @@ type
   public
     constructor Create(aController: TAccessibilityHintController; aForm: TCustomForm); reintroduce;
     destructor Destroy; override;
-    procedure ControlChanged;
+    procedure ControlInserted(aControl: TControl);
     procedure ControlMouseEnter(aHookControl: TWinControl; const aMessage: TMessage);
     procedure Refresh;
   end;
@@ -360,10 +361,9 @@ begin
     end;
 
     if (not fPassive) and (fObserver <> nil) and
-      (((aMessage.Msg = CM_CONTROLCHANGE) and (aMessage.LParam <> 0)) or
-      ((aMessage.Msg = CM_CONTROLLISTCHANGE) and (aMessage.LParam = 0))) then
+      (aMessage.Msg = CM_CONTROLCHANGE) and (aMessage.LParam <> 0) then
     begin
-      fObserver.ControlChanged;
+      fObserver.ControlInserted(TControl(aMessage.WParam));
     end;
 
     lOriginalWindowProc(aMessage);
@@ -409,9 +409,12 @@ begin
   inherited Destroy;
 end;
 
-procedure TAccessibilityHintFormObserver.ControlChanged;
+procedure TAccessibilityHintFormObserver.ControlInserted(aControl: TControl);
 begin
-  Refresh;
+  if aControl is TWinControl then
+  begin
+    HookWinControls(TWinControl(aControl));
+  end;
 end;
 
 procedure TAccessibilityHintFormObserver.ControlMouseEnter(aHookControl: TWinControl; const aMessage: TMessage);
@@ -476,6 +479,23 @@ begin
     Exit(0);
   end;
   Result := aController.fObservers.Count;
+end;
+
+class function TAccessibilityHintControllerInternals.ObserverHookCount(
+  aController: TAccessibilityHintController): Integer;
+var
+  lObserver: TComponent;
+begin
+  Result := 0;
+  if aController = nil then
+  begin
+    Exit;
+  end;
+
+  for lObserver in aController.fObservers.Values do
+  begin
+    Inc(Result, (lObserver as TAccessibilityHintFormObserver).fHooks.Count);
+  end;
 end;
 
 class function TAccessibilityHintControllerInternals.ObserverRefreshCount(

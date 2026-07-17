@@ -34,6 +34,7 @@ The practical conclusion is that further micro-optimizing already-small provider
 | T-114 | Complete | Stable blank regions on forms, panels, and group boxes cache one conservative negative hover resolution. Direct-child identity, bounds, visibility, semantic messages, focus, and geometry guard invalidation; custom virtual providers remain uncached unless they explicitly prove VCL-complete geometry. Manager passes 103/103, the full Debug suite passes 374/374, shutdown passes 8/8, and the Release Basic UIA probe passes. Defender remained active, so wall-time acceptance is deferred. |
 | T-115 | Complete | Each installed form/control hook retains one MSAA wrapper, routes `OBJID_CLIENT` without entering the UIA handler, and releases the wrapper before provider disconnect. MSAA passes 18/18, the full Debug suite passes 378/378, shutdown passes 8/8, and the Release Basic UIA probe passes. Defender remained active, so deterministic query-count reduction is accepted and wall-time acceptance is deferred. |
 | T-116 | Complete | The built-in pipe transport parses and serializes on its worker while synchronizing only VCL/provider capture and detached response-tree construction. Phase timings and thread IDs are explicit, maps have bounded defaults and caps, AgentBridge passes 32/32, the full Debug suite passes 380/380, shutdown passes 8/8, and the Release Basic UIA probe passes. Defender remained active, so the threading/bounds result is accepted and wall-time acceptance is deferred. |
+| T-117 | Complete | An inserting `CM_CONTROLCHANGE` hooks only the added windowed subtree. A 1,020-control test retains 1,021 hooks with one initial full-tree refresh; Hints passes 25/25 in Debug and Release, the full Debug suite passes 381/381, shutdown passes 8/8, and the Release Hints UIA probe passes. Defender remained active, so the bounded-work result is accepted and wall-time acceptance is deferred. |
 
 ### T-110 measurement record
 
@@ -397,6 +398,31 @@ Proof required: a large map reports honest total time and spends materially less
 
 Implemented by T-116. The pipe worker owns parsing and serialization, the VCL thread owns all capture/provider access, and tests verify thread IDs, timing relationships, response equivalence, and configured map bounds. The exact geometry sample reduced median synchronized work from an estimated 0.8701 ms to 0.6749 ms, but Defender contaminated wall time; structural threading and bounded-work acceptance is complete while idle timing acceptance remains deferred.
 
+### T-117 measurement record
+
+The process-local benchmark times each insertion into an already observed form. It uses Win32 Release with diagnostics disabled, 20 warmups, and 1,000 measured controls. The final form has 1,020 inserted controls, 1,021 hooks including the form, and only the initial full-tree refresh.
+
+| Samples | Median | p95 | p99 | Maximum | CPU before/after | Antivirus |
+| ---: | ---: | ---: | ---: | ---: | --- | --- |
+| 1,000 | 0.0021 ms | 0.0033 ms | 0.0054 ms | 0.0177 ms | 31% / 38% | Microsoft Defender active, 489.8 / 486.6 MiB |
+
+External UIA wall time used the Win32 Release demo with diagnostics disabled, 10 warmups, and 200 samples per operation in each framework mode.
+
+| Framework | Operation | Median | p95 | p99 | Maximum |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Enabled | Send `WM_KEYDOWN`/`WM_KEYUP` | 4.810 ms | 22.597 ms | 30.046 ms | 48.613 ms |
+| Enabled | `AutomationElement.FromHandle` | 2.967 ms | 13.219 ms | 16.190 ms | 19.896 ms |
+| Enabled | Current properties | 0.501 ms | 3.444 ms | 7.989 ms | 20.504 ms |
+| Enabled | `FindAll` children | 0.090 ms | 0.190 ms | 2.439 ms | 2.795 ms |
+| Enabled | Scan selected child | 0.085 ms | 0.137 ms | 0.189 ms | 11.276 ms |
+| Disabled | Send `WM_KEYDOWN`/`WM_KEYUP` | 3.244 ms | 14.485 ms | 22.844 ms | 25.686 ms |
+| Disabled | `AutomationElement.FromHandle` | 2.492 ms | 12.344 ms | 23.440 ms | 31.488 ms |
+| Disabled | Current properties | 0.405 ms | 1.729 ms | 7.282 ms | 9.534 ms |
+| Disabled | `FindAll` children | 0.061 ms | 0.117 ms | 0.168 ms | 1.639 ms |
+| Disabled | Scan selected child | 0.051 ms | 0.064 ms | 0.098 ms | 2.641 ms |
+
+External CPU was 27% before and 34% after with Defender active. The enabled and disabled tree samples were 28 nodes in 338.824 ms and 36 nodes in 327.340 ms. The target again surfaced as a zero-child Pane, so this is host-boundary evidence rather than semantic listbox acceptance. Wall-time acceptance remains deferred until the machine is idle.
+
 ### 8. P2 - Dynamic hint changes can rescan a growing form repeatedly
 
 Location: `src/MaxLogic.Accessibility.Hints.pas:355-400,426-459`
@@ -406,6 +432,8 @@ Every relevant control-list notification calls `Refresh`, which walks the whole 
 Recommended change: hook only the added subtree when message data is reliable, or coalesce one deferred refresh per message cycle.
 
 Proof required: adding 1,000 controls performs bounded/coalesced refresh work and every new windowed control receives a hint hook.
+
+Implemented by T-117. The observer consumes the inserted control from `CM_CONTROLCHANGE` and recursively hooks only that `TWinControl` subtree. Removal no longer causes a full-form refresh; each control-owned hook already handles its own destruction. The exact scaling test proves all 1,020 controls are hooked with one initial full-tree refresh.
 
 ### 9. P2 - Supplemental event fanout needs measurement before reduction
 

@@ -53,6 +53,8 @@ type
     [Test]
     procedure RepeatedObserveDoesNotRefreshExistingFormTrees;
     [Test]
+    procedure DynamicControlBurstHooksEveryControlWithoutFullTreeRefresh;
+    [Test]
     procedure ObserverIndexUsesPointerIdentity;
     [Test]
     procedure UninstallDuringObservedMouseEnterDoesNotReadFreedHook;
@@ -63,11 +65,15 @@ type
 implementation
 
 uses
-  System.Classes, System.Generics.Collections, System.SysUtils, System.Variants, Winapi.Windows, Vcl.Controls,
-  Vcl.ExtCtrls, Vcl.Forms, Vcl.StdCtrls, DUnitX.Assert, MaxLogic.Accessibility.Diagnostics,
-  MaxLogic.Accessibility.Hints, MaxLogic.Accessibility.Manager, MaxLogic.Accessibility.ProviderCore,
-  MaxLogic.Accessibility.UIAutomationCore,
+  System.Classes, System.Diagnostics, System.Generics.Collections, System.IOUtils, System.JSON, System.SysUtils,
+  System.Variants, Winapi.Windows, Vcl.Controls, Vcl.ExtCtrls, Vcl.Forms, Vcl.StdCtrls, DUnitX.Assert,
+  MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.Hints, MaxLogic.Accessibility.Manager,
+  MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.UIAutomationCore,
   MaxLogic.Accessibility.VclAdapters;
+
+const
+  cT117SampleCount = 1000;
+  cT117WarmupCount = 20;
 
 type
   // Real UIA notification delivery needs an external UIA client, so this fake preserves the event boundary deterministically.
@@ -134,6 +140,118 @@ type
     function Equals(aObject: TObject): Boolean; override;
     function GetHashCode: Integer; override;
   end;
+
+  THintTestWinControl = class(TWinControl);
+
+function HintHookArtifactFileName: string;
+var
+  lRunsDir: string;
+begin
+  lRunsDir := TPath.Combine(TPath.Combine(GetCurrentDir, '.agents'), 'runs');
+  ForceDirectories(lRunsDir);
+  Result := TPath.Combine(lRunsDir, 't117-hint-hook-current.json');
+end;
+
+function HintHookMillisecondsFromTicks(aTicks: Int64): Double;
+begin
+  Result := (aTicks * 1000.0) / TStopwatch.Frequency;
+end;
+
+function HintHookNearestRankIndex(aSampleCount: Integer; aPercentile: Integer): Integer;
+begin
+  Result := (((aSampleCount * aPercentile) + 99) div 100) - 1;
+end;
+
+procedure WriteHintHookArtifact(const aSamples: TArray<Int64>; aHookCount: Integer; aRefreshCount: Integer);
+{$IFDEF RELEASE}
+const
+  cBuildConfiguration = 'Release';
+{$ELSE}
+const
+  cBuildConfiguration = 'Debug';
+{$ENDIF}
+var
+  lJson: TJSONObject;
+  lMaximumIndex: Integer;
+  lMedianIndex: Integer;
+  lP95Index: Integer;
+  lP99Index: Integer;
+begin
+  lMaximumIndex := Pred(Length(aSamples));
+  lMedianIndex := HintHookNearestRankIndex(Length(aSamples), 50);
+  lP95Index := HintHookNearestRankIndex(Length(aSamples), 95);
+  lP99Index := HintHookNearestRankIndex(Length(aSamples), 99);
+  lJson := TJSONObject.Create;
+  try
+    lJson.AddPair('task', 'T-117');
+    lJson.AddPair('scenario', 'dynamic-hint-hook-insertion');
+    lJson.AddPair('buildConfiguration', cBuildConfiguration);
+    lJson.AddPair('diagnosticsState', 'disabled');
+    lJson.AddPair('warmupCount', TJSONNumber.Create(cT117WarmupCount));
+    lJson.AddPair('sampleCount', TJSONNumber.Create(cT117SampleCount));
+    lJson.AddPair('totalControlCount', TJSONNumber.Create(cT117WarmupCount + cT117SampleCount));
+    lJson.AddPair('stopwatchFrequency', TJSONNumber.Create(TStopwatch.Frequency));
+    lJson.AddPair('medianTicks', TJSONNumber.Create(aSamples[lMedianIndex]));
+    lJson.AddPair('p95Ticks', TJSONNumber.Create(aSamples[lP95Index]));
+    lJson.AddPair('p99Ticks', TJSONNumber.Create(aSamples[lP99Index]));
+    lJson.AddPair('maximumTicks', TJSONNumber.Create(aSamples[lMaximumIndex]));
+    lJson.AddPair('medianMs', TJSONNumber.Create(HintHookMillisecondsFromTicks(aSamples[lMedianIndex])));
+    lJson.AddPair('p95Ms', TJSONNumber.Create(HintHookMillisecondsFromTicks(aSamples[lP95Index])));
+    lJson.AddPair('p99Ms', TJSONNumber.Create(HintHookMillisecondsFromTicks(aSamples[lP99Index])));
+    lJson.AddPair('maximumMs', TJSONNumber.Create(HintHookMillisecondsFromTicks(aSamples[lMaximumIndex])));
+    lJson.AddPair('hookCount', TJSONNumber.Create(aHookCount));
+    lJson.AddPair('fullTreeRefreshCount', TJSONNumber.Create(aRefreshCount));
+    TFile.WriteAllText(HintHookArtifactFileName, lJson.ToJSON, TEncoding.UTF8);
+  finally
+    lJson.Free;
+  end;
+end;
+
+procedure RunDynamicHintHookBurst(aController: TAccessibilityHintController; aForm: TForm;
+  const aApi: IHintTestUiaApi; aBalloonHint: TBalloonHint);
+var
+  lControl: THintTestWinControl;
+  lHookCount: Integer;
+  lRefreshCount: Integer;
+  lSamples: TArray<Int64>;
+  lStopwatch: TStopwatch;
+begin
+  SetLength(lSamples, cT117SampleCount);
+  aForm.DisableAlign;
+  try
+    for var i := 0 to Pred(cT117WarmupCount + cT117SampleCount) do
+    begin
+      lControl := THintTestWinControl.Create(aForm);
+      if i < cT117WarmupCount then
+      begin
+        lControl.Parent := aForm;
+      end else begin
+        lStopwatch := TStopwatch.StartNew;
+        lControl.Parent := aForm;
+        lSamples[i - cT117WarmupCount] := lStopwatch.ElapsedTicks;
+      end;
+    end;
+  finally
+    aForm.EnableAlign;
+  end;
+
+  lControl := THintTestWinControl(aForm.Controls[Pred(aForm.ControlCount)]);
+  lControl.Hint := 'Last control|Last description';
+  lControl.CustomHint := aBalloonHint;
+  lControl.ShowHint := True;
+  lControl.Perform(CM_MOUSEENTER, 0, 0);
+
+  lHookCount := TAccessibilityHintControllerInternals.ObserverHookCount(aController);
+  lRefreshCount := TAccessibilityHintControllerInternals.ObserverRefreshCount(aController);
+  TArray.Sort<Int64>(lSamples);
+  WriteHintHookArtifact(lSamples, lHookCount, lRefreshCount);
+
+  Assert.AreEqual(1, aApi.NotificationCalls, 'A dynamically inserted windowed control must have a working hint hook.');
+  Assert.AreEqual(Succ(cT117WarmupCount + cT117SampleCount), lHookCount,
+    'The form and every dynamically inserted windowed control must have exactly one hint hook.');
+  Assert.AreEqual(1, lRefreshCount, 'Dynamic insertions must not rescan the complete growing form tree.');
+  Assert.IsTrue(TFile.Exists(HintHookArtifactFileName), 'Hint-hook latency artifact was not written.');
+end;
 
 function TEqualHintTestForm.Equals(aObject: TObject): Boolean;
 begin
@@ -1107,6 +1225,31 @@ begin
   finally
     lController.Free;
     lForms.Free;
+  end;
+end;
+
+procedure TAccessibilityHintTests.DynamicControlBurstHooksEveryControlWithoutFullTreeRefresh;
+var
+  lApi: IHintTestUiaApi;
+  lBalloonHint: TBalloonHint;
+  lController: TAccessibilityHintController;
+  lForm: TForm;
+  lProvider: IAccessibilityProviderNode;
+begin
+  Assert.IsFalse(TAccessibilityDiagnostics.Enabled, 'Performance acceptance requires diagnostics to be disabled.');
+  lApi := THintTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  lProvider := TAccessibilityProviderFactory.CreateRoot([713], 0, lApi);
+  lController := TAccessibilityHintController.Create(nil, lProvider, lApi);
+  lForm := TForm.Create(nil);
+  lBalloonHint := TBalloonHint.Create(nil);
+  try
+    lController.ObserveForm(lForm);
+    RunDynamicHintHookBurst(lController, lForm, lApi, lBalloonHint);
+  finally
+    lController.Free;
+    lBalloonHint.Free;
+    lForm.Free;
   end;
 end;
 

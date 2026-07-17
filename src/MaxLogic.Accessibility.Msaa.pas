@@ -11,7 +11,10 @@ type
   public
     class function CreateAccessible(const aProvider: IRawElementProviderSimple): IAccessible; static;
     class function TryHandleGetObject(aWParam: WPARAM; aLParam: LPARAM;
-      const aProvider: IRawElementProviderSimple; out aResult: LRESULT): Boolean; static;
+      const aProvider: IRawElementProviderSimple; out aResult: LRESULT): Boolean; overload; static;
+    class function TryHandleGetObject(aWParam: WPARAM; aLParam: LPARAM;
+      const aProvider: IRawElementProviderSimple; var aAccessible: IAccessible; out aResult: LRESULT): Boolean;
+      overload; static;
   end;
 
 implementation
@@ -823,9 +826,7 @@ begin
 end;
 
 class function TAccessibilityMsaaBridge.TryHandleGetObject(aWParam: WPARAM; aLParam: LPARAM;
-  const aProvider: IRawElementProviderSimple; out aResult: LRESULT): Boolean;
-var
-  lAccessible: IAccessible;
+  const aProvider: IRawElementProviderSimple; var aAccessible: IAccessible; out aResult: LRESULT): Boolean;
 begin
   aResult := 0;
   Result := False;
@@ -834,9 +835,22 @@ begin
     Exit;
   end;
 
-  lAccessible := CreateAccessible(aProvider);
-  aResult := LresultFromObject(IID_IAccessible, aWParam, lAccessible);
+  if aAccessible = nil then
+  begin
+    aAccessible := CreateAccessible(aProvider);
+  end;
+
+  aResult := LresultFromObject(IID_IAccessible, aWParam, aAccessible);
   Result := aResult <> 0;
+end;
+
+class function TAccessibilityMsaaBridge.TryHandleGetObject(aWParam: WPARAM; aLParam: LPARAM;
+  const aProvider: IRawElementProviderSimple; out aResult: LRESULT): Boolean;
+var
+  lAccessible: IAccessible;
+begin
+  lAccessible := nil;
+  Result := TryHandleGetObject(aWParam, aLParam, aProvider, lAccessible, aResult);
 end;
 
 end.

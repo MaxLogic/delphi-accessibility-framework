@@ -32,6 +32,7 @@ The practical conclusion is that further micro-optimizing already-small provider
 | T-112 | Complete | Active-form notifications install only `Screen.ActiveCustomForm`; pointer-keyed, form-owned hint observers avoid repeated refreshes and unregister on destruction. Manager passes 91/91, T-112 scaling passes 1/1, Hints passes 24/24, shutdown passes 6/6, and Release Basic/Hint UIA probes pass. The unrelated bridge scaling performance test timed out under Defender, so that gate and all wall-time acceptance remain deferred. |
 | T-113 | Complete | Memo/listbox retained providers are bounded by viewport plus focus/selection; pruning uses one item-count read and a direct index bitmap; stale subtrees become unavailable before disconnect callbacks. The final Debug suite passes 362/362 and Release `MemoListStatus` passes. Defender remained active, so wall-time acceptance is deferred. |
 | T-114 | Complete | Stable blank regions on forms, panels, and group boxes cache one conservative negative hover resolution. Direct-child identity, bounds, visibility, semantic messages, focus, and geometry guard invalidation; custom virtual providers remain uncached unless they explicitly prove VCL-complete geometry. Manager passes 103/103, the full Debug suite passes 374/374, shutdown passes 8/8, and the Release Basic UIA probe passes. Defender remained active, so wall-time acceptance is deferred. |
+| T-115 | Complete | Each installed form/control hook retains one MSAA wrapper, routes `OBJID_CLIENT` without entering the UIA handler, and releases the wrapper before provider disconnect. MSAA passes 18/18, the full Debug suite passes 378/378, shutdown passes 8/8, and the Release Basic UIA probe passes. Defender remained active, so deterministic query-count reduction is accepted and wall-time acceptance is deferred. |
 
 ### T-110 measurement record
 
@@ -181,6 +182,36 @@ External UIA wall time used the exact Win32 Release demo, diagnostics disabled, 
 
 External CPU was 14% before and 13% after with Defender active. The enabled tree sample returned 28 nodes in 279.473 ms; disabled returned 36 nodes in 193.463 ms. As in earlier runs, the target listbox HWND surfaced as a zero-child `ControlType.Pane`; this is host-boundary evidence, not virtual-list semantic acceptance. Exact artifacts are `.agents/runs/t114-process-local-exact-release-20260717/summary.json` and `.agents/runs/t114-external-uia-exact-release-defender-20260717.json`.
 
+### T-115 measurement record
+
+The manager now examines the `WM_GETOBJECT` object ID before choosing a handler. `UiaRootObjectId` enters only the UIA path; `OBJID_CLIENT` enters only the MSAA path. Each form/control hook lazily creates one `IAccessible` wrapper and clears it before provider disconnect. Repeated real requests preserve COM identity and accessibility semantics, while a wrapper retained by a client returns the existing unavailable result after uninstall.
+
+Process-local work used Win32 Release, diagnostics disabled, 20 warmups, and 200 samples per path. The baseline calls the compatibility overload, which creates a wrapper and resolves direct access for every request; the final path retains the wrapper between requests.
+
+| Path | Samples | Direct-access queries | Median | p95 | p99 | Maximum |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Per-request wrapper baseline | 200 | 200 | 0.2011 ms | 0.6112 ms | 2.5580 ms | 2.7725 ms |
+| Per-hook cached wrapper | 200 | 0 | 0.1621 ms | 0.8813 ms | 2.3739 ms | 3.1585 ms |
+
+CPU was 28% before and 40% after. Microsoft Defender was active and its working set moved from 626.0 MiB to 633.1 MiB. The median improved and all 200 repeated interface queries disappeared, but p95 and maximum were mixed under load. The deterministic wrapper/query reduction is accepted; no tail-latency or idle-machine speedup claim is made.
+
+External UIA wall time used the exact normal-path Win32 Release demo, diagnostics disabled, 10 warmups, and 200 samples per framework mode.
+
+| Framework | Operation | Samples | Median | p95 | p99 | Maximum |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Enabled | Send `WM_KEYDOWN`/`WM_KEYUP` | 200 | 12.491 ms | 32.793 ms | 41.829 ms | 85.920 ms |
+| Enabled | `AutomationElement.FromHandle` | 200 | 7.983 ms | 49.249 ms | 68.399 ms | 94.716 ms |
+| Enabled | Current properties | 200 | 1.211 ms | 18.477 ms | 23.650 ms | 34.434 ms |
+| Enabled | `FindAll` children | 200 | 0.105 ms | 0.270 ms | 1.308 ms | 2.216 ms |
+| Enabled | Scan selected child | 200 | 0.076 ms | 0.132 ms | 0.164 ms | 4.718 ms |
+| Disabled | Send `WM_KEYDOWN`/`WM_KEYUP` | 200 | 13.327 ms | 35.513 ms | 46.067 ms | 70.307 ms |
+| Disabled | `AutomationElement.FromHandle` | 200 | 8.705 ms | 46.434 ms | 75.178 ms | 108.105 ms |
+| Disabled | Current properties | 200 | 1.505 ms | 17.961 ms | 34.986 ms | 38.222 ms |
+| Disabled | `FindAll` children | 200 | 0.089 ms | 0.188 ms | 1.459 ms | 2.494 ms |
+| Disabled | Scan selected child | 200 | 0.054 ms | 0.069 ms | 0.090 ms | 0.106 ms |
+
+External CPU was 34% before and 32% after with Defender active. The enabled tree sample returned 28 nodes in 367.558 ms; disabled returned 36 in 327.600 ms. The target listbox again surfaced as a zero-child `ControlType.Pane`, so this is host-boundary and correctness context rather than semantic listbox or idle performance acceptance. Exact artifacts are `.agents/runs/t115-msaa-getobject-release-exact.json` and `.agents/runs/t115-external-uia-final-release-defender-20260717.json`.
+
 ## Ranked findings
 
 ### 1. P0 - Synchronous diagnostics block accessibility requests
@@ -299,6 +330,8 @@ Recommended change: route by object ID before invoking the unrelated handler and
 Expected effect: no per-request wrapper allocation or repeated `Supports` calls, and no irrelevant UIA-handler work for MSAA requests.
 
 Proof required: repeated `OBJID_CLIENT` requests reuse one wrapper and preserve role, name, state, and shutdown safety.
+
+Implemented by T-115. The deterministic result is zero repeated direct-access interface queries after warmup and one wrapper identity per installed hook; contaminated wall-time distributions are retained above without an acceptance claim.
 
 ### 7. P1 - Agent bridge requests monopolize the VCL thread
 

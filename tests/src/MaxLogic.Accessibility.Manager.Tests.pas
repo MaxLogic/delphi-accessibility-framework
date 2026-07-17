@@ -72,6 +72,12 @@ type
     [Test]
     procedure FormInstallHandlesPageControlMsaaGetObjectForTabHeaders;
     [Test]
+    [Category('Msaa')]
+    procedure FormInstallReusesPageControlMsaaWrapperAndDisconnectsItOnUninstall;
+    [Test]
+    [Category('Msaa')]
+    procedure FormInstallRoutesMsaaGetObjectWithoutEnteringUiaHandler;
+    [Test]
     procedure FormInstallObjectFromPointReturnsPageControlTabHeader;
     [Test]
     procedure FormInstallObjectFromPointReturnsActiveTabSheetNestedLabel;
@@ -1280,6 +1286,58 @@ begin
   Assert.IsNotNull(Result);
 end;
 
+function SameAccessibleIdentity(const aFirst: IAccessible; const aSecond: IAccessible): Boolean;
+var
+  lFirstIdentity: IUnknown;
+  lSecondIdentity: IUnknown;
+begin
+  lFirstIdentity := aFirst as IUnknown;
+  lSecondIdentity := aSecond as IUnknown;
+  Result := Pointer(lFirstIdentity) = Pointer(lSecondIdentity);
+end;
+
+function RepeatedMsaaAccessibleFromControl(aControl: TWinControl): IAccessible;
+const
+  cObjIdClient = LPARAM(OBJID_CLIENT);
+var
+  lFirst: IAccessible;
+  lResult: Winapi.Windows.LRESULT;
+begin
+  lResult := SendMessage(aControl.Handle, WM_GETOBJECT, 0, cObjIdClient);
+  lFirst := AccessibleFromLResult(lResult, 0);
+  lResult := SendMessage(aControl.Handle, WM_GETOBJECT, 0, cObjIdClient);
+  Result := AccessibleFromLResult(lResult, 0);
+  Assert.IsTrue(SameAccessibleIdentity(lFirst, Result),
+    'Repeated OBJID_CLIENT requests should reuse one MSAA wrapper per provider hook.');
+end;
+
+procedure CreateManagerMsaaPageControlFixture(out aForm: TForm; out aPageControl: TPageControl;
+  out aTab: TTabSheet);
+begin
+  aForm := TForm.Create(nil);
+  try
+    aForm.SetBounds(100, 100, 420, 260);
+    aPageControl := TPageControl.Create(aForm);
+    aPageControl.Parent := aForm;
+    aPageControl.SetBounds(12, 12, 360, 200);
+    aTab := TTabSheet.Create(aForm);
+    aTab.Caption := 'Orders';
+    aTab.PageControl := aPageControl;
+    aPageControl.HandleNeeded;
+  except
+    aForm.Free;
+    raise;
+  end;
+end;
+
+procedure AssertMsaaAccessibleDisconnected(const aAccessible: IAccessible);
+var
+  lName: WideString;
+begin
+  Assert.AreEqual(S_FALSE, aAccessible.Get_accName(CHILDID_SELF, lName));
+  Assert.AreEqual('', string(lName));
+end;
+
 function AccessibleObjectFromPointAt(const aPoint: TPoint; out aChild: VARIANT): IAccessible;
 begin
   Result := nil;
@@ -1327,6 +1385,24 @@ begin
   lState := Unassigned;
   Assert.AreEqual(S_OK, aAccessible.Get_accState(CHILDID_SELF, lState));
   Result := Integer(lState);
+end;
+
+procedure AssertManagerMsaaPageControlTab(const aAccessible: IAccessible; aPageControl: TPageControl;
+  aTab: TTabSheet);
+var
+  lPoint: TPoint;
+  lState: Integer;
+  lTabAccessible: IAccessible;
+  lTabRect: TRect;
+begin
+  lTabRect := aPageControl.TabRect(aTab.TabIndex);
+  lPoint := aPageControl.ClientToScreen(lTabRect.CenterPoint);
+  lTabAccessible := AccessibleHitTestAt(aAccessible, lPoint);
+  Assert.AreEqual('Orders', AccessibleName(lTabAccessible));
+  Assert.AreEqual(ROLE_SYSTEM_PAGETAB, AccessibleRole(lTabAccessible));
+  lState := AccessibleState(lTabAccessible);
+  Assert.IsTrue((lState and STATE_SYSTEM_SELECTABLE) <> 0);
+  Assert.IsTrue((lState and STATE_SYSTEM_SELECTED) <> 0);
 end;
 
 function ControlScreenCenter(aControl: TControl): TPoint;
@@ -2911,6 +2987,72 @@ begin
       CoUninitialize;
     end;
     ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallReusesPageControlMsaaWrapperAndDisconnectsItOnUninstall;
+var
+  lAccessible: IAccessible;
+  lCoInit: HRESULT;
+  lPageControl: TPageControl;
+  lTab: TTabSheet;
+  lForm: TForm;
+begin
+  ResetManager;
+  lCoInit := CoInitialize(nil);
+  CreateManagerMsaaPageControlFixture(lForm, lPageControl, lTab);
+  try
+    Assert.IsTrue((lCoInit = S_OK) or (lCoInit = S_FALSE) or (lCoInit = RPC_E_CHANGED_MODE));
+    TAccessibilityManager.Install(lForm);
+    lAccessible := RepeatedMsaaAccessibleFromControl(lPageControl);
+    AssertManagerMsaaPageControlTab(lAccessible, lPageControl, lTab);
+    TAccessibilityManager.Uninstall;
+    AssertMsaaAccessibleDisconnected(lAccessible);
+  finally
+    lAccessible := nil;
+    lForm.Free;
+    if (lCoInit = S_OK) or (lCoInit = S_FALSE) then
+    begin
+      CoUninitialize;
+    end;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallRoutesMsaaGetObjectWithoutEnteringUiaHandler;
+var
+  lAccessible: IAccessible;
+  lCoInit: HRESULT;
+  lForm: TForm;
+  lLogFile: string;
+  lLogText: string;
+begin
+  ResetManager;
+  TAccessibilityDiagnostics.Disable;
+  lCoInit := CoInitialize(nil);
+  lLogFile := TPath.GetTempFileName;
+  lForm := TForm.Create(nil);
+  try
+    Assert.IsTrue((lCoInit = S_OK) or (lCoInit = S_FALSE) or (lCoInit = RPC_E_CHANGED_MODE));
+    TAccessibilityDiagnostics.Configure(lLogFile);
+    TAccessibilityManager.Install(lForm);
+    lAccessible := RepeatedMsaaAccessibleFromControl(lForm);
+    Assert.IsNotNull(lAccessible);
+    Assert.IsTrue(TAccessibilityDiagnosticsInternals.FlushLog(5000), 'Diagnostics did not become idle.');
+    TAccessibilityDiagnostics.Disable;
+    lLogText := TFile.ReadAllText(lLogFile, TEncoding.UTF8);
+    Assert.DoesNotContain(lLogText, 'WM_GETOBJECT ignored',
+      'OBJID_CLIENT must route directly to MSAA without entering the UIA handler.');
+  finally
+    TAccessibilityDiagnostics.Disable;
+    lForm.Free;
+    ResetManager;
+    TFile.Delete(lLogFile);
+    lAccessible := nil;
+    if (lCoInit = S_OK) or (lCoInit = S_FALSE) then
+    begin
+      CoUninitialize;
+    end;
   end;
 end;
 

@@ -40,17 +40,38 @@ type
     procedure MsaaHitTestUsesDirectNestedProviderRootAccess;
     [Test]
     procedure MsaaDirectAccessIsResolvedOncePerAccessibleWrapper;
+    [Test]
+    procedure MsaaObjectCacheReusesWrapperUntilCleared;
+    [Test]
+    [Category('T115Performance')]
+    procedure MsaaObjectCacheMeasuresRepeatedGetObjectLatency;
   end;
 
 implementation
 
 uses
-  System.SysUtils, System.Types, System.TypInfo, System.Variants, Winapi.ActiveX, Winapi.oleacc, Winapi.Windows,
-  Vcl.ComCtrls, Vcl.Controls, Vcl.Forms, Vcl.Grids, Vcl.StdCtrls, MaxLogic.Accessibility.Diagnostics,
-  MaxLogic.Accessibility.Msaa, MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.UIAutomationCore,
-  MaxLogic.Accessibility.VclAdapters;
+  System.Diagnostics, System.Generics.Collections, System.IOUtils, System.SysUtils, System.Types, System.TypInfo,
+  System.Variants, Winapi.ActiveX, Winapi.oleacc, Winapi.Windows, Vcl.ComCtrls, Vcl.Controls, Vcl.Forms, Vcl.Grids,
+  Vcl.StdCtrls, MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.Msaa,
+  MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.UIAutomationCore, MaxLogic.Accessibility.VclAdapters;
+
+const
+{$IFDEF RELEASE}
+  cT115BuildConfiguration = 'Release';
+{$ELSE}
+  cT115BuildConfiguration = 'Debug';
+{$ENDIF}
+  cT115SampleCount = 200;
+  cT115WarmupCount = 20;
 
 type
+  TT115GetObjectMode = (gomUncached, gomCached);
+
+  TT115Measurement = record
+    fInterfaceQueryCount: Integer;
+    fSamples: TArray<Int64>;
+  end;
+
   TFailingMsaaChildProvider = class(TAccessibilityProviderRoot)
   protected
     procedure PrepareChildrenForNavigation; override;
@@ -312,6 +333,19 @@ begin
   Result := True;
 end;
 
+procedure CreateCountingDirectAccessProvider(out aProvider: TCountingDirectAccessProvider;
+  out aSimple: IRawElementProviderSimple);
+begin
+  aProvider := TCountingDirectAccessProvider.Create;
+  try
+    aSimple := aProvider as IRawElementProviderSimple;
+  except
+    aProvider.Free;
+    aProvider := nil;
+    raise;
+  end;
+end;
+
 procedure TFailingMsaaChildProvider.PrepareChildrenForNavigation;
 begin
   raise Exception.Create('Synthetic provider failure while navigating MSAA children.');
@@ -347,6 +381,138 @@ function AccessibleFromDispatch(const aDispatch: IDispatch): IAccessible;
 begin
   Result := nil;
   Assert.IsTrue(Supports(aDispatch, IAccessible, Result));
+end;
+
+function AccessibleFromObjectResult(aResult: LRESULT; aWParam: WPARAM): IAccessible;
+begin
+  Result := nil;
+  Assert.IsTrue(aResult <> 0, 'MSAA WM_GETOBJECT did not return an object result.');
+  Assert.AreEqual(S_OK, ObjectFromLresult(aResult, IID_IAccessible, aWParam, Result));
+  Assert.IsNotNull(Result);
+end;
+
+function SameAccessibleIdentity(const aFirst: IAccessible; const aSecond: IAccessible): Boolean;
+var
+  lFirstIdentity: IUnknown;
+  lSecondIdentity: IUnknown;
+begin
+  lFirstIdentity := aFirst as IUnknown;
+  lSecondIdentity := aSecond as IUnknown;
+  Result := Pointer(lFirstIdentity) = Pointer(lSecondIdentity);
+end;
+
+function T115ArtifactFileName: string;
+var
+  lAgentsDir: string;
+  lRunsDir: string;
+begin
+  lAgentsDir := TPath.Combine(GetCurrentDir, '.agents');
+  lRunsDir := TPath.Combine(lAgentsDir, 'runs');
+  ForceDirectories(lRunsDir);
+  Result := TPath.Combine(lRunsDir, 't115-msaa-getobject-' + LowerCase(cT115BuildConfiguration) + '-current.json');
+end;
+
+function T115MillisecondsFromTicks(aTicks: Int64): Double;
+begin
+  Result := (aTicks * 1000.0) / TStopwatch.Frequency;
+end;
+
+function T115NearestRankIndex(aSampleCount: Integer; aPercentile: Integer): Integer;
+begin
+  Result := (((aSampleCount * aPercentile) + 99) div 100) - 1;
+end;
+
+function T115StatsJson(const aSamples: TArray<Int64>; aInterfaceQueryCount: Integer): string;
+var
+  lMaximum: Int64;
+  lMedian: Int64;
+  lP95: Int64;
+  lP99: Int64;
+  lSamples: TArray<Int64>;
+begin
+  lSamples := Copy(aSamples);
+  TArray.Sort<Int64>(lSamples);
+  lMedian := lSamples[T115NearestRankIndex(Length(lSamples), 50)];
+  lP95 := lSamples[T115NearestRankIndex(Length(lSamples), 95)];
+  lP99 := lSamples[T115NearestRankIndex(Length(lSamples), 99)];
+  lMaximum := lSamples[High(lSamples)];
+  Result := '{"interfaceQueryCount":' + IntToStr(aInterfaceQueryCount) +
+    ',"medianTicks":' + IntToStr(lMedian) +
+    ',"p95Ticks":' + IntToStr(lP95) +
+    ',"p99Ticks":' + IntToStr(lP99) +
+    ',"maximumTicks":' + IntToStr(lMaximum) +
+    ',"medianMs":' + FloatToStrF(T115MillisecondsFromTicks(lMedian), ffFixed, 18, 6, TFormatSettings.Invariant) +
+    ',"p95Ms":' + FloatToStrF(T115MillisecondsFromTicks(lP95), ffFixed, 18, 6, TFormatSettings.Invariant) +
+    ',"p99Ms":' + FloatToStrF(T115MillisecondsFromTicks(lP99), ffFixed, 18, 6, TFormatSettings.Invariant) +
+    ',"maximumMs":' + FloatToStrF(T115MillisecondsFromTicks(lMaximum), ffFixed, 18, 6,
+    TFormatSettings.Invariant) + '}';
+end;
+
+procedure WriteT115Artifact(const aUncached: TT115Measurement; const aCached: TT115Measurement);
+var
+  lDiagnosticsState: string;
+  lJson: string;
+begin
+  if TAccessibilityDiagnostics.Enabled then
+  begin
+    lDiagnosticsState := 'enabled';
+  end else begin
+    lDiagnosticsState := 'disabled';
+  end;
+  lJson := '{"scenario":"t115-msaa-getobject","buildConfiguration":"' + cT115BuildConfiguration +
+    '","diagnosticsState":"' + lDiagnosticsState +
+    '","warmupCount":' + IntToStr(cT115WarmupCount) +
+    ',"sampleCount":' + IntToStr(cT115SampleCount) +
+    ',"stopwatchFrequency":' + IntToStr(TStopwatch.Frequency) +
+    ',"uncached":' + T115StatsJson(aUncached.fSamples, aUncached.fInterfaceQueryCount) +
+    ',"cached":' + T115StatsJson(aCached.fSamples, aCached.fInterfaceQueryCount) + '}';
+  TFile.WriteAllText(T115ArtifactFileName, lJson, TEncoding.UTF8);
+end;
+
+function T115AccessibleFromProvider(aMode: TT115GetObjectMode; const aProvider: IRawElementProviderSimple;
+  var aCachedAccessible: IAccessible): IAccessible;
+const
+  cObjIdClient = LPARAM(OBJID_CLIENT);
+var
+  lResult: Winapi.Windows.LRESULT;
+begin
+  case aMode of
+    TT115GetObjectMode.gomUncached:
+      Assert.IsTrue(TAccessibilityMsaaBridge.TryHandleGetObject(0, cObjIdClient, aProvider, lResult));
+    TT115GetObjectMode.gomCached:
+      Assert.IsTrue(TAccessibilityMsaaBridge.TryHandleGetObject(0, cObjIdClient, aProvider, aCachedAccessible,
+        lResult));
+  end;
+  Result := AccessibleFromObjectResult(lResult, 0);
+end;
+
+procedure MeasureT115GetObject(aMode: TT115GetObjectMode; aProvider: TCountingDirectAccessProvider;
+  const aSimple: IRawElementProviderSimple; var aCachedAccessible: IAccessible; out aMeasurement: TT115Measurement);
+var
+  i: Integer;
+  lAccessible: IAccessible;
+  lStopwatch: TStopwatch;
+begin
+  i := cT115WarmupCount;
+  while i > 0 do
+  begin
+    lAccessible := T115AccessibleFromProvider(aMode, aSimple, aCachedAccessible);
+    Assert.IsNotNull(lAccessible);
+    lAccessible := nil;
+    Dec(i);
+  end;
+
+  aProvider.ResetDirectAccessQueryCount;
+  SetLength(aMeasurement.fSamples, cT115SampleCount);
+  for i := 0 to Pred(cT115SampleCount) do
+  begin
+    lStopwatch := TStopwatch.StartNew;
+    lAccessible := T115AccessibleFromProvider(aMode, aSimple, aCachedAccessible);
+    aMeasurement.fSamples[i] := lStopwatch.ElapsedTicks;
+    Assert.IsNotNull(lAccessible);
+    lAccessible := nil;
+  end;
+  aMeasurement.fInterfaceQueryCount := aProvider.DirectAccessQueryCount;
 end;
 
 function AccessibleName(const aAccessible: IAccessible): string;
@@ -1060,9 +1226,8 @@ var
   lState: OleVariant;
   lValue: WideString;
 begin
-  lProvider := TCountingDirectAccessProvider.Create;
+  CreateCountingDirectAccessProvider(lProvider, lSimple);
   try
-    lSimple := lProvider as IRawElementProviderSimple;
     lAccessible := TAccessibilityMsaaBridge.CreateAccessible(lSimple);
     lProvider.ResetDirectAccessQueryCount;
 
@@ -1092,6 +1257,82 @@ begin
     lAccessible := nil;
     lSimple := nil;
     lProvider.Free;
+  end;
+end;
+
+procedure TAccessibilityMsaaTests.MsaaObjectCacheReusesWrapperUntilCleared;
+var
+  lCachedAccessible: IAccessible;
+  lCoInit: HRESULT;
+  lFirst: IAccessible;
+  lProvider: TCountingDirectAccessProvider;
+  lSecond: IAccessible;
+  lSimple: IRawElementProviderSimple;
+  lThird: IAccessible;
+begin
+  lCachedAccessible := nil;
+  lCoInit := CoInitialize(nil);
+  CreateCountingDirectAccessProvider(lProvider, lSimple);
+  try
+    Assert.IsTrue((lCoInit = S_OK) or (lCoInit = S_FALSE) or (lCoInit = RPC_E_CHANGED_MODE));
+    lProvider.ResetDirectAccessQueryCount;
+
+    lFirst := T115AccessibleFromProvider(TT115GetObjectMode.gomCached, lSimple, lCachedAccessible);
+    lSecond := T115AccessibleFromProvider(TT115GetObjectMode.gomCached, lSimple, lCachedAccessible);
+    Assert.IsTrue(SameAccessibleIdentity(lFirst, lSecond));
+    Assert.AreEqual(1, lProvider.DirectAccessQueryCount,
+      'Repeated requests must not resolve wrapper interfaces again.');
+
+    lCachedAccessible := nil;
+    lThird := T115AccessibleFromProvider(TT115GetObjectMode.gomCached, lSimple, lCachedAccessible);
+    Assert.IsFalse(SameAccessibleIdentity(lFirst, lThird));
+    Assert.AreEqual(2, lProvider.DirectAccessQueryCount,
+      'Clearing the cache must release its wrapper and create one replacement on demand.');
+  finally
+    lCachedAccessible := nil;
+    lFirst := nil;
+    lSecond := nil;
+    lSimple := nil;
+    lThird := nil;
+    lProvider.Free;
+    if (lCoInit = S_OK) or (lCoInit = S_FALSE) then
+    begin
+      CoUninitialize;
+    end;
+  end;
+end;
+
+procedure TAccessibilityMsaaTests.MsaaObjectCacheMeasuresRepeatedGetObjectLatency;
+var
+  lCachedAccessible: IAccessible;
+  lCachedMeasurement: TT115Measurement;
+  lCoInit: HRESULT;
+  lProvider: TCountingDirectAccessProvider;
+  lSimple: IRawElementProviderSimple;
+  lUncachedMeasurement: TT115Measurement;
+begin
+  TAccessibilityDiagnostics.Disable;
+  lCachedAccessible := nil;
+  lCoInit := CoInitialize(nil);
+  CreateCountingDirectAccessProvider(lProvider, lSimple);
+  try
+    Assert.IsTrue((lCoInit = S_OK) or (lCoInit = S_FALSE) or (lCoInit = RPC_E_CHANGED_MODE));
+
+    MeasureT115GetObject(TT115GetObjectMode.gomUncached, lProvider, lSimple, lCachedAccessible,
+      lUncachedMeasurement);
+    Assert.AreEqual(cT115SampleCount, lUncachedMeasurement.fInterfaceQueryCount);
+    MeasureT115GetObject(TT115GetObjectMode.gomCached, lProvider, lSimple, lCachedAccessible,
+      lCachedMeasurement);
+    Assert.AreEqual(0, lCachedMeasurement.fInterfaceQueryCount);
+    WriteT115Artifact(lUncachedMeasurement, lCachedMeasurement);
+  finally
+    lCachedAccessible := nil;
+    lSimple := nil;
+    lProvider.Free;
+    if (lCoInit = S_OK) or (lCoInit = S_FALSE) then
+    begin
+      CoUninitialize;
+    end;
   end;
 end;
 

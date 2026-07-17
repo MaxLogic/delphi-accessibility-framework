@@ -42,7 +42,7 @@ implementation
 
 uses
   System.Classes, System.Diagnostics, System.Generics.Collections, System.SysUtils, System.Types, System.Variants,
-  Winapi.Messages, Vcl.ComCtrls, Vcl.Controls, Vcl.ExtCtrls, Vcl.Grids, Vcl.StdCtrls,
+  Winapi.Messages, Winapi.oleacc, Vcl.ComCtrls, Vcl.Controls, Vcl.ExtCtrls, Vcl.Grids, Vcl.StdCtrls,
   MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.Hints, MaxLogic.Accessibility.Msaa,
   MaxLogic.Accessibility.Text, MaxLogic.Accessibility.VclAdapters;
 
@@ -117,6 +117,7 @@ type
     fChildHooksByControl: TDictionary<TWinControl, TAccessibilityControlWindowHook>;
     fForm: TCustomForm;
     fHoverCache: THoverCache;
+    fMsaaAccessible: IAccessible;
     fOriginalWindowProc: TWndMethod;
     fPassive: Boolean;
     fProvider: IAccessibilityProviderNode;
@@ -157,6 +158,7 @@ type
     fLastListBoxIndex: Integer;
     fLastRaisedProviderState: TProviderStateSnapshot;
     fListBoxSelectionTracker: IAccessibilityListBoxSelectionTracker;
+    fMsaaAccessible: IAccessible;
     fOriginalWindowProc: TWndMethod;
     fPassive: Boolean;
     fPreserveNativeWindowAccessibility: Boolean;
@@ -1726,6 +1728,7 @@ end;
 
 procedure TAccessibilityFormWindowHook.DisconnectProvider;
 begin
+  fMsaaAccessible := nil;
   fHoverCache.Clear;
   if fProvider <> nil then
   begin
@@ -2067,30 +2070,33 @@ begin
     fHoverCache.ClearMiss;
   end;
 
-  if (not fPassive) and (fForm <> nil) and (fProvider <> nil) and (aMessage.Msg = WM_GETOBJECT) and
-    TAccessibilityProviderWindowMessages.TryHandleGetObject(fForm.Handle, aMessage.WParam, aMessage.LParam,
-    fProvider.RawElementProvider, fApi, lResult) then
+  if (not fPassive) and (fForm <> nil) and (fProvider <> nil) and (aMessage.Msg = WM_GETOBJECT) then
   begin
-    if TAccessibilityDiagnostics.Enabled then
+    if (aMessage.LParam = LPARAM(UiaRootObjectId)) and
+      TAccessibilityProviderWindowMessages.TryHandleGetObject(fForm.Handle, aMessage.WParam, aMessage.LParam,
+      fProvider.RawElementProvider, fApi, lResult) then
     begin
-      TAccessibilityDiagnostics.Log(Format('Form WM_GETOBJECT handled form=%s hwnd=%d lParam=%d',
-        [ControlDescription(fForm), fForm.Handle, aMessage.LParam]));
+      if TAccessibilityDiagnostics.Enabled then
+      begin
+        TAccessibilityDiagnostics.Log(Format('Form WM_GETOBJECT handled form=%s hwnd=%d lParam=%d',
+          [ControlDescription(fForm), fForm.Handle, aMessage.LParam]));
+      end;
+      aMessage.Result := lResult;
+      Exit;
     end;
-    aMessage.Result := lResult;
-    Exit;
-  end;
 
-  if (not fPassive) and (fForm <> nil) and (fProvider <> nil) and (aMessage.Msg = WM_GETOBJECT) and
-    TAccessibilityMsaaBridge.TryHandleGetObject(aMessage.WParam, aMessage.LParam, fProvider.RawElementProvider,
-    lResult) then
-  begin
-    if TAccessibilityDiagnostics.Enabled then
+    if (aMessage.LParam = LPARAM(OBJID_CLIENT)) and
+      TAccessibilityMsaaBridge.TryHandleGetObject(aMessage.WParam, aMessage.LParam, fProvider.RawElementProvider,
+      fMsaaAccessible, lResult) then
     begin
-      TAccessibilityDiagnostics.Log(Format('Form MSAA WM_GETOBJECT handled form=%s hwnd=%d lParam=%d',
-        [ControlDescription(fForm), fForm.Handle, aMessage.LParam]));
+      if TAccessibilityDiagnostics.Enabled then
+      begin
+        TAccessibilityDiagnostics.Log(Format('Form MSAA WM_GETOBJECT handled form=%s hwnd=%d lParam=%d',
+          [ControlDescription(fForm), fForm.Handle, aMessage.LParam]));
+      end;
+      aMessage.Result := lResult;
+      Exit;
     end;
-    aMessage.Result := lResult;
-    Exit;
   end;
 
   fOriginalWindowProc(aMessage);
@@ -2167,6 +2173,7 @@ end;
 
 procedure TAccessibilityControlWindowHook.Detach;
 begin
+  fMsaaAccessible := nil;
   fHoverCache.Clear;
   if fControl <> nil then
   begin
@@ -2471,6 +2478,7 @@ begin
   inherited Notification(aComponent, aOperation);
   if (aOperation = opRemove) and (aComponent = fControl) then
   begin
+    fMsaaAccessible := nil;
     fHoverCache.Clear;
     if SameWndMethod(fControl.WindowProc, WindowProc) then
     begin
@@ -2488,6 +2496,7 @@ end;
 function TAccessibilityControlWindowHook.Passivate: Boolean;
 begin
   Result := False;
+  fMsaaAccessible := nil;
   fHoverCache.Clear;
   fApi := nil;
   fListBoxSelectionTracker := nil;
@@ -2773,40 +2782,43 @@ begin
   end;
 
   if (not fPreserveNativeWindowAccessibility) and (not fPassive) and (fControl <> nil) and (fProvider <> nil) and
-    (aMessage.Msg = WM_GETOBJECT) and (aMessage.LParam = LPARAM(UiaRootObjectId)) and
-    not (fControl is TPageControl) and not ProviderPublishesControlNativeWindowHandle then
+    (aMessage.Msg = WM_GETOBJECT) then
   begin
-    if TAccessibilityDiagnostics.Enabled then
+    if aMessage.LParam = LPARAM(UiaRootObjectId) then
     begin
-      TAccessibilityDiagnostics.Log(Format(
-        'Child WM_GETOBJECT skipped framework provider control=%s hwnd=%d; native handle not published',
-        [ControlDescription(fControl), fControl.Handle]));
+      if not (fControl is TPageControl) and not ProviderPublishesControlNativeWindowHandle then
+      begin
+        if TAccessibilityDiagnostics.Enabled then
+        begin
+          TAccessibilityDiagnostics.Log(Format(
+            'Child WM_GETOBJECT skipped framework provider control=%s hwnd=%d; native handle not published',
+            [ControlDescription(fControl), fControl.Handle]));
+        end;
+      end else if TAccessibilityProviderWindowMessages.TryHandleGetObject(fControl.Handle, aMessage.WParam,
+        aMessage.LParam, fProvider, fApi, lResult) then
+      begin
+        if TAccessibilityDiagnostics.Enabled then
+        begin
+          TAccessibilityDiagnostics.Log(Format('Child WM_GETOBJECT handled control=%s hwnd=%d lParam=%d',
+            [ControlDescription(fControl), fControl.Handle, aMessage.LParam]));
+        end;
+        aMessage.Result := lResult;
+        Exit;
+      end;
     end;
-  end else if (not fPreserveNativeWindowAccessibility) and (not fPassive) and (fControl <> nil) and (fProvider <> nil) and
-    (aMessage.Msg = WM_GETOBJECT) and
-    TAccessibilityProviderWindowMessages.TryHandleGetObject(fControl.Handle, aMessage.WParam, aMessage.LParam,
-    fProvider, fApi, lResult) then
-  begin
-    if TAccessibilityDiagnostics.Enabled then
-    begin
-      TAccessibilityDiagnostics.Log(Format('Child WM_GETOBJECT handled control=%s hwnd=%d lParam=%d',
-        [ControlDescription(fControl), fControl.Handle, aMessage.LParam]));
-    end;
-    aMessage.Result := lResult;
-    Exit;
-  end;
 
-  if (not fPreserveNativeWindowAccessibility) and (not fPassive) and (fControl <> nil) and (fProvider <> nil) and
-    (aMessage.Msg = WM_GETOBJECT) and
-    TAccessibilityMsaaBridge.TryHandleGetObject(aMessage.WParam, aMessage.LParam, fProvider, lResult) then
-  begin
-    if TAccessibilityDiagnostics.Enabled then
+    if (aMessage.LParam = LPARAM(OBJID_CLIENT)) and
+      TAccessibilityMsaaBridge.TryHandleGetObject(aMessage.WParam, aMessage.LParam, fProvider, fMsaaAccessible,
+      lResult) then
     begin
-      TAccessibilityDiagnostics.Log(Format('Child MSAA WM_GETOBJECT handled control=%s hwnd=%d lParam=%d',
-        [ControlDescription(fControl), fControl.Handle, aMessage.LParam]));
+      if TAccessibilityDiagnostics.Enabled then
+      begin
+        TAccessibilityDiagnostics.Log(Format('Child MSAA WM_GETOBJECT handled control=%s hwnd=%d lParam=%d',
+          [ControlDescription(fControl), fControl.Handle, aMessage.LParam]));
+      end;
+      aMessage.Result := lResult;
+      Exit;
     end;
-    aMessage.Result := lResult;
-    Exit;
   end;
 
   lIsBlurMessage := aMessage.Msg = CM_EXIT;

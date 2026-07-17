@@ -95,6 +95,7 @@ type
     fClassNameProperty: string;
     fControlTypeProperty: Integer;
     fDisconnected: Boolean;
+    fDisconnectNotificationPending: Boolean;
     fDirectChildAccessReadsRemaining: Integer;
     fFrameworkIdProperty: string;
     fFragmentRootNode: TAccessibilityProviderNode;
@@ -123,16 +124,27 @@ type
     fRuntimeId: TArray<Integer>;
     fUseHostRawElementProvider: Boolean;
     class function FromNode(const aNode: IAccessibilityProviderNode): TAccessibilityProviderNode; static;
+    function BuildChildRemovalFlags(const aChildren: TArray<IAccessibilityProviderNode>;
+      out aRemovedCount: Integer): TArray<Boolean>;
     function ChildCount: Integer;
     function ChildIndex(aChild: TAccessibilityProviderNode): Integer;
     function ChildProviderAt(aIndex: Integer): IAccessibilityProviderNode;
     procedure ClearHostProviderCache;
+    procedure ClearRemovedChildParents(aChildren: TList<IAccessibilityProviderNode>;
+      const aRemovalFlags: TArray<Boolean>);
+    function CreateRetainedChildren(const aRemovalFlags: TArray<Boolean>;
+      aRemovedCount: Integer): TList<IAccessibilityProviderNode>;
     function CreateRuntimeIdSafeArray: PSafeArray;
     procedure DetachChildrenFromParentDestruction;
     procedure DetachFromParentDestruction;
     function EnsureChildren: TList<IAccessibilityProviderNode>;
+    procedure FinalizeRemovedChildren(aChildren: TList<IAccessibilityProviderNode>;
+      const aRemovalFlags: TArray<Boolean>; aDisconnect: Boolean);
     function FragmentRootNode: TAccessibilityProviderNode;
     function FragmentRootNodeCachedOrComputed: TAccessibilityProviderNode;
+    procedure MarkDisconnectedRecursive;
+    procedure NotifyDisconnectedRecursive(var aFirstException: TObject);
+    class procedure RaiseCapturedException(var aException: TObject); static;
     procedure RefreshChildIndexesFrom(aStartIndex: Integer);
     procedure RemoveFallbackProperty(aPropertyId: PROPERTYID);
     procedure SetOwnerLink(aOwnerLink: TComponent);
@@ -156,9 +168,15 @@ type
     function DoSetFocus: HResult; virtual;
     function FindDescendantFromPoint(aX: Double; aY: Double; out aProvider: IRawElementProviderFragment): Boolean;
     function HasCurrentChildIndex(aChild: TAccessibilityProviderNode): Boolean;
+    procedure InsertChildNode(aIndex: Integer; const aChild: IAccessibilityProviderNode);
+    procedure InsertChildIntoList(aChildren: TList<IAccessibilityProviderNode>; aIndex: Integer;
+      const aChild: IAccessibilityProviderNode); virtual;
     function ParentRawElementProvider: IRawElementProviderSimple;
     procedure PrepareChildrenForNavigation; virtual;
     procedure RemoveChildNode(const aChild: IAccessibilityProviderNode; aDisconnect: Boolean);
+    procedure RemoveChildNodes(const aChildren: TArray<IAccessibilityProviderNode>; aDisconnect: Boolean);
+    function RemoveChildNodesByIndexFlags(const aRemovalFlags: TArray<Boolean>;
+      aRemovedCount: Integer; aDisconnect: Boolean): Boolean;
     procedure SetOverrideNativeProvider(aValue: Boolean);
     procedure SetPublishNativeWindowHandle(aValue: Boolean);
     procedure SetUseHostRawElementProvider(aValue: Boolean);
@@ -593,9 +611,16 @@ begin
 end;
 
 procedure TAccessibilityProviderNode.AddChild(const aChild: IAccessibilityProviderNode);
+begin
+  InsertChildNode(ChildCount, aChild);
+end;
+
+procedure TAccessibilityProviderNode.InsertChildNode(aIndex: Integer;
+  const aChild: IAccessibilityProviderNode);
 var
   lChild: TAccessibilityProviderNode;
   lChildren: TList<IAccessibilityProviderNode>;
+  lInsertedIndex: Integer;
 begin
   lChild := FromNode(aChild);
   if lChild.fParent <> nil then
@@ -604,12 +629,37 @@ begin
   end;
 
   lChildren := EnsureChildren;
+  if (aIndex < 0) or (aIndex > lChildren.Count) then
+  begin
+    raise EArgumentOutOfRangeException.CreateFmt('Child index %d is outside 0..%d.',
+      [aIndex, lChildren.Count]);
+  end;
+
   fDirectChildAccessReadsRemaining := 0;
-  lChild.fParent := Self;
-  lChild.fParentIndex := lChildren.Count;
-  lChild.AssignApiRecursive(fApi);
-  lChild.UpdateFragmentRootCacheRecursive(FragmentRootNodeCachedOrComputed);
-  lChildren.Add(aChild);
+  try
+    InsertChildIntoList(lChildren, aIndex, aChild);
+    lChild.AssignApiRecursive(fApi);
+    lChild.UpdateFragmentRootCacheRecursive(FragmentRootNodeCachedOrComputed);
+    lChild.fParent := Self;
+    RefreshChildIndexesFrom(aIndex);
+  except
+    lChild.fParent := nil;
+    lChild.fParentIndex := -1;
+    lChild.UpdateFragmentRootCacheRecursive(nil);
+    lInsertedIndex := lChildren.IndexOf(aChild);
+    if lInsertedIndex >= 0 then
+    begin
+      lChildren.Delete(lInsertedIndex);
+      RefreshChildIndexesFrom(lInsertedIndex);
+    end;
+    raise;
+  end;
+end;
+
+procedure TAccessibilityProviderNode.InsertChildIntoList(aChildren: TList<IAccessibilityProviderNode>;
+  aIndex: Integer; const aChild: IAccessibilityProviderNode);
+begin
+  aChildren.Insert(aIndex, aChild);
 end;
 
 procedure TAccessibilityProviderNode.AssignApiRecursive(const aApi: IAccessibilityUiaApi);
@@ -773,29 +823,20 @@ end;
 
 procedure TAccessibilityProviderNode.Disconnect;
 var
-  lChild: IAccessibilityProviderNode;
+  lFirstException: TObject;
 begin
   if fDisconnected then
   begin
     Exit;
   end;
 
-  fDisconnected := True;
-  fFragmentRootNode := nil;
-  fChildrenPreparedForNavigation := False;
-  fDirectChildAccessReadsRemaining := 0;
-  ClearHostProviderCache;
-  if fChildren <> nil then
-  begin
-    for lChild in fChildren do
-    begin
-      lChild.Disconnect;
-    end;
-  end;
-
-  if fApi <> nil then
-  begin
-    fApi.DisconnectProvider(RawElementProvider);
+  lFirstException := nil;
+  MarkDisconnectedRecursive;
+  try
+    NotifyDisconnectedRecursive(lFirstException);
+    RaiseCapturedException(lFirstException);
+  finally
+    lFirstException.Free;
   end;
 end;
 
@@ -1226,6 +1267,182 @@ begin
   fChildrenPreparedForNavigation := True;
 end;
 
+function TAccessibilityProviderNode.BuildChildRemovalFlags(
+  const aChildren: TArray<IAccessibilityProviderNode>; out aRemovedCount: Integer): TArray<Boolean>;
+var
+  lChild: IAccessibilityProviderNode;
+  lChildNode: TAccessibilityProviderNode;
+  lIndex: Integer;
+begin
+  SetLength(Result, fChildren.Count);
+  aRemovedCount := 0;
+  for lChild in aChildren do
+  begin
+    if lChild = nil then
+    begin
+      Continue;
+    end;
+
+    lChildNode := FromNode(lChild);
+    if lChildNode.fParent <> Self then
+    begin
+      Continue;
+    end;
+    lIndex := ChildIndex(lChildNode);
+    if (lIndex >= 0) and not Result[lIndex] then
+    begin
+      Result[lIndex] := True;
+      Inc(aRemovedCount);
+    end;
+  end;
+end;
+
+procedure TAccessibilityProviderNode.ClearRemovedChildParents(
+  aChildren: TList<IAccessibilityProviderNode>; const aRemovalFlags: TArray<Boolean>);
+var
+  i: Integer;
+  lChildNode: TAccessibilityProviderNode;
+begin
+  for i := 0 to Pred(aChildren.Count) do
+  begin
+    if aRemovalFlags[i] then
+    begin
+      lChildNode := FromNode(aChildren[i]);
+      lChildNode.fParent := nil;
+      lChildNode.fParentIndex := -1;
+    end;
+  end;
+end;
+
+function TAccessibilityProviderNode.CreateRetainedChildren(
+  const aRemovalFlags: TArray<Boolean>; aRemovedCount: Integer): TList<IAccessibilityProviderNode>;
+var
+  i: Integer;
+begin
+  Result := TList<IAccessibilityProviderNode>.Create;
+  try
+    Result.Capacity := fChildren.Count - aRemovedCount;
+    for i := 0 to Pred(fChildren.Count) do
+    begin
+      if not aRemovalFlags[i] then
+      begin
+        Result.Add(fChildren[i]);
+      end;
+    end;
+  except
+    Result.Free;
+    raise;
+  end;
+end;
+
+procedure TAccessibilityProviderNode.FinalizeRemovedChildren(
+  aChildren: TList<IAccessibilityProviderNode>; const aRemovalFlags: TArray<Boolean>;
+  aDisconnect: Boolean);
+var
+  i: Integer;
+  lChild: IAccessibilityProviderNode;
+  lFirstException: TObject;
+begin
+  if aDisconnect then
+  begin
+    for i := 0 to Pred(aChildren.Count) do
+    begin
+      if aRemovalFlags[i] then
+      begin
+        FromNode(aChildren[i]).MarkDisconnectedRecursive;
+      end;
+    end;
+
+    lFirstException := nil;
+    try
+      for i := 0 to Pred(aChildren.Count) do
+      begin
+        if aRemovalFlags[i] then
+        begin
+          FromNode(aChildren[i]).NotifyDisconnectedRecursive(lFirstException);
+        end;
+      end;
+      RaiseCapturedException(lFirstException);
+    finally
+      lFirstException.Free;
+    end;
+    Exit;
+  end;
+
+  for i := 0 to Pred(aChildren.Count) do
+  begin
+    if aRemovalFlags[i] then
+    begin
+      lChild := aChildren[i];
+      FromNode(lChild).DetachFromParentDestruction;
+    end;
+  end;
+end;
+
+procedure TAccessibilityProviderNode.MarkDisconnectedRecursive;
+var
+  lChild: IAccessibilityProviderNode;
+begin
+  if fDisconnected then
+  begin
+    Exit;
+  end;
+
+  fDisconnected := True;
+  fDisconnectNotificationPending := fApi <> nil;
+  fFragmentRootNode := nil;
+  fChildrenPreparedForNavigation := False;
+  fDirectChildAccessReadsRemaining := 0;
+  ClearHostProviderCache;
+  if fChildren <> nil then
+  begin
+    for lChild in fChildren do
+    begin
+      FromNode(lChild).MarkDisconnectedRecursive;
+    end;
+  end;
+end;
+
+procedure TAccessibilityProviderNode.NotifyDisconnectedRecursive(var aFirstException: TObject);
+var
+  lChild: IAccessibilityProviderNode;
+begin
+  if fChildren <> nil then
+  begin
+    for lChild in fChildren do
+    begin
+      FromNode(lChild).NotifyDisconnectedRecursive(aFirstException);
+    end;
+  end;
+
+  if not fDisconnectNotificationPending then
+  begin
+    Exit;
+  end;
+
+  fDisconnectNotificationPending := False;
+  try
+    fApi.DisconnectProvider(RawElementProvider);
+  except
+    if aFirstException = nil then
+    begin
+      aFirstException := AcquireExceptionObject;
+    end;
+  end;
+end;
+
+class procedure TAccessibilityProviderNode.RaiseCapturedException(var aException: TObject);
+var
+  lException: TObject;
+begin
+  lException := aException;
+  aException := nil;
+  if lException <> nil then
+  begin
+    raise lException;
+  end;
+end;
+
 procedure TAccessibilityProviderNode.RemoveChildNode(const aChild: IAccessibilityProviderNode;
   aDisconnect: Boolean);
 var
@@ -1255,6 +1472,63 @@ begin
     aChild.Disconnect;
   end else begin
     lChild.DetachFromParentDestruction;
+  end;
+end;
+
+procedure TAccessibilityProviderNode.RemoveChildNodes(const aChildren: TArray<IAccessibilityProviderNode>;
+  aDisconnect: Boolean);
+var
+  lRemovalFlags: TArray<Boolean>;
+  lRemovedCount: Integer;
+begin
+  if (Length(aChildren) = 0) or (fChildren = nil) then
+  begin
+    Exit;
+  end;
+
+  lRemovalFlags := BuildChildRemovalFlags(aChildren, lRemovedCount);
+  if lRemovedCount = 0 then
+  begin
+    Exit;
+  end;
+
+  if not RemoveChildNodesByIndexFlags(lRemovalFlags, lRemovedCount, aDisconnect) then
+  begin
+    raise EInvalidOperation.Create('Provider child removal flags no longer match the child list.');
+  end;
+end;
+
+function TAccessibilityProviderNode.RemoveChildNodesByIndexFlags(
+  const aRemovalFlags: TArray<Boolean>; aRemovedCount: Integer; aDisconnect: Boolean): Boolean;
+var
+  lOldChildren: TList<IAccessibilityProviderNode>;
+  lRetainedChildren: TList<IAccessibilityProviderNode>;
+begin
+  Result := (fChildren <> nil) and (aRemovedCount >= 0) and
+    (aRemovedCount <= fChildren.Count) and
+    (Length(aRemovalFlags) = fChildren.Count);
+  if not Result or (aRemovedCount = 0) then
+  begin
+    Exit;
+  end;
+
+  lRetainedChildren := nil;
+  try
+    lRetainedChildren := CreateRetainedChildren(aRemovalFlags, aRemovedCount);
+    lOldChildren := fChildren;
+    fChildren := lRetainedChildren;
+    lRetainedChildren := nil;
+    try
+      ClearRemovedChildParents(lOldChildren, aRemovalFlags);
+      fChildrenPreparedForNavigation := False;
+      fDirectChildAccessReadsRemaining := 0;
+      RefreshChildIndexesFrom(0);
+      FinalizeRemovedChildren(lOldChildren, aRemovalFlags, aDisconnect);
+    finally
+      lOldChildren.Free;
+    end;
+  finally
+    lRetainedChildren.Free;
   end;
 end;
 

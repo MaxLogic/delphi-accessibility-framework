@@ -47,7 +47,43 @@ type
     [Test]
     procedure TextInputsExposeAssociatedLabelsAndValues;
     [Test]
+    [Category('Memo')]
+    procedure MemoProviderCacheRemainsBoundedAcrossScrollHistory;
+    [Test]
+    [Category('Memo')]
+    procedure MemoHitTestingPrunesScrolledProviders;
+    [Test]
     procedure MemoProviderHitTestingReturnsLineUnderPointer;
+    [Test]
+    [Category('ListBox')]
+    procedure ListBoxProviderCacheRemainsBoundedAcrossScrollHistory;
+    [Test]
+    [Category('ListBox')]
+    procedure ListBoxSelectionCollapseScalesLinearly;
+    [Test]
+    [Category('ListBox')]
+    procedure ListBoxPartialSelectionPruneScalesLinearly;
+    [Test]
+    [Category('ListBox')]
+    procedure ListBoxPartialSelectionPruneReadsItemCountOnce;
+    [Test]
+    [Category('ListBox')]
+    procedure ListBoxHitTestingPrunesScrolledProviders;
+    [Test]
+    [Category('ListBox')]
+    procedure ListBoxSingleSelectionPrunesOldProviders;
+    [Test]
+    [Category('ListBox')]
+    procedure ListBoxSiblingNavigationReconcilesSelectionOnlyChanges;
+    [Test]
+    [Category('ListBox')]
+    procedure ListBoxSiblingNavigationRevalidatesResumedTraversal;
+    [Test]
+    [Category('ListBox')]
+    procedure ListBoxGetFocusPrunesScrolledProviders;
+    [Test]
+    [Category('ListBox')]
+    procedure ListBoxRetainedItemDisconnectsWhenControlIsDestroyed;
     [Test]
     procedure ListBoxProviderHitTestingAndFocusReturnItems;
     [Test]
@@ -79,7 +115,8 @@ type
 implementation
 
 uses
-  System.SysUtils, System.Types, System.Variants, Winapi.ActiveX, Winapi.Messages, Winapi.Windows,
+  System.Diagnostics, System.IOUtils, System.Math, System.SysUtils, System.Types, System.Variants, Winapi.ActiveX,
+  Winapi.Messages, Winapi.Windows,
   Vcl.Buttons, Vcl.Controls, Vcl.ComCtrls, Vcl.ExtCtrls, Vcl.Forms, Vcl.Grids, Vcl.StdCtrls, DUnitX.Assert,
   MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.Scanner,
   MaxLogic.Accessibility.UIAutomationCore, MaxLogic.Accessibility.VclAdapters, AccessibilityDemoMainForm;
@@ -117,6 +154,21 @@ type
   public
     procedure Click; override;
     property ClickCalls: Integer read fClickCalls;
+  end;
+
+  TSelectionProbeListBox = class(TListBox)
+  private
+    fBulkSelectionMessageCount: Integer;
+    fGetItemCountMessageCount: Integer;
+    fGetSelectionMessageCount: Integer;
+  protected
+    procedure WndProc(var aMessage: TMessage); override;
+  public
+    procedure ResetGetItemCountMessageCount;
+    procedure ResetGetSelectionMessageCount;
+    property BulkSelectionMessageCount: Integer read fBulkSelectionMessageCount;
+    property GetItemCountMessageCount: Integer read fGetItemCountMessageCount;
+    property GetSelectionMessageCount: Integer read fGetSelectionMessageCount;
   end;
 
   IHostProbeUiaApi = interface(IAccessibilityUiaApi)
@@ -161,6 +213,149 @@ procedure TProbeSpeedButton.Click;
 begin
   Inc(fClickCalls);
   inherited Click;
+end;
+
+procedure TSelectionProbeListBox.ResetGetSelectionMessageCount;
+begin
+  fBulkSelectionMessageCount := 0;
+  fGetSelectionMessageCount := 0;
+end;
+
+procedure TSelectionProbeListBox.ResetGetItemCountMessageCount;
+begin
+  fGetItemCountMessageCount := 0;
+end;
+
+procedure TSelectionProbeListBox.WndProc(var aMessage: TMessage);
+begin
+  case aMessage.Msg of
+    LB_GETCOUNT:
+      Inc(fGetItemCountMessageCount);
+    LB_GETSEL:
+      Inc(fGetSelectionMessageCount);
+    LB_GETSELCOUNT, LB_GETSELITEMS:
+      Inc(fBulkSelectionMessageCount);
+  end;
+  inherited WndProc(aMessage);
+end;
+
+procedure FillListBox(aListBox: TCustomListBox; aCount: Integer);
+var
+  i: Integer;
+begin
+  aListBox.Items.BeginUpdate;
+  try
+    for i := 0 to Pred(aCount) do
+    begin
+      aListBox.Items.Add(Format('List item %.5d', [i]));
+    end;
+  finally
+    aListBox.Items.EndUpdate;
+  end;
+end;
+
+procedure FillMemo(aMemo: TCustomMemo; aLineCount: Integer);
+var
+  i: Integer;
+begin
+  aMemo.Lines.BeginUpdate;
+  try
+    for i := 0 to Pred(aLineCount) do
+    begin
+      aMemo.Lines.Add(Format('Memo line %.5d', [i]));
+    end;
+  finally
+    aMemo.Lines.EndUpdate;
+  end;
+end;
+
+procedure MaterializeListBoxSelection(const aListBoxFragment: IRawElementProviderFragment);
+var
+  lPattern: IUnknown;
+  lSafeArray: PSafeArray;
+  lSelection: ISelectionProvider;
+  lSimple: IRawElementProviderSimple;
+begin
+  Assert.IsTrue(Supports(aListBoxFragment, IRawElementProviderSimple, lSimple));
+  Assert.AreEqual(S_OK, lSimple.GetPatternProvider(UIA_SelectionPatternId, lPattern));
+  Assert.IsTrue(Supports(lPattern, ISelectionProvider, lSelection));
+  lSafeArray := nil;
+  Assert.AreEqual(S_OK, lSelection.GetSelection(lSafeArray));
+  Assert.IsNotNull(lSafeArray);
+  SafeArrayDestroy(lSafeArray);
+end;
+
+function MeasureListBoxSelectionCollapseTicks(aItemCount: Integer; aKeepUpperHalf: Boolean): Int64;
+var
+  lAccess: IAccessibilityProviderChildAccess;
+  lChildCount: Integer;
+  lForm: TForm;
+  lListBox: TListBox;
+  lListBoxFragment: IRawElementProviderFragment;
+  lResult: HResult;
+  lStopwatch: TStopwatch;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lListBox := TListBox.Create(lForm);
+    lListBox.Parent := lForm;
+    lListBox.MultiSelect := True;
+    lListBox.SetBounds(16, 16, 240, 110);
+    FillListBox(lListBox, aItemCount);
+    lForm.HandleNeeded;
+    lListBox.HandleNeeded;
+    for var i := 0 to Pred(aItemCount) do
+    begin
+      lListBox.Selected[i] := True;
+    end;
+
+    Assert.AreEqual(S_OK, TAccessibilityVclProviderBuilder.BuildForm(lForm).FragmentProvider.Navigate(
+      NavigateDirection_FirstChild, lListBoxFragment));
+    Assert.IsNotNull(lListBoxFragment);
+    MaterializeListBoxSelection(lListBoxFragment);
+    Assert.IsTrue(Supports(lListBoxFragment, IAccessibilityProviderChildAccess, lAccess));
+    Assert.AreEqual(S_OK, lAccess.DirectChildCount(lChildCount));
+    Assert.AreEqual(aItemCount, lChildCount);
+
+    if aKeepUpperHalf then
+    begin
+      for var i := 0 to Pred(aItemCount div 2) do
+      begin
+        lListBox.Selected[i] := False;
+      end;
+    end else begin
+      for var i := 0 to Pred(aItemCount) do
+      begin
+        lListBox.Selected[i] := False;
+      end;
+    end;
+    lStopwatch := TStopwatch.StartNew;
+    lResult := lAccess.DirectChildCount(lChildCount);
+    Result := lStopwatch.ElapsedTicks;
+    Assert.AreEqual(S_OK, lResult);
+    Assert.IsTrue(lChildCount < aItemCount, 'Collapsing selection must prune unretained providers.');
+  finally
+    lForm.Free;
+  end;
+  if Result < 1 then
+  begin
+    Result := 1;
+  end;
+end;
+
+function MeasureBestListBoxSelectionCollapseTicks(aItemCount: Integer; aKeepUpperHalf: Boolean;
+  aSampleCount: Integer): Int64;
+var
+  i: Integer;
+  lMeasuredTicks: Int64;
+begin
+  Result := High(Int64);
+  for i := 1 to aSampleCount do
+  begin
+    lMeasuredTicks := MeasureListBoxSelectionCollapseTicks(aItemCount, aKeepUpperHalf);
+    Assert.IsTrue(lMeasuredTicks > 0, Format('Selection collapse sample %d must be positive.', [i]));
+    Result := Min(Result, lMeasuredTicks);
+  end;
 end;
 
 function THostProbeUiaApi.ClientsAreListening: Boolean;
@@ -244,6 +439,7 @@ function NextSiblingFragmentOrNil(const aFragment: IRawElementProviderFragment):
 var
   lResult: HResult;
 begin
+  Result := nil;
   lResult := aFragment.Navigate(NavigateDirection_NextSibling, Result);
   Assert.IsTrue(lResult = S_OK, 'Next sibling navigation failed.');
 end;
@@ -252,6 +448,42 @@ function SimpleProvider(const aFragment: IRawElementProviderFragment): IRawEleme
 begin
   Result := nil;
   Assert.IsTrue(Supports(aFragment, IRawElementProviderSimple, Result));
+end;
+
+procedure WriteT113Samples(const aKind: string; const aSamples: TArray<Int64>; aMaxRetained: Integer;
+  aInitialTicks: Int64);
+var
+  i: Integer;
+  lDiagnosticsState: string;
+  lDirectory: string;
+  lFileName: string;
+  lText: string;
+begin
+  lDirectory := GetEnvironmentVariable('MAXLOGIC_T113_MEASURE_DIR');
+  if lDirectory = '' then
+  begin
+    Exit;
+  end;
+
+  ForceDirectories(lDirectory);
+  if TAccessibilityDiagnostics.Enabled then
+  begin
+    lDiagnosticsState := 'buffered';
+  end else begin
+    lDiagnosticsState := 'disabled';
+  end;
+  lText := Format('sampleCount=%d,maxRetained=%d,initialTicks=%d,frequency=%d,diagnostics=%s%s',
+    [Length(aSamples), aMaxRetained, aInitialTicks, TStopwatch.Frequency, lDiagnosticsState, sLineBreak]);
+  for i := 0 to High(aSamples) do
+  begin
+    if i > 0 then
+    begin
+      lText := lText + ',';
+    end;
+    lText := lText + IntToStr(aSamples[i]);
+  end;
+  lFileName := TPath.Combine(lDirectory, aKind + '.csv');
+  TFile.WriteAllText(lFileName, lText, TEncoding.UTF8);
 end;
 
 function ProviderIntProperty(const aFragment: IRawElementProviderFragment; aPropertyId: PROPERTYID): Integer;
@@ -306,6 +538,25 @@ var
 begin
   lPattern := ProviderPattern(aFragment, UIA_SelectionPatternId);
   Assert.IsTrue(Supports(lPattern, ISelectionProvider, Result));
+end;
+
+function SelectedSimpleProvider(const aSelectionProvider: ISelectionProvider; aIndex: LongInt):
+  IRawElementProviderSimple;
+var
+  lSelectedUnknown: IUnknown;
+  lSelection: PSafeArray;
+begin
+  Assert.AreEqual(S_OK, aSelectionProvider.GetSelection(lSelection));
+  try
+    Assert.IsNotNull(lSelection);
+    Assert.AreEqual(S_OK, SafeArrayGetElement(lSelection, aIndex, lSelectedUnknown));
+    Assert.IsTrue(Supports(lSelectedUnknown, IRawElementProviderSimple, Result));
+  finally
+    if lSelection <> nil then
+    begin
+      SafeArrayDestroy(lSelection);
+    end;
+  end;
 end;
 
 function ProviderStringProperty(const aFragment: IRawElementProviderFragment; aPropertyId: PROPERTYID): string;
@@ -895,6 +1146,356 @@ begin
   end;
 end;
 
+procedure TAccessibilityVclAdaptersTests.MemoProviderCacheRemainsBoundedAcrossScrollHistory;
+const
+  cLineCount = 10000;
+  cMaximumRetainedLines = 32;
+  cScrollCount = 100;
+var
+  i: Integer;
+  lAccess: IAccessibilityProviderChildAccess;
+  lChildIndex: Integer;
+  lChildName: string;
+  lChildProvider: IRawElementProviderSimple;
+  lCurrentFirstLine: Integer;
+  lForm: TForm;
+  lInitialCount: Integer;
+  lInitialTicks: Int64;
+  lMemo: TMemo;
+  lMemoFragment: IRawElementProviderFragment;
+  lMaxRetained: Integer;
+  lProvider: IAccessibilityProviderNode;
+  lPreviousIndex: Integer;
+  lRetainedCount: Integer;
+  lResult: HResult;
+  lSamples: TArray<Int64>;
+  lStaleLine: IRawElementProviderSimple;
+  lStopwatch: TStopwatch;
+  lTargetFirstLine: Integer;
+  lValue: OleVariant;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 420, 220);
+    lMemo := TMemo.Create(lForm);
+    lMemo.Parent := lForm;
+    lMemo.ScrollBars := ssVertical;
+    lMemo.WordWrap := False;
+    lMemo.SetBounds(16, 16, 260, 100);
+    lMemo.Lines.BeginUpdate;
+    try
+      for i := 0 to Pred(cLineCount) do
+      begin
+        lMemo.Lines.Add(Format('Memo line %.5d', [i]));
+      end;
+    finally
+      lMemo.Lines.EndUpdate;
+    end;
+
+    lForm.HandleNeeded;
+    lMemo.HandleNeeded;
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lMemoFragment := FirstChildFragment(lProvider);
+    Assert.IsTrue(Supports(lMemoFragment, IAccessibilityProviderChildAccess, lAccess));
+    lStopwatch := TStopwatch.StartNew;
+    lResult := lAccess.DirectChildCount(lInitialCount);
+    lInitialTicks := lStopwatch.ElapsedTicks;
+    Assert.AreEqual(S_OK, lResult);
+    Assert.IsTrue(lInitialCount > 0);
+    Assert.IsTrue(lInitialCount <= cMaximumRetainedLines,
+      Format('Initial memo viewport retained %d providers; absolute ceiling is %d.',
+      [lInitialCount, cMaximumRetainedLines]));
+    Assert.AreEqual(S_OK, lAccess.DirectChildAt(0, lStaleLine));
+    Assert.IsNotNull(lStaleLine);
+    lMaxRetained := lInitialCount;
+    SetLength(lSamples, cScrollCount);
+
+    for i := 1 to cScrollCount do
+    begin
+      lTargetFirstLine := i * (cLineCount div (cScrollCount + 1));
+      lCurrentFirstLine := Integer(SendMessage(lMemo.Handle, EM_GETFIRSTVISIBLELINE, 0, 0));
+      SendMessage(lMemo.Handle, EM_LINESCROLL, 0, lTargetFirstLine - lCurrentFirstLine);
+      lStopwatch := TStopwatch.StartNew;
+      lResult := lAccess.DirectChildCount(lRetainedCount);
+      lSamples[Pred(i)] := lStopwatch.ElapsedTicks;
+      Assert.AreEqual(S_OK, lResult);
+      lMaxRetained := Max(lMaxRetained, lRetainedCount);
+    end;
+
+    lCurrentFirstLine := Integer(SendMessage(lMemo.Handle, EM_GETFIRSTVISIBLELINE, 0, 0));
+    SendMessage(lMemo.Handle, EM_LINESCROLL, 0, -2);
+    Assert.AreEqual(S_OK, lAccess.DirectChildCount(lRetainedCount));
+    Assert.AreNotEqual(lCurrentFirstLine,
+      Integer(SendMessage(lMemo.Handle, EM_GETFIRSTVISIBLELINE, 0, 0)), 'Memo must scroll upward for the order check.');
+    lPreviousIndex := -1;
+    for i := 0 to Pred(lRetainedCount) do
+    begin
+      Assert.AreEqual(S_OK, lAccess.DirectChildAt(i, lChildProvider));
+      Assert.AreEqual(S_OK, lChildProvider.GetPropertyValue(UIA_NamePropertyId, lValue));
+      lChildName := string(lValue);
+      Assert.AreEqual('Memo line ', Copy(lChildName, 1, 10));
+      lChildIndex := StrToInt(Copy(lChildName, 11, MaxInt));
+      Assert.IsTrue(lChildIndex > lPreviousIndex,
+        Format('Memo children are out of line order: %d followed %d.', [lPreviousIndex, lChildIndex]));
+      lPreviousIndex := lChildIndex;
+    end;
+
+    WriteT113Samples('memo', lSamples, lMaxRetained, lInitialTicks);
+    Assert.IsTrue(lMaxRetained <= cMaximumRetainedLines,
+      Format('Memo retained up to %d line providers; absolute ceiling is %d.',
+      [lMaxRetained, cMaximumRetainedLines]));
+    Assert.IsTrue(lMaxRetained <= lInitialCount + 1,
+      Format('Memo retained up to %d line providers; viewport bound is %d.', [lMaxRetained, lInitialCount + 1]));
+    Assert.AreEqual(UIA_E_ELEMENTNOTAVAILABLE,
+      lStaleLine.GetPropertyValue(UIA_NamePropertyId, lValue));
+    Assert.IsTrue(VarIsEmpty(lValue), 'A stale memo provider must clear its property value.');
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityVclAdaptersTests.MemoHitTestingPrunesScrolledProviders;
+var
+  lForm: TForm;
+  lHit: IRawElementProviderFragment;
+  lMemo: TMemo;
+  lMemoFragment: IRawElementProviderFragment;
+  lMemoRoot: IRawElementProviderFragmentRoot;
+  lPoint: TPoint;
+  lProvider: IAccessibilityProviderNode;
+  lStaleLine: IRawElementProviderFragment;
+  lValue: OleVariant;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lMemo := TMemo.Create(lForm);
+    lMemo.Parent := lForm;
+    lMemo.ScrollBars := ssVertical;
+    lMemo.WordWrap := False;
+    lMemo.SetBounds(16, 16, 260, 100);
+    FillMemo(lMemo, 1000);
+    lForm.HandleNeeded;
+    lMemo.HandleNeeded;
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lMemoFragment := FirstChildFragment(lProvider);
+    Assert.AreEqual(S_OK, lMemoFragment.Navigate(NavigateDirection_FirstChild, lStaleLine));
+    Assert.IsNotNull(lStaleLine);
+
+    SendMessage(lMemo.Handle, EM_LINESCROLL, 0, 500);
+    Assert.IsTrue(Supports(lMemoFragment, IRawElementProviderFragmentRoot, lMemoRoot));
+    lPoint := lMemo.ClientToScreen(Point(8, 8));
+    Assert.AreEqual(S_OK, lMemoRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit));
+    Assert.IsNotNull(lHit);
+    Assert.AreEqual(UIA_E_ELEMENTNOTAVAILABLE,
+      SimpleProvider(lStaleLine).GetPropertyValue(UIA_NamePropertyId, lValue),
+      'A scroll-and-hit-test path must prune providers from the old memo viewport.');
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityVclAdaptersTests.ListBoxHitTestingPrunesScrolledProviders;
+var
+  lForm: TForm;
+  lHit: IRawElementProviderFragment;
+  lListBox: TListBox;
+  lListBoxFragment: IRawElementProviderFragment;
+  lListBoxRoot: IRawElementProviderFragmentRoot;
+  lPoint: TPoint;
+  lProvider: IAccessibilityProviderNode;
+  lStaleItem: IRawElementProviderFragment;
+  lValue: OleVariant;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lListBox := TListBox.Create(lForm);
+    lListBox.Parent := lForm;
+    lListBox.SetBounds(16, 16, 240, 110);
+    FillListBox(lListBox, 1000);
+    lForm.HandleNeeded;
+    lListBox.HandleNeeded;
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lListBoxFragment := FirstChildFragment(lProvider);
+    Assert.AreEqual(S_OK, lListBoxFragment.Navigate(NavigateDirection_FirstChild, lStaleItem));
+    Assert.IsNotNull(lStaleItem);
+
+    lListBox.TopIndex := 500;
+    Assert.IsTrue(Supports(lListBoxFragment, IRawElementProviderFragmentRoot, lListBoxRoot));
+    lPoint := lListBox.ClientToScreen(lListBox.ItemRect(500).CenterPoint);
+    Assert.AreEqual(S_OK, lListBoxRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit));
+    Assert.IsNotNull(lHit);
+    Assert.AreEqual(UIA_E_ELEMENTNOTAVAILABLE,
+      SimpleProvider(lStaleItem).GetPropertyValue(UIA_NamePropertyId, lValue),
+      'A scroll-and-hit-test path must prune providers from the old listbox viewport.');
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityVclAdaptersTests.ListBoxSingleSelectionPrunesOldProviders;
+var
+  lForm: TForm;
+  lListBox: TListBox;
+  lListBoxFragment: IRawElementProviderFragment;
+  lOldSelection: IRawElementProviderSimple;
+  lProvider: IAccessibilityProviderNode;
+  lSelectionProvider: ISelectionProvider;
+  lValue: OleVariant;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lListBox := TListBox.Create(lForm);
+    lListBox.Parent := lForm;
+    lListBox.SetBounds(16, 16, 240, 110);
+    FillListBox(lListBox, 1000);
+    lListBox.ItemIndex := 0;
+    lForm.HandleNeeded;
+    lListBox.HandleNeeded;
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lListBoxFragment := FirstChildFragment(lProvider);
+    lSelectionProvider := SelectionPattern(lListBoxFragment);
+    lOldSelection := SelectedSimpleProvider(lSelectionProvider, 0);
+
+    lListBox.ItemIndex := 900;
+    Assert.AreEqual('List item 00900', ProviderStringProperty(
+      SelectedSimpleProvider(lSelectionProvider, 0) as IRawElementProviderFragment, UIA_NamePropertyId));
+    Assert.AreEqual(UIA_E_ELEMENTNOTAVAILABLE,
+      lOldSelection.GetPropertyValue(UIA_NamePropertyId, lValue),
+      'Single-select GetSelection must prune the old selected provider.');
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityVclAdaptersTests.ListBoxSiblingNavigationReconcilesSelectionOnlyChanges;
+var
+  lCurrent: IRawElementProviderFragment;
+  lForm: TForm;
+  lListBox: TSelectionProbeListBox;
+  lListBoxFragment: IRawElementProviderFragment;
+  lNext: IRawElementProviderFragment;
+  lOldSelection: IRawElementProviderSimple;
+  lProvider: IAccessibilityProviderNode;
+  lValue: OleVariant;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lListBox := TSelectionProbeListBox.Create(lForm);
+    lListBox.Parent := lForm;
+    lListBox.MultiSelect := True;
+    lListBox.SetBounds(16, 16, 240, 110);
+    FillListBox(lListBox, 100);
+    lListBox.ItemIndex := 0;
+    lListBox.Selected[0] := True;
+    lListBox.Selected[99] := True;
+    lListBox.ItemIndex := 0;
+    lForm.HandleNeeded;
+    lListBox.HandleNeeded;
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lListBoxFragment := FirstChildFragment(lProvider);
+    lOldSelection := SelectedSimpleProvider(SelectionPattern(lListBoxFragment), 1);
+    Assert.AreEqual(S_OK, lOldSelection.GetPropertyValue(UIA_NamePropertyId, lValue));
+    Assert.AreEqual('List item 00099', string(lValue));
+    Assert.AreEqual(S_OK, lListBoxFragment.Navigate(NavigateDirection_FirstChild, lCurrent));
+    Assert.IsNotNull(lCurrent);
+    lCurrent := NextSiblingFragment(lCurrent);
+
+    lListBox.Selected[99] := False;
+    lListBox.Selected[98] := True;
+    lListBox.ItemIndex := 0;
+    Assert.IsFalse(lListBox.Selected[99]);
+    Assert.IsTrue(lListBox.Selected[98]);
+    Assert.AreEqual(0, lListBox.ItemIndex);
+    lListBox.ResetGetSelectionMessageCount;
+    Assert.AreEqual(S_OK, lCurrent.Navigate(NavigateDirection_NextSibling, lNext));
+    Assert.IsNotNull(lNext);
+    Assert.IsTrue(lListBox.BulkSelectionMessageCount > 0,
+      'Sibling validation must bulk-read native multi-selection state.');
+    Assert.AreEqual(UIA_E_ELEMENTNOTAVAILABLE,
+      lOldSelection.GetPropertyValue(UIA_NamePropertyId, lValue),
+      'Sibling validation must reconcile same-count native selection changes.');
+    Assert.IsTrue(VarIsEmpty(lValue), 'A stale selected provider must clear its property value.');
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityVclAdaptersTests.ListBoxSiblingNavigationRevalidatesResumedTraversal;
+var
+  lCurrent: IRawElementProviderFragment;
+  lForm: TForm;
+  lListBox: TListBox;
+  lListBoxFragment: IRawElementProviderFragment;
+  lNext: IRawElementProviderFragment;
+  lProvider: IAccessibilityProviderNode;
+  lValue: OleVariant;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lListBox := TListBox.Create(lForm);
+    lListBox.Parent := lForm;
+    lListBox.SetBounds(16, 16, 240, 110);
+    FillListBox(lListBox, 100);
+    lListBox.ItemIndex := 0;
+    lForm.HandleNeeded;
+    lListBox.HandleNeeded;
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lListBoxFragment := FirstChildFragment(lProvider);
+    Assert.AreEqual(S_OK, lListBoxFragment.Navigate(NavigateDirection_FirstChild, lCurrent));
+    lCurrent := NextSiblingFragment(lCurrent);
+
+    lListBox.TopIndex := 50;
+    Assert.AreEqual(S_OK, lCurrent.Navigate(NavigateDirection_NextSibling, lNext));
+    Assert.IsNull(lNext, 'Resumed traversal must not return a child from the old viewport.');
+    Assert.AreEqual(UIA_E_ELEMENTNOTAVAILABLE,
+      SimpleProvider(lCurrent).GetPropertyValue(UIA_NamePropertyId, lValue));
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityVclAdaptersTests.ListBoxGetFocusPrunesScrolledProviders;
+var
+  lFirstItem: IRawElementProviderFragment;
+  lFocus: IRawElementProviderFragment;
+  lForm: TForm;
+  lListBox: TListBox;
+  lListBoxFragment: IRawElementProviderFragment;
+  lProvider: IAccessibilityProviderNode;
+  lRoot: IRawElementProviderFragmentRoot;
+  lStaleItem: IRawElementProviderSimple;
+  lValue: OleVariant;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lListBox := TListBox.Create(lForm);
+    lListBox.Parent := lForm;
+    lListBox.SetBounds(16, 16, 240, 110);
+    FillListBox(lListBox, 100);
+    lListBox.ItemIndex := 0;
+    lForm.HandleNeeded;
+    lListBox.HandleNeeded;
+    lForm.ActiveControl := lListBox;
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lRoot := FragmentRoot(lProvider);
+    lListBoxFragment := FirstChildFragment(lProvider);
+    Assert.AreEqual(S_OK, lListBoxFragment.Navigate(NavigateDirection_FirstChild, lFirstItem));
+    Assert.IsNotNull(lFirstItem);
+    lStaleItem := SimpleProvider(NextSiblingFragment(lFirstItem));
+
+    lListBox.TopIndex := 50;
+    Assert.AreEqual(S_OK, lRoot.GetFocus(lFocus));
+    Assert.IsNotNull(lFocus);
+    Assert.AreEqual('List item 00000', ProviderStringProperty(lFocus, UIA_NamePropertyId));
+    Assert.AreEqual(UIA_E_ELEMENTNOTAVAILABLE,
+      lStaleItem.GetPropertyValue(UIA_NamePropertyId, lValue),
+      'GetFocus must evict providers from the old viewport.');
+    Assert.IsTrue(VarIsEmpty(lValue), 'A provider evicted by GetFocus must clear its property value.');
+  finally
+    lForm.Free;
+  end;
+end;
+
 procedure TAccessibilityVclAdaptersTests.ListBoxProviderHitTestingAndFocusReturnItems;
 var
   lFocus: IRawElementProviderFragment;
@@ -935,6 +1536,305 @@ begin
     Assert.IsNotNull(lFocus, 'listbox focused selected item');
     Assert.AreEqual('Audit warning', ProviderStringProperty(lFocus, UIA_NamePropertyId));
     Assert.AreEqual(UIA_ListItemControlTypeId, ProviderIntProperty(lFocus, UIA_ControlTypePropertyId));
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityVclAdaptersTests.ListBoxProviderCacheRemainsBoundedAcrossScrollHistory;
+const
+  cItemCount = 10000;
+  cMaximumRetainedItems = 32;
+  cScrollCount = 100;
+var
+  i: Integer;
+  lAccess: IAccessibilityProviderChildAccess;
+  lChildIndex: Integer;
+  lChildName: string;
+  lChildProvider: IRawElementProviderSimple;
+  lFocusedItem: IRawElementProviderFragment;
+  lForm: TForm;
+  lInitialCount: Integer;
+  lInitialTicks: Int64;
+  lItemRect: TRect;
+  lListBox: TSelectionProbeListBox;
+  lListBoxFragment: IRawElementProviderFragment;
+  lListBoxRoot: IRawElementProviderFragmentRoot;
+  lMaxRetained: Integer;
+  lNextSibling: IRawElementProviderFragment;
+  lPersistentSelectedItem: IRawElementProviderSimple;
+  lPersistentSelectedUnknown: IUnknown;
+  lProvider: IAccessibilityProviderNode;
+  lPoint: TPoint;
+  lPreviousIndex: Integer;
+  lRetainedCount: Integer;
+  lRetainedSelectedItem: IRawElementProviderSimple;
+  lResult: HResult;
+  lSamples: TArray<Int64>;
+  lSelectedItem: IRawElementProviderSimple;
+  lSelectedIndex: LongInt;
+  lSelectedUnknown: IUnknown;
+  lSelection: PSafeArray;
+  lSelectionProvider: ISelectionProvider;
+  lStaleItem: IRawElementProviderSimple;
+  lStaleItemFragment: IRawElementProviderFragment;
+  lStopwatch: TStopwatch;
+  lValue: OleVariant;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 420, 220);
+    lListBox := TSelectionProbeListBox.Create(lForm);
+    lListBox.Parent := lForm;
+    lListBox.MultiSelect := True;
+    lListBox.SetBounds(16, 16, 240, 110);
+    lListBox.Items.BeginUpdate;
+    try
+      for i := 0 to Pred(cItemCount) do
+      begin
+        lListBox.Items.Add(Format('List item %.5d', [i]));
+      end;
+    finally
+      lListBox.Items.EndUpdate;
+    end;
+
+    lForm.HandleNeeded;
+    lListBox.HandleNeeded;
+    lListBox.Selected[5] := True;
+    lListBox.Selected[Pred(cItemCount)] := True;
+    lListBox.ItemIndex := cItemCount div 2;
+    lListBox.TopIndex := 0;
+    lForm.ActiveControl := lListBox;
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lListBoxFragment := FirstChildFragment(lProvider);
+    Assert.IsTrue(Supports(lListBoxFragment, IRawElementProviderFragmentRoot, lListBoxRoot));
+    Assert.AreEqual(S_OK, lListBoxRoot.GetFocus(lFocusedItem));
+    Assert.IsNotNull(lFocusedItem);
+    Assert.IsTrue(Supports(lListBoxFragment, IAccessibilityProviderChildAccess, lAccess));
+    lStopwatch := TStopwatch.StartNew;
+    lResult := lAccess.DirectChildCount(lInitialCount);
+    lInitialTicks := lStopwatch.ElapsedTicks;
+    Assert.AreEqual(S_OK, lResult);
+    Assert.IsTrue(lInitialCount > 0);
+    Assert.IsTrue(lInitialCount <= cMaximumRetainedItems,
+      Format('Initial listbox viewport retained %d providers; absolute ceiling is %d.',
+      [lInitialCount, cMaximumRetainedItems]));
+    Assert.AreEqual(S_OK, lAccess.DirectChildAt(1, lRetainedSelectedItem));
+    Assert.IsNotNull(lRetainedSelectedItem);
+    lItemRect := lListBox.ItemRect(0);
+    lPoint := lListBox.ClientToScreen(lItemRect.CenterPoint);
+    Assert.AreEqual(S_OK, lListBoxRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lStaleItemFragment));
+    Assert.IsNotNull(lStaleItemFragment);
+    lStaleItem := SimpleProvider(lStaleItemFragment);
+
+    lSelectionProvider := SelectionPattern(lListBoxFragment);
+    Assert.AreEqual(S_OK, lSelectionProvider.GetSelection(lSelection));
+    try
+      Assert.IsNotNull(lSelection);
+      lSelectedIndex := 0;
+      Assert.AreEqual(S_OK, SafeArrayGetElement(lSelection, lSelectedIndex, lSelectedUnknown));
+      Assert.IsTrue(Supports(lSelectedUnknown, IRawElementProviderSimple, lSelectedItem));
+      lSelectedIndex := 1;
+      Assert.AreEqual(S_OK, SafeArrayGetElement(lSelection, lSelectedIndex, lPersistentSelectedUnknown));
+      Assert.IsTrue(Supports(lPersistentSelectedUnknown, IRawElementProviderSimple, lPersistentSelectedItem));
+    finally
+      if lSelection <> nil then
+      begin
+        SafeArrayDestroy(lSelection);
+      end;
+    end;
+    Assert.AreEqual(S_OK, lAccess.DirectChildCount(lInitialCount));
+    Assert.IsTrue(lInitialCount <= cMaximumRetainedItems,
+      Format('Initial listbox selection materialized %d providers; absolute ceiling is %d.',
+      [lInitialCount, cMaximumRetainedItems]));
+    lListBox.Selected[5] := False;
+    lListBox.Selected[1] := True;
+    lListBox.ItemIndex := cItemCount div 2;
+    lListBox.TopIndex := cItemCount div (cScrollCount + 1);
+    Assert.AreEqual(S_OK, lStaleItemFragment.Navigate(NavigateDirection_NextSibling, lNextSibling));
+    Assert.IsNull(lNextSibling, 'Sibling navigation must reconcile the new viewport before returning a child.');
+    Assert.AreEqual(S_OK, lAccess.DirectChildCount(lRetainedCount));
+    Assert.AreEqual(UIA_E_ELEMENTNOTAVAILABLE,
+      lSelectedItem.GetPropertyValue(UIA_NamePropertyId, lValue));
+    Assert.AreEqual(S_OK, lRetainedSelectedItem.GetPropertyValue(UIA_NamePropertyId, lValue),
+      'Newly selected native item must remain live after reconciliation.');
+    Assert.AreEqual('List item 00001', string(lValue));
+    Assert.AreEqual(S_OK, lPersistentSelectedItem.GetPropertyValue(UIA_NamePropertyId, lValue),
+      'Persistently selected item must remain live after reconciliation.');
+    Assert.AreEqual('List item 09999', string(lValue));
+
+    lPreviousIndex := -1;
+    for i := 0 to Pred(lRetainedCount) do
+    begin
+      Assert.AreEqual(S_OK, lAccess.DirectChildAt(i, lChildProvider),
+        Format('Retained child %d must remain enumerable.', [i]));
+      Assert.AreEqual(S_OK, lChildProvider.GetPropertyValue(UIA_NamePropertyId, lValue),
+        Format('Retained child %d must remain live.', [i]));
+      lChildName := string(lValue);
+      Assert.AreEqual('List item ', Copy(lChildName, 1, 10));
+      lChildIndex := StrToInt(Copy(lChildName, 11, MaxInt));
+      Assert.IsTrue(lChildIndex > lPreviousIndex,
+        Format('Listbox children are out of index order: %d followed %d.', [lPreviousIndex, lChildIndex]));
+      lPreviousIndex := lChildIndex;
+    end;
+
+    lMaxRetained := Max(lInitialCount, lRetainedCount);
+    SetLength(lSamples, cScrollCount);
+    lListBox.ResetGetSelectionMessageCount;
+
+    for i := 1 to cScrollCount do
+    begin
+      lListBox.TopIndex := i * (cItemCount div (cScrollCount + 1));
+      lStopwatch := TStopwatch.StartNew;
+      lResult := lAccess.DirectChildCount(lRetainedCount);
+      lSamples[Pred(i)] := lStopwatch.ElapsedTicks;
+      Assert.AreEqual(S_OK, lResult);
+      lMaxRetained := Max(lMaxRetained, lRetainedCount);
+    end;
+
+    WriteT113Samples('listbox', lSamples, lMaxRetained, lInitialTicks);
+    Assert.AreEqual(0, lListBox.GetSelectionMessageCount,
+      'Scrolling should use one bulk selection snapshot instead of per-item LB_GETSEL queries.');
+    Assert.IsTrue(lListBox.BulkSelectionMessageCount > 0,
+      'Scrolling a multi-select listbox must refresh its native selection snapshot.');
+    Assert.IsTrue(lListBox.BulkSelectionMessageCount <= (cScrollCount * 2),
+      Format('Scrolling used %d bulk selection messages; expected at most two per reconciliation.',
+      [lListBox.BulkSelectionMessageCount]));
+    Assert.IsTrue(lMaxRetained <= cMaximumRetainedItems,
+      Format('Listbox retained up to %d item providers; absolute ceiling is %d.',
+      [lMaxRetained, cMaximumRetainedItems]));
+    Assert.IsTrue(lMaxRetained <= lInitialCount + 1,
+      Format('Listbox retained up to %d item providers; viewport/focus/selection bound is %d.',
+      [lMaxRetained, lInitialCount + 1]));
+    Assert.AreEqual(S_OK, lRetainedSelectedItem.GetPropertyValue(UIA_NamePropertyId, lValue),
+      'Newly selected native item must survive all scrolls.');
+    Assert.AreEqual('List item 00001', string(lValue));
+    Assert.AreEqual(S_OK, lPersistentSelectedItem.GetPropertyValue(UIA_NamePropertyId, lValue),
+      'Persistently selected item must survive all scrolls.');
+    Assert.AreEqual('List item 09999', string(lValue));
+    Assert.AreEqual(S_OK, SimpleProvider(lFocusedItem).GetPropertyValue(UIA_NamePropertyId, lValue),
+      'Focused item must survive all scrolls.');
+    Assert.AreEqual('List item 05000', string(lValue));
+    Assert.AreEqual(UIA_E_ELEMENTNOTAVAILABLE,
+      lStaleItem.GetPropertyValue(UIA_NamePropertyId, lValue));
+    Assert.IsTrue(VarIsEmpty(lValue), 'A stale listbox provider must clear its property value.');
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityVclAdaptersTests.ListBoxSelectionCollapseScalesLinearly;
+const
+  cGrowthFactor = 4;
+  cMaximumTickGrowth = 12;
+  cSmallItemCount = 512;
+var
+  lLargeTicks: Int64;
+  lSmallTicks: Int64;
+begin
+  lSmallTicks := MeasureListBoxSelectionCollapseTicks(128, False);
+  Assert.IsTrue(lSmallTicks > 0, 'Selection-collapse warm-up must be positive.');
+  lSmallTicks := MeasureBestListBoxSelectionCollapseTicks(cSmallItemCount, False, 3);
+  lLargeTicks := MeasureBestListBoxSelectionCollapseTicks(cSmallItemCount * cGrowthFactor, False, 3);
+
+  Assert.IsTrue(lLargeTicks <= lSmallTicks * cMaximumTickGrowth,
+    Format('Selection collapse grew from %d to %d ticks for %dx items.',
+    [lSmallTicks, lLargeTicks, cGrowthFactor]));
+end;
+
+procedure TAccessibilityVclAdaptersTests.ListBoxPartialSelectionPruneScalesLinearly;
+const
+  cGrowthFactor = 4;
+  cMaximumTickGrowth = 6;
+  cSmallItemCount = 2048;
+var
+  lLargeTicks: Int64;
+  lSmallTicks: Int64;
+begin
+  lSmallTicks := MeasureListBoxSelectionCollapseTicks(128, True);
+  Assert.IsTrue(lSmallTicks > 0, 'Partial-prune warm-up must be positive.');
+  lSmallTicks := MeasureBestListBoxSelectionCollapseTicks(cSmallItemCount, True, 3);
+  lLargeTicks := MeasureBestListBoxSelectionCollapseTicks(cSmallItemCount * cGrowthFactor, True, 3);
+
+  Assert.IsTrue(lLargeTicks <= lSmallTicks * cMaximumTickGrowth,
+    Format('Partial selection pruning grew from %d to %d ticks for %dx items.',
+    [lSmallTicks, lLargeTicks, cGrowthFactor]));
+end;
+
+procedure TAccessibilityVclAdaptersTests.ListBoxPartialSelectionPruneReadsItemCountOnce;
+const
+  cItemCount = 256;
+  cMaximumItemCountReads = 8;
+var
+  i: Integer;
+  lAccess: IAccessibilityProviderChildAccess;
+  lChildCount: Integer;
+  lForm: TForm;
+  lListBox: TSelectionProbeListBox;
+  lListBoxFragment: IRawElementProviderFragment;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lListBox := TSelectionProbeListBox.Create(lForm);
+    lListBox.Parent := lForm;
+    lListBox.MultiSelect := True;
+    lListBox.SetBounds(16, 16, 240, 110);
+    FillListBox(lListBox, cItemCount);
+    lForm.HandleNeeded;
+    lListBox.HandleNeeded;
+    for i := 0 to Pred(cItemCount) do
+    begin
+      lListBox.Selected[i] := True;
+    end;
+
+    Assert.AreEqual(S_OK, TAccessibilityVclProviderBuilder.BuildForm(lForm).FragmentProvider.Navigate(
+      NavigateDirection_FirstChild, lListBoxFragment));
+    MaterializeListBoxSelection(lListBoxFragment);
+    Assert.IsTrue(Supports(lListBoxFragment, IAccessibilityProviderChildAccess, lAccess));
+    Assert.AreEqual(S_OK, lAccess.DirectChildCount(lChildCount));
+    Assert.AreEqual(cItemCount, lChildCount);
+    for i := 0 to Pred(cItemCount div 2) do
+    begin
+      lListBox.Selected[i] := False;
+    end;
+
+    lListBox.ResetGetItemCountMessageCount;
+    Assert.AreEqual(S_OK, lAccess.DirectChildCount(lChildCount));
+    Assert.IsTrue(lChildCount < cItemCount, 'Partial pruning must remove unretained providers.');
+    Assert.IsTrue(lListBox.GetItemCountMessageCount <= cMaximumItemCountReads,
+      Format('Partial pruning queried LB_GETCOUNT %d times; expected at most %d.',
+      [lListBox.GetItemCountMessageCount, cMaximumItemCountReads]));
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityVclAdaptersTests.ListBoxRetainedItemDisconnectsWhenControlIsDestroyed;
+var
+  lForm: TForm;
+  lItem: IRawElementProviderSimple;
+  lItemFragment: IRawElementProviderFragment;
+  lListBox: TListBox;
+  lListBoxFragment: IRawElementProviderFragment;
+  lProvider: IAccessibilityProviderNode;
+  lValue: OleVariant;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lListBox := TListBox.Create(lForm);
+    lListBox.Parent := lForm;
+    lListBox.Items.Add('Retained item');
+    lForm.HandleNeeded;
+    lListBox.HandleNeeded;
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lListBoxFragment := FirstChildFragment(lProvider);
+    Assert.AreEqual(S_OK, lListBoxFragment.Navigate(NavigateDirection_FirstChild, lItemFragment));
+    Assert.IsNotNull(lItemFragment);
+    lItem := SimpleProvider(lItemFragment);
+
+    FreeAndNil(lListBox);
+    Assert.AreEqual(UIA_E_ELEMENTNOTAVAILABLE, lItem.GetPropertyValue(UIA_NamePropertyId, lValue));
+    Assert.IsTrue(VarIsEmpty(lValue));
   finally
     lForm.Free;
   end;

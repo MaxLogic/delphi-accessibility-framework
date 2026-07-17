@@ -23,6 +23,12 @@ type
     function TryFindProviderForControl(aControl: TControl; out aProvider: IRawElementProviderSimple): Boolean;
   end;
 
+  IAccessibilityListBoxSelectionTracker = interface
+    ['{2CDB3FE4-6203-47BC-ADDD-0E99641AC47D}']
+    procedure SelectionMayHaveChanged;
+    procedure StartSelectionTracking;
+  end;
+
   TAccessibilityVclAdapters = record
   public
     class function CreateDefaultRegistry: IAccessibilityAdapterRegistry; static;
@@ -186,7 +192,9 @@ type
 
   TAccessibilityMemoProvider = class(TAccessibilityVclControlProvider, IRawElementProviderFragmentRoot)
   private
+    fLineIndexes: TList<Integer>;
     fLines: TDictionary<Integer, IAccessibilityProviderNode>;
+    fLinesToRemove: TList<Integer>;
     fMemo: TCustomMemo;
     fPreparedClientHeight: Integer;
     fPreparedClientWidth: Integer;
@@ -197,10 +205,17 @@ type
     fRuntimeId: Integer;
     fUiaApi: IAccessibilityUiaApi;
     function ChildrenPreparationIsCurrent: Boolean;
+    procedure AddLineProvider(aLine: Integer; const aProvider: IAccessibilityProviderNode);
     function EnsureLineProvider(aLine: Integer): IAccessibilityProviderNode;
     function EnsurePreparedLineProvider(aLine: Integer): IAccessibilityProviderNode;
     function LineProvider(aLine: Integer): IAccessibilityProviderNode;
+    procedure MaterializeVisibleLines(aFirstVisibleLine: Integer; aLastVisibleLine: Integer; aMetricsEnabled: Boolean;
+      out aLineProbeCount: Integer; out aCreatedCount: Integer);
+    procedure PruneLineProviders(aFirstVisibleLine: Integer; aLastVisibleLine: Integer);
+    procedure RemoveLineProvider(aLine: Integer; const aProvider: IAccessibilityProviderNode; aDisconnect: Boolean);
     procedure RememberChildrenPreparation(aLineCount: Integer; aFirstVisibleLine: Integer);
+    function TryGetVisibleLineRange(aLineCount: Integer; out aFirstVisibleLine: Integer;
+      out aLastVisibleLine: Integer): Boolean;
   protected
     function CanUsePreparedSiblingNavigation(aChild: TAccessibilityProviderNode): Boolean; override;
     procedure PrepareChildrenForNavigation; override;
@@ -241,28 +256,53 @@ type
   end;
 
   TAccessibilityListBoxProvider = class(TAccessibilityVclControlProvider, IRawElementProviderFragmentRoot,
-    ISelectionProvider)
+    ISelectionProvider, IAccessibilityListBoxSelectionTracker)
   private
+    fItemIndexes: TList<Integer>;
     fItems: TDictionary<Integer, IAccessibilityProviderNode>;
     fItemRawTexts: TDictionary<Integer, string>;
     fListBox: TCustomListBox;
     fPreparedClientHeight: Integer;
     fPreparedClientWidth: Integer;
+    fPreparedFirstVisibleIndex: Integer;
+    fPreparedFocusedIndex: Integer;
     fPreparedHandle: HWND;
     fPreparedItemCount: Integer;
     fPreparedItemHeight: Integer;
+    fPreparedLastVisibleIndex: Integer;
     fPreparedTopIndex: Integer;
     fPreparedValid: Boolean;
     fRuntimeId: Integer;
+    fSelectionDirty: Boolean;
+    fSelectionTracking: Boolean;
+    fSelectedIndexes: THashSet<Integer>;
+    fSelectedIndexesValid: Boolean;
     fUiaApi: IAccessibilityUiaApi;
+    procedure AddItemProvider(aIndex: Integer; const aRawText: string;
+      const aProvider: IAccessibilityProviderNode);
     function ChildrenPreparationIsCurrent: Boolean;
+    function CreateMultiSelection(out aItemProbeCount: Integer; out aProviderCount: Integer): PSafeArray;
     function CreateSelectionArray(const aProvider: IRawElementProviderSimple): PSafeArray; overload;
     function CreateSelectionArrayForSelectedIndexes(const aSelectedIndexes: TArray<Integer>;
       out aProviderCount: Integer): PSafeArray;
+    function CreateSingleSelection(out aItemProbeCount: Integer; out aProviderCount: Integer): PSafeArray;
     function EnsureItemProvider(aIndex: Integer): IAccessibilityProviderNode;
+    procedure ItemSelectionChanged(aIndex: Integer; aSelected: Boolean);
     function ItemProvider(aIndex: Integer): IAccessibilityProviderNode;
     function ListBoxOwnsFocus: Boolean;
-    procedure RememberChildrenPreparation;
+    procedure PruneItemProviders(aFirstVisibleIndex: Integer; aLastVisibleIndex: Integer; aFocusedIndex: Integer);
+    procedure ReconcilePreparedRetention(aFocusedIndex: Integer);
+    function RefreshSelectedIndexes: Boolean;
+    procedure RememberChildrenPreparation(aFirstVisibleIndex: Integer; aLastVisibleIndex: Integer);
+    procedure RememberSelectedIndexes(const aSelectedIndexes: TArray<Integer>);
+    procedure RemoveItemProvider(aIndex: Integer; const aProvider: IAccessibilityProviderNode; aDisconnect: Boolean);
+    procedure RemoveItemProviderChildren(const aRemovalFlags: TArray<Boolean>; aRemovedCount: Integer);
+    procedure RemoveItemProviderAt(aItemPosition: Integer; aIndex: Integer;
+      const aProvider: IAccessibilityProviderNode; aDisconnect: Boolean);
+    function ShouldRetainItemProvider(aIndex: Integer; const aProvider: IAccessibilityProviderNode;
+      aItemCount: Integer; aFirstVisibleIndex: Integer; aLastVisibleIndex: Integer;
+      aFocusedIndex: Integer): Boolean;
+    function TryGetVisibleItemRange(out aFirstVisibleIndex: Integer; out aLastVisibleIndex: Integer): Boolean;
     function TryGetPreparedItemRect(aIndex: Integer; out aItemRect: TRect): Boolean;
   protected
     function CanUsePreparedSiblingNavigation(aChild: TAccessibilityProviderNode): Boolean; override;
@@ -278,6 +318,8 @@ type
     function Get_CanSelectMultiple(out aRetVal: BOOL): HResult; stdcall;
     function Get_IsSelectionRequired(out aRetVal: BOOL): HResult; stdcall;
     function GetSelection(out aRetVal: PSafeArray): HResult; stdcall;
+    procedure SelectionMayHaveChanged;
+    procedure StartSelectionTracking;
   end;
 
   TAccessibilityStatusBarProvider = class(TAccessibilityProviderNode, IAccessibilityVclControlProviderInfo)
@@ -2706,11 +2748,15 @@ begin
   fMemo := aMemo;
   fRuntimeId := aRuntimeId;
   fUiaApi := aApi;
+  fLineIndexes := TList<Integer>.Create;
   fLines := TDictionary<Integer, IAccessibilityProviderNode>.Create;
+  fLinesToRemove := TList<Integer>.Create;
 end;
 
 destructor TAccessibilityMemoProvider.Destroy;
 begin
+  fLinesToRemove.Free;
+  fLineIndexes.Free;
   fLines.Free;
   inherited Destroy;
 end;
@@ -2737,6 +2783,31 @@ begin
     (fPreparedFirstVisibleLine = Integer(lFirstVisibleLineResult));
 end;
 
+procedure TAccessibilityMemoProvider.AddLineProvider(aLine: Integer;
+  const aProvider: IAccessibilityProviderNode);
+var
+  lInsertIndex: Integer;
+begin
+  if fLineIndexes.BinarySearch(aLine, lInsertIndex) then
+  begin
+    raise EInvalidOperation.CreateFmt('Memo line provider %d already exists.', [aLine]);
+  end;
+
+  fLines.Add(aLine, aProvider);
+  try
+    fLineIndexes.Insert(lInsertIndex, aLine);
+    try
+      InsertChildNode(lInsertIndex, aProvider);
+    except
+      fLineIndexes.Delete(lInsertIndex);
+      raise;
+    end;
+  except
+    fLines.Remove(aLine);
+    raise;
+  end;
+end;
+
 function TAccessibilityMemoProvider.ElementProviderFromPoint(aX: Double; aY: Double;
   out aRetVal: IRawElementProviderFragment): HResult;
 var
@@ -2756,6 +2827,7 @@ begin
     Exit(S_OK);
   end;
 
+  PrepareChildrenForNavigation;
   lClientPoint := fMemo.ScreenToClient(Point(Integer(Round(aX)), Integer(Round(aY))));
   lLine := MemoLineIndexAtPoint(fMemo, lClientPoint);
   lLineProvider := EnsureLineProvider(lLine);
@@ -2780,8 +2852,7 @@ begin
   begin
     Result := TAccessibilityMemoLineProvider.Create(fMemo, aLine, [fRuntimeId, aLine], fUiaApi) as
       IAccessibilityProviderNode;
-    AddChild(Result);
-    fLines.Add(aLine, Result);
+    AddLineProvider(aLine, Result);
   end;
 end;
 
@@ -2798,8 +2869,7 @@ begin
   begin
     Result := TAccessibilityMemoLineProvider.Create(fMemo, aLine, [fRuntimeId, aLine], fUiaApi) as
       IAccessibilityProviderNode;
-    AddChild(Result);
-    fLines.Add(aLine, Result);
+    AddLineProvider(aLine, Result);
   end;
 end;
 
@@ -2821,7 +2891,73 @@ begin
     Result := nil;
   end else if Result.IsDisconnected then
   begin
+    RemoveLineProvider(aLine, Result, False);
     Result := nil;
+  end;
+end;
+
+procedure TAccessibilityMemoProvider.MaterializeVisibleLines(aFirstVisibleLine: Integer; aLastVisibleLine: Integer;
+  aMetricsEnabled: Boolean; out aLineProbeCount: Integer; out aCreatedCount: Integer);
+var
+  lExistingProvider: IAccessibilityProviderNode;
+  lLine: Integer;
+begin
+  aCreatedCount := 0;
+  aLineProbeCount := 0;
+  for lLine := aFirstVisibleLine to aLastVisibleLine do
+  begin
+    if aMetricsEnabled then
+    begin
+      Inc(aLineProbeCount);
+      lExistingProvider := LineProvider(lLine);
+      EnsurePreparedLineProvider(lLine);
+      if (lExistingProvider = nil) and (LineProvider(lLine) <> nil) then
+      begin
+        Inc(aCreatedCount);
+      end;
+    end else begin
+      EnsurePreparedLineProvider(lLine);
+    end;
+  end;
+end;
+
+procedure TAccessibilityMemoProvider.PruneLineProviders(aFirstVisibleLine: Integer; aLastVisibleLine: Integer);
+var
+  lLine: Integer;
+  lLineProvider: IAccessibilityProviderNode;
+  lPair: TPair<Integer, IAccessibilityProviderNode>;
+begin
+  fLinesToRemove.Clear;
+  for lPair in fLines do
+  begin
+    if lPair.Value.IsDisconnected or (lPair.Key < aFirstVisibleLine) or (lPair.Key > aLastVisibleLine) then
+    begin
+      fLinesToRemove.Add(lPair.Key);
+    end;
+  end;
+
+  for lLine in fLinesToRemove do
+  begin
+    if fLines.TryGetValue(lLine, lLineProvider) then
+    begin
+      RemoveLineProvider(lLine, lLineProvider, False);
+    end;
+  end;
+end;
+
+procedure TAccessibilityMemoProvider.RemoveLineProvider(aLine: Integer;
+  const aProvider: IAccessibilityProviderNode; aDisconnect: Boolean);
+var
+  lIndex: Integer;
+begin
+  if aProvider <> nil then
+  begin
+    RemoveChildNode(aProvider, aDisconnect);
+  end;
+  fLines.Remove(aLine);
+  if fLineIndexes.BinarySearch(aLine, lIndex) then
+  begin
+    fLineIndexes.Delete(lIndex);
   end;
 end;
 
@@ -2841,18 +2977,42 @@ begin
   fPreparedValid := True;
 end;
 
+function TAccessibilityMemoProvider.TryGetVisibleLineRange(aLineCount: Integer; out aFirstVisibleLine: Integer;
+  out aLastVisibleLine: Integer): Boolean;
+var
+  lFirstVisibleLineResult: LRESULT;
+  lLastLine: Integer;
+  lLineHeight: Integer;
+begin
+  aFirstVisibleLine := 0;
+  aLastVisibleLine := -1;
+  Result := aLineCount > 0;
+  if not Result then
+  begin
+    Exit;
+  end;
+
+  lLastLine := Pred(aLineCount);
+  lLineHeight := TextLineHeight(fMemo);
+  lFirstVisibleLineResult := SendMessage(fMemo.Handle, EM_GETFIRSTVISIBLELINE, 0, 0);
+  if lFirstVisibleLineResult > 0 then
+  begin
+    aFirstVisibleLine := Integer(lFirstVisibleLineResult);
+  end;
+  if aFirstVisibleLine > lLastLine then
+  begin
+    aFirstVisibleLine := lLastLine;
+  end;
+  aLastVisibleLine := Min(lLastLine, aFirstVisibleLine + Max(1, fMemo.ClientHeight div lLineHeight) + 1);
+end;
+
 procedure TAccessibilityMemoProvider.PrepareChildrenForNavigation;
 var
   lCreatedCount: Integer;
-  lExistingProvider: IAccessibilityProviderNode;
   lFirstVisibleLine: Integer;
-  lFirstVisibleLineResult: LRESULT;
-  lLastLine: Integer;
-  lLine: Integer;
   lLineCount: Integer;
   lLineProbeCount: Integer;
   lLastVisibleLine: Integer;
-  lLineHeight: Integer;
   lMetricsEnabled: Boolean;
   lStopwatch: TStopwatch;
 begin
@@ -2867,8 +3027,6 @@ begin
     Exit;
   end;
 
-  lCreatedCount := 0;
-  lLineProbeCount := 0;
   lMetricsEnabled := TAccessibilityDiagnostics.ProviderHotspotMetricsEnabled;
   if lMetricsEnabled then
   begin
@@ -2876,8 +3034,9 @@ begin
   end;
 
   lLineCount := MemoLineCount(fMemo);
-  if lLineCount <= 0 then
+  if not TryGetVisibleLineRange(lLineCount, lFirstVisibleLine, lLastVisibleLine) then
   begin
+    PruneLineProviders(0, -1);
     if lMetricsEnabled then
     begin
       TAccessibilityDiagnostics.RecordMemoPrepareChildren(0, 0, lStopwatch.ElapsedTicks);
@@ -2886,36 +3045,8 @@ begin
     Exit;
   end;
 
-  lLastLine := Pred(lLineCount);
-  lLineHeight := TextLineHeight(fMemo);
-  lFirstVisibleLineResult := SendMessage(fMemo.Handle, EM_GETFIRSTVISIBLELINE, 0, 0);
-  if lFirstVisibleLineResult <= 0 then
-  begin
-    lFirstVisibleLine := 0;
-  end else begin
-    lFirstVisibleLine := Integer(lFirstVisibleLineResult);
-  end;
-  if lFirstVisibleLine > lLastLine then
-  begin
-    lFirstVisibleLine := lLastLine;
-  end;
-  lLastVisibleLine := Min(lLastLine, lFirstVisibleLine + Max(1, fMemo.ClientHeight div lLineHeight) + 1);
-
-  for lLine := lFirstVisibleLine to lLastVisibleLine do
-  begin
-    if lMetricsEnabled then
-    begin
-      Inc(lLineProbeCount);
-      lExistingProvider := LineProvider(lLine);
-      EnsurePreparedLineProvider(lLine);
-      if (lExistingProvider = nil) and (LineProvider(lLine) <> nil) then
-      begin
-        Inc(lCreatedCount);
-      end;
-    end else begin
-      EnsurePreparedLineProvider(lLine);
-    end;
-  end;
+  PruneLineProviders(lFirstVisibleLine, lLastVisibleLine);
+  MaterializeVisibleLines(lFirstVisibleLine, lLastVisibleLine, lMetricsEnabled, lLineProbeCount, lCreatedCount);
 
   if lMetricsEnabled then
   begin
@@ -2928,7 +3059,7 @@ constructor TAccessibilityListBoxItemProvider.Create(aOwner: TAccessibilityListB
   aIndex: Integer; const aRuntimeId: array of Integer; const aApi: IAccessibilityUiaApi; const aRawText: string;
   const aCleanText: string);
 begin
-  inherited CreateNode(aRuntimeId, 0, aApi, aListBox);
+  inherited CreateNode(aRuntimeId, 0, aApi, nil);
   fOwner := aOwner;
   fListBox := aListBox;
   fIndex := aIndex;
@@ -3032,6 +3163,10 @@ begin
   end else begin
     aRetVal := fListBox.ItemIndex = fIndex;
   end;
+  if fOwner <> nil then
+  begin
+    fOwner.ItemSelectionChanged(fIndex, aRetVal);
+  end;
   Result := S_OK;
 end;
 
@@ -3069,6 +3204,10 @@ begin
   if fListBox.MultiSelect then
   begin
     fListBox.Selected[fIndex] := False;
+    if fOwner <> nil then
+    begin
+      fOwner.ItemSelectionChanged(fIndex, False);
+    end;
   end;
   Result := S_OK;
 end;
@@ -3084,6 +3223,10 @@ begin
   if fListBox.MultiSelect then
   begin
     fListBox.Selected[fIndex] := True;
+    if fOwner <> nil then
+    begin
+      fOwner.ItemSelectionChanged(fIndex, True);
+    end;
   end;
   Result := S_OK;
 end;
@@ -3093,17 +3236,60 @@ constructor TAccessibilityListBoxProvider.Create(aListBox: TCustomListBox; aRunt
 begin
   inherited Create(aListBox, [aRuntimeId], UIA_ListControlTypeId, aName, aHelpText, aApi);
   SetUseHostRawElementProvider(False);
+  fItemIndexes := TList<Integer>.Create;
   fItems := TDictionary<Integer, IAccessibilityProviderNode>.Create;
   fItemRawTexts := TDictionary<Integer, string>.Create;
+  fSelectedIndexes := THashSet<Integer>.Create;
   fListBox := aListBox;
   fRuntimeId := aRuntimeId;
   fUiaApi := aApi;
 end;
 
+procedure TAccessibilityListBoxProvider.AddItemProvider(aIndex: Integer; const aRawText: string;
+  const aProvider: IAccessibilityProviderNode);
+var
+  lInsertIndex: Integer;
+begin
+  if fItemIndexes.BinarySearch(aIndex, lInsertIndex) then
+  begin
+    raise EInvalidOperation.CreateFmt('Listbox item provider %d already exists.', [aIndex]);
+  end;
+
+  fItems.Add(aIndex, aProvider);
+  try
+    fItemRawTexts.Add(aIndex, aRawText);
+    try
+      fItemIndexes.Insert(lInsertIndex, aIndex);
+      try
+        InsertChildNode(lInsertIndex, aProvider);
+      except
+        fItemIndexes.Delete(lInsertIndex);
+        raise;
+      end;
+    except
+      fItemRawTexts.Remove(aIndex);
+      raise;
+    end;
+  except
+    fItems.Remove(aIndex);
+    raise;
+  end;
+end;
+
 function TAccessibilityListBoxProvider.CanUsePreparedSiblingNavigation(
   aChild: TAccessibilityProviderNode): Boolean;
 begin
-  Result := fPreparedValid and HasCurrentChildIndex(aChild);
+  Result := ChildrenPreparationIsCurrent;
+  if not Result then
+  begin
+    Exit;
+  end;
+
+  if RefreshSelectedIndexes or (fPreparedFocusedIndex <> fListBox.ItemIndex) then
+  begin
+    ReconcilePreparedRetention(fListBox.ItemIndex);
+  end;
+  Result := HasCurrentChildIndex(aChild);
 end;
 
 function TAccessibilityListBoxProvider.ChildrenPreparationIsCurrent: Boolean;
@@ -3115,6 +3301,25 @@ begin
   begin
     Result := fPreparedItemHeight = ListBoxWindowItemHeight(fListBox);
   end;
+end;
+
+function TAccessibilityListBoxProvider.CreateMultiSelection(out aItemProbeCount: Integer;
+  out aProviderCount: Integer): PSafeArray;
+var
+  lFirstVisibleIndex: Integer;
+  lLastVisibleIndex: Integer;
+  lSelectedIndexes: TArray<Integer>;
+begin
+  lSelectedIndexes := ListBoxSelectedIndexes(fListBox);
+  RememberSelectedIndexes(lSelectedIndexes);
+  if TryGetVisibleItemRange(lFirstVisibleIndex, lLastVisibleIndex) then
+  begin
+    PruneItemProviders(lFirstVisibleIndex, lLastVisibleIndex, fListBox.ItemIndex);
+  end else begin
+    PruneItemProviders(0, -1, fListBox.ItemIndex);
+  end;
+  aItemProbeCount := Length(lSelectedIndexes);
+  Result := CreateSelectionArrayForSelectedIndexes(lSelectedIndexes, aProviderCount);
 end;
 
 function TAccessibilityListBoxProvider.CreateSelectionArrayForSelectedIndexes(const aSelectedIndexes: TArray<Integer>;
@@ -3214,8 +3419,36 @@ begin
   end;
 end;
 
+function TAccessibilityListBoxProvider.CreateSingleSelection(out aItemProbeCount: Integer;
+  out aProviderCount: Integer): PSafeArray;
+var
+  lFirstVisibleIndex: Integer;
+  lItem: IAccessibilityProviderNode;
+  lLastVisibleIndex: Integer;
+  lProvider: IRawElementProviderSimple;
+begin
+  aItemProbeCount := 1;
+  aProviderCount := 0;
+  lProvider := nil;
+  if TryGetVisibleItemRange(lFirstVisibleIndex, lLastVisibleIndex) then
+  begin
+    PruneItemProviders(lFirstVisibleIndex, lLastVisibleIndex, fListBox.ItemIndex);
+  end else begin
+    PruneItemProviders(0, -1, fListBox.ItemIndex);
+  end;
+  lItem := EnsureItemProvider(fListBox.ItemIndex);
+  if lItem <> nil then
+  begin
+    lProvider := lItem.RawElementProvider;
+    aProviderCount := 1;
+  end;
+  Result := CreateSelectionArray(lProvider);
+end;
+
 destructor TAccessibilityListBoxProvider.Destroy;
 begin
+  fSelectedIndexes.Free;
+  fItemIndexes.Free;
   fItems.Free;
   fItemRawTexts.Free;
   inherited Destroy;
@@ -3254,6 +3487,7 @@ begin
     Exit(S_OK);
   end;
 
+  PrepareChildrenForNavigation;
   lClientPoint := fListBox.ScreenToClient(Point(Integer(Round(aX)), Integer(Round(aY))));
   lIndex := fListBox.ItemAtPos(lClientPoint, True);
   lItem := EnsureItemProvider(lIndex);
@@ -3293,9 +3527,7 @@ begin
     lCleanText := CleanListBoxItemText(lRawText);
     if lCleanText = '' then
     begin
-      RemoveChildNode(Result, True);
-      fItems.Remove(aIndex);
-      fItemRawTexts.Remove(aIndex);
+      RemoveItemProvider(aIndex, Result, True);
       Result := nil;
       Exit;
     end;
@@ -3320,9 +3552,7 @@ begin
     lCreated := True;
     Result := TAccessibilityListBoxItemProvider.Create(Self, fListBox, aIndex, [fRuntimeId, aIndex], fUiaApi,
       lRawText, lCleanText) as IAccessibilityProviderNode;
-    AddChild(Result);
-    fItems.Add(aIndex, Result);
-    fItemRawTexts.AddOrSetValue(aIndex, lRawText);
+    AddItemProvider(aIndex, lRawText, Result);
   end;
   TAccessibilityDiagnostics.RecordListBoxEnsureItemProvider(lCreated);
 end;
@@ -3340,6 +3570,13 @@ begin
   TAccessibilityDiagnostics.RecordListBoxGetFocus;
   if ListBoxOwnsFocus then
   begin
+    if not ChildrenPreparationIsCurrent then
+    begin
+      PrepareChildrenForNavigation;
+    end else if RefreshSelectedIndexes or (fPreparedFocusedIndex <> fListBox.ItemIndex) then
+    begin
+      ReconcilePreparedRetention(fListBox.ItemIndex);
+    end;
     lItem := EnsureItemProvider(fListBox.ItemIndex);
     if lItem <> nil then
     begin
@@ -3375,11 +3612,8 @@ end;
 function TAccessibilityListBoxProvider.GetSelection(out aRetVal: PSafeArray): HResult;
 var
   lItemProbeCount: Integer;
-  lItem: IAccessibilityProviderNode;
   lMetricsEnabled: Boolean;
-  lProvider: IRawElementProviderSimple;
   lProviderCount: Integer;
-  lSelectedIndexes: TArray<Integer>;
   lStopwatch: TStopwatch;
 begin
   aRetVal := nil;
@@ -3389,8 +3623,6 @@ begin
   end;
 
   TAccessibilityDiagnostics.RecordListBoxGetSelection;
-  lItemProbeCount := 0;
-  lProviderCount := 0;
   lMetricsEnabled := TAccessibilityDiagnostics.ProviderHotspotMetricsEnabled;
   if lMetricsEnabled then
   begin
@@ -3399,26 +3631,9 @@ begin
 
   if fListBox.MultiSelect then
   begin
-    lSelectedIndexes := ListBoxSelectedIndexes(fListBox);
-    lItemProbeCount := Length(lSelectedIndexes);
-    aRetVal := CreateSelectionArrayForSelectedIndexes(lSelectedIndexes, lProviderCount);
+    aRetVal := CreateMultiSelection(lItemProbeCount, lProviderCount);
   end else begin
-    if lMetricsEnabled then
-    begin
-      Inc(lItemProbeCount);
-    end;
-
-    lProvider := nil;
-    lItem := EnsureItemProvider(fListBox.ItemIndex);
-    if lItem <> nil then
-    begin
-      lProvider := lItem.RawElementProvider;
-      if lMetricsEnabled then
-      begin
-        Inc(lProviderCount);
-      end;
-    end;
-    aRetVal := CreateSelectionArray(lProvider);
+    aRetVal := CreateSingleSelection(lItemProbeCount, lProviderCount);
   end;
 
   if lMetricsEnabled then
@@ -3442,10 +3657,33 @@ begin
     Result := nil;
   end else if Result.IsDisconnected then
   begin
-    fItems.Remove(aIndex);
-    fItemRawTexts.Remove(aIndex);
+    RemoveItemProvider(aIndex, Result, False);
     Result := nil;
   end;
+end;
+
+procedure TAccessibilityListBoxProvider.ItemSelectionChanged(aIndex: Integer; aSelected: Boolean);
+var
+  lWasSelected: Boolean;
+begin
+  if not fSelectedIndexesValid then
+  begin
+    Exit;
+  end;
+
+  lWasSelected := fSelectedIndexes.Contains(aIndex);
+  if lWasSelected = aSelected then
+  begin
+    Exit;
+  end;
+
+  if aSelected then
+  begin
+    fSelectedIndexes.Add(aIndex);
+  end else begin
+    fSelectedIndexes.Remove(aIndex);
+  end;
+  fPreparedValid := False;
 end;
 
 function TAccessibilityListBoxProvider.ListBoxOwnsFocus: Boolean;
@@ -3453,7 +3691,193 @@ begin
   Result := ListBoxOwnsKeyboardFocus(fListBox);
 end;
 
-procedure TAccessibilityListBoxProvider.RememberChildrenPreparation;
+procedure TAccessibilityListBoxProvider.PruneItemProviders(aFirstVisibleIndex: Integer; aLastVisibleIndex: Integer;
+  aFocusedIndex: Integer);
+var
+  lIndex: Integer;
+  lItemCount: Integer;
+  lItemProvider: IAccessibilityProviderNode;
+  lPosition: Integer;
+  lRemovedIndexes: TList<Integer>;
+  lRemovalFlags: TArray<Boolean>;
+  lRetainedIndexes: TList<Integer>;
+begin
+  lRemovedIndexes := nil;
+  lRetainedIndexes := nil;
+  try
+    lRemovedIndexes := TList<Integer>.Create;
+    lRetainedIndexes := TList<Integer>.Create;
+    lItemCount := fListBox.Items.Count;
+    lRemovedIndexes.Capacity := fItemIndexes.Count;
+    lRetainedIndexes.Capacity := fItemIndexes.Count;
+    SetLength(lRemovalFlags, fItemIndexes.Count);
+    for lPosition := 0 to Pred(fItemIndexes.Count) do
+    begin
+      lIndex := fItemIndexes[lPosition];
+      lItemProvider := nil;
+      if fItems.TryGetValue(lIndex, lItemProvider) and ShouldRetainItemProvider(lIndex, lItemProvider,
+        lItemCount, aFirstVisibleIndex, aLastVisibleIndex, aFocusedIndex) then
+      begin
+        lRetainedIndexes.Add(lIndex);
+      end else begin
+        lRemovedIndexes.Add(lIndex);
+        lRemovalFlags[lPosition] := True;
+      end;
+    end;
+
+    if lRemovedIndexes.Count = 0 then
+    begin
+      Exit;
+    end;
+    RemoveItemProviderChildren(lRemovalFlags, lRemovedIndexes.Count);
+    for lIndex in lRemovedIndexes do
+    begin
+      fItems.Remove(lIndex);
+      fItemRawTexts.Remove(lIndex);
+    end;
+    fItemIndexes.Free;
+    fItemIndexes := lRetainedIndexes;
+    lRetainedIndexes := nil;
+  finally
+    lRetainedIndexes.Free;
+    lRemovedIndexes.Free;
+  end;
+end;
+
+procedure TAccessibilityListBoxProvider.RemoveItemProviderChildren(
+  const aRemovalFlags: TArray<Boolean>; aRemovedCount: Integer);
+var
+  lItemProvider: IAccessibilityProviderNode;
+  lPosition: Integer;
+  lRemovedProviders: TList<IAccessibilityProviderNode>;
+begin
+  if RemoveChildNodesByIndexFlags(aRemovalFlags, aRemovedCount, False) then
+  begin
+    Exit;
+  end;
+
+  lRemovedProviders := TList<IAccessibilityProviderNode>.Create;
+  try
+    lRemovedProviders.Capacity := aRemovedCount;
+    for lPosition := 0 to High(aRemovalFlags) do
+    begin
+      if aRemovalFlags[lPosition] and
+        fItems.TryGetValue(fItemIndexes[lPosition], lItemProvider) then
+      begin
+        lRemovedProviders.Add(lItemProvider);
+      end;
+    end;
+    if lRemovedProviders.Count > 0 then
+    begin
+      RemoveChildNodes(lRemovedProviders.ToArray, False);
+    end;
+  finally
+    lRemovedProviders.Free;
+  end;
+end;
+
+procedure TAccessibilityListBoxProvider.RemoveItemProvider(aIndex: Integer;
+  const aProvider: IAccessibilityProviderNode; aDisconnect: Boolean);
+var
+  lItemIndex: Integer;
+begin
+  lItemIndex := -1;
+  fItemIndexes.BinarySearch(aIndex, lItemIndex);
+  RemoveItemProviderAt(lItemIndex, aIndex, aProvider, aDisconnect);
+end;
+
+procedure TAccessibilityListBoxProvider.RemoveItemProviderAt(aItemPosition: Integer; aIndex: Integer;
+  const aProvider: IAccessibilityProviderNode; aDisconnect: Boolean);
+begin
+  if aProvider <> nil then
+  begin
+    RemoveChildNode(aProvider, aDisconnect);
+  end;
+  fItems.Remove(aIndex);
+  fItemRawTexts.Remove(aIndex);
+  if (aItemPosition >= 0) and (aItemPosition < fItemIndexes.Count) and
+    (fItemIndexes[aItemPosition] = aIndex) then
+  begin
+    fItemIndexes.Delete(aItemPosition);
+  end;
+end;
+
+procedure TAccessibilityListBoxProvider.ReconcilePreparedRetention(aFocusedIndex: Integer);
+begin
+  if (fListBox = nil) or not fPreparedValid then
+  begin
+    Exit;
+  end;
+
+  PruneItemProviders(fPreparedFirstVisibleIndex, fPreparedLastVisibleIndex, aFocusedIndex);
+  if ListBoxItemIndexExists(fListBox, aFocusedIndex) and (ItemProvider(aFocusedIndex) = nil) then
+  begin
+    EnsureItemProvider(aFocusedIndex);
+  end;
+  fPreparedFocusedIndex := aFocusedIndex;
+end;
+
+function TAccessibilityListBoxProvider.RefreshSelectedIndexes: Boolean;
+var
+  lIndex: Integer;
+  lSelectedIndexes: TArray<Integer>;
+begin
+  if (fListBox = nil) or not fListBox.MultiSelect then
+  begin
+    Result := fSelectedIndexesValid or (fSelectedIndexes.Count > 0);
+    fSelectedIndexes.Clear;
+    fSelectedIndexesValid := False;
+    fSelectionDirty := False;
+    Exit;
+  end;
+
+  if fSelectionTracking and fSelectedIndexesValid and not fSelectionDirty then
+  begin
+    Exit(False);
+  end;
+
+  lSelectedIndexes := ListBoxSelectedIndexes(fListBox);
+  Result := not fSelectedIndexesValid or (fSelectedIndexes.Count <> Length(lSelectedIndexes));
+  if not Result then
+  begin
+    for lIndex in lSelectedIndexes do
+    begin
+      if not fSelectedIndexes.Contains(lIndex) then
+      begin
+        Result := True;
+        Break;
+      end;
+    end;
+  end;
+
+  if Result then
+  begin
+    RememberSelectedIndexes(lSelectedIndexes);
+  end else begin
+    fSelectionDirty := False;
+  end;
+end;
+
+function TAccessibilityListBoxProvider.ShouldRetainItemProvider(aIndex: Integer;
+  const aProvider: IAccessibilityProviderNode; aItemCount: Integer; aFirstVisibleIndex: Integer;
+  aLastVisibleIndex: Integer; aFocusedIndex: Integer): Boolean;
+begin
+  Result := not aProvider.IsDisconnected and (aIndex >= 0) and (aIndex < aItemCount);
+  if not Result then
+  begin
+    Exit;
+  end;
+
+  Result := ((aIndex >= aFirstVisibleIndex) and (aIndex <= aLastVisibleIndex)) or
+    (aIndex = aFocusedIndex);
+  if not Result and fListBox.MultiSelect then
+  begin
+    Result := fSelectedIndexes.Contains(aIndex);
+  end;
+end;
+
+procedure TAccessibilityListBoxProvider.RememberChildrenPreparation(aFirstVisibleIndex: Integer;
+  aLastVisibleIndex: Integer);
 begin
   if fListBox = nil then
   begin
@@ -3462,12 +3886,96 @@ begin
   end;
 
   fPreparedHandle := fListBox.Handle;
+  fPreparedFirstVisibleIndex := aFirstVisibleIndex;
+  fPreparedFocusedIndex := fListBox.ItemIndex;
   fPreparedItemCount := fListBox.Items.Count;
   fPreparedTopIndex := fListBox.TopIndex;
   fPreparedClientWidth := fListBox.ClientWidth;
   fPreparedClientHeight := fListBox.ClientHeight;
   fPreparedItemHeight := ListBoxWindowItemHeight(fListBox);
+  fPreparedLastVisibleIndex := aLastVisibleIndex;
   fPreparedValid := True;
+end;
+
+procedure TAccessibilityListBoxProvider.RememberSelectedIndexes(const aSelectedIndexes: TArray<Integer>);
+var
+  lIndex: Integer;
+begin
+  fSelectedIndexes.Clear;
+  for lIndex in aSelectedIndexes do
+  begin
+    fSelectedIndexes.Add(lIndex);
+  end;
+  fSelectedIndexesValid := True;
+  fSelectionDirty := False;
+end;
+
+procedure TAccessibilityListBoxProvider.SelectionMayHaveChanged;
+begin
+  if fSelectionTracking then
+  begin
+    fSelectionDirty := True;
+  end;
+end;
+
+procedure TAccessibilityListBoxProvider.StartSelectionTracking;
+begin
+  fSelectionTracking := True;
+  fSelectionDirty := True;
+end;
+
+function TAccessibilityListBoxProvider.TryGetVisibleItemRange(out aFirstVisibleIndex: Integer;
+  out aLastVisibleIndex: Integer): Boolean;
+var
+  i: Integer;
+  lItemHeight: Integer;
+  lItemRect: TRect;
+  lLastIndex: Integer;
+  lVisibleCount: Integer;
+begin
+  aFirstVisibleIndex := 0;
+  aLastVisibleIndex := -1;
+  Result := False;
+  if (fListBox = nil) or (fListBox.Items.Count = 0) then
+  begin
+    Exit;
+  end;
+
+  lLastIndex := Pred(fListBox.Items.Count);
+  aFirstVisibleIndex := EnsureRange(fListBox.TopIndex, 0, lLastIndex);
+  if ListBoxUsesUniformItemHeight(fListBox) then
+  begin
+    lItemHeight := ListBoxWindowItemHeight(fListBox);
+    if lItemHeight <= 0 then
+    begin
+      Exit;
+    end;
+
+    lVisibleCount := (Max(0, fListBox.ClientHeight) + lItemHeight - 1) div lItemHeight;
+    if lVisibleCount <= 0 then
+    begin
+      Exit;
+    end;
+
+    aLastVisibleIndex := Min(lLastIndex, aFirstVisibleIndex + lVisibleCount - 1);
+    Exit(True);
+  end;
+
+  for i := aFirstVisibleIndex to lLastIndex do
+  begin
+    TAccessibilityDiagnostics.RecordListBoxVisibleItemProbe;
+    lItemRect := fListBox.ItemRect(i);
+    if (i > aFirstVisibleIndex) and (lItemRect.Top >= fListBox.ClientHeight) then
+    begin
+      Break;
+    end;
+
+    if ListBoxItemRectIsVisible(fListBox, lItemRect) then
+    begin
+      aLastVisibleIndex := i;
+      Result := True;
+    end;
+  end;
 end;
 
 function TAccessibilityListBoxProvider.TryGetPreparedItemRect(aIndex: Integer; out aItemRect: TRect): Boolean;
@@ -3495,14 +4003,11 @@ end;
 
 procedure TAccessibilityListBoxProvider.PrepareChildrenForNavigation;
 var
-  lFocusedPrepared: Boolean;
   i: Integer;
+  lFirstVisibleIndex: Integer;
   lFocusedIndex: Integer;
-  lItemHeight: Integer;
-  lItemRect: TRect;
-  lLastIndex: Integer;
-  lTopIndex: Integer;
-  lVisibleCount: Integer;
+  lHasVisibleItems: Boolean;
+  lSelectionChanged: Boolean;
   lVisibleLastIndex: Integer;
 begin
   inherited PrepareChildrenForNavigation;
@@ -3511,61 +4016,41 @@ begin
     Exit;
   end;
 
+  lSelectionChanged := RefreshSelectedIndexes;
   if ChildrenPreparationIsCurrent then
   begin
+    if lSelectionChanged or (fPreparedFocusedIndex <> fListBox.ItemIndex) then
+    begin
+      ReconcilePreparedRetention(fListBox.ItemIndex);
+    end;
     Exit;
   end;
 
   TAccessibilityDiagnostics.RecordListBoxPrepareChildren;
   lFocusedIndex := fListBox.ItemIndex;
-  lFocusedPrepared := False;
   if fListBox.Items.Count = 0 then
   begin
-    RememberChildrenPreparation;
+    PruneItemProviders(0, -1, -1);
+    RememberChildrenPreparation(0, -1);
     Exit;
   end;
 
-  lLastIndex := Pred(fListBox.Items.Count);
-  lTopIndex := EnsureRange(fListBox.TopIndex, 0, lLastIndex);
-  if ListBoxUsesUniformItemHeight(fListBox) then
+  lHasVisibleItems := TryGetVisibleItemRange(lFirstVisibleIndex, lVisibleLastIndex);
+  PruneItemProviders(lFirstVisibleIndex, lVisibleLastIndex, lFocusedIndex);
+  if lHasVisibleItems then
   begin
-    lItemHeight := ListBoxWindowItemHeight(fListBox);
-    if lItemHeight > 0 then
+    for i := lFirstVisibleIndex to lVisibleLastIndex do
     begin
-      lVisibleCount := (Max(0, fListBox.ClientHeight) + lItemHeight - 1) div lItemHeight;
-      if lVisibleCount > 0 then
-      begin
-        lVisibleLastIndex := Min(lLastIndex, lTopIndex + lVisibleCount - 1);
-        for i := lTopIndex to lVisibleLastIndex do
-        begin
-          EnsureItemProvider(i);
-          lFocusedPrepared := lFocusedPrepared or (i = lFocusedIndex);
-        end;
-      end;
-    end;
-  end else begin
-    for i := lTopIndex to lLastIndex do
-    begin
-      TAccessibilityDiagnostics.RecordListBoxVisibleItemProbe;
-      lItemRect := fListBox.ItemRect(i);
-      if (i > lTopIndex) and (lItemRect.Top >= fListBox.ClientHeight) then
-      begin
-        Break;
-      end;
-
-      if ListBoxItemRectIsVisible(fListBox, lItemRect) then
-      begin
-        EnsureItemProvider(i);
-        lFocusedPrepared := lFocusedPrepared or (i = lFocusedIndex);
-      end;
+      EnsureItemProvider(i);
     end;
   end;
 
-  if (not lFocusedPrepared) and ListBoxItemIndexExists(fListBox, lFocusedIndex) then
+  if ((lFocusedIndex < lFirstVisibleIndex) or (lFocusedIndex > lVisibleLastIndex)) and
+    ListBoxItemIndexExists(fListBox, lFocusedIndex) then
   begin
     EnsureItemProvider(lFocusedIndex);
   end;
-  RememberChildrenPreparation;
+  RememberChildrenPreparation(lFirstVisibleIndex, lVisibleLastIndex);
 end;
 
 constructor TAccessibilityStatusBarProvider.Create(aStatusBar: TCustomStatusBar; const aRuntimeId: array of Integer;

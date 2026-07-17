@@ -61,7 +61,7 @@ type
     [Test]
     procedure ListBoxRepeatedNavigationDoesNotRequeryWindowItemHeight;
     [Test]
-    procedure ListBoxNextSiblingNavigationDoesNotRequeryWindowState;
+    procedure ListBoxNextSiblingNavigationValidatesWindowStateEveryCall;
     [Test]
     procedure ListBoxRepeatedNavigationPreparationIsIdempotent;
     [Test]
@@ -2475,7 +2475,7 @@ begin
   end;
 end;
 
-procedure TAccessibilityListBoxPerformanceTests.ListBoxNextSiblingNavigationDoesNotRequeryWindowState;
+procedure TAccessibilityListBoxPerformanceTests.ListBoxNextSiblingNavigationValidatesWindowStateEveryCall;
 var
   i: Integer;
   lCurrent: IRawElementProviderFragment;
@@ -2507,12 +2507,14 @@ begin
       Assert.AreEqual(S_OK, lCurrent.Navigate(NavigateDirection_NextSibling, lNext));
       Assert.IsNotNull(lNext);
       lCurrent := lNext;
+      Assert.AreEqual(i, lListBox.TopIndexMessageCount,
+        'Each sibling call must perform exactly one TopIndex validation.');
     end;
 
-    Assert.AreEqual(0, lListBox.TopIndexMessageCount,
-      'Prepared listbox sibling navigation should use provider indexes, not LB_GETTOPINDEX.');
+    Assert.AreEqual(4, lListBox.TopIndexMessageCount,
+      'Each sibling call must validate TopIndex because a traversal can be paused and resumed after scrolling.');
     Assert.AreEqual(0, lListBox.ItemHeightMessageCount,
-      'Prepared listbox sibling navigation should use provider indexes, not LB_GETITEMHEIGHT.');
+      'A fixed-height sibling chain should reuse the prepared item height.');
   finally
     lForm.Free;
   end;

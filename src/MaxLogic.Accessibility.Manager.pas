@@ -124,6 +124,7 @@ type
     fLastHoverLeafBounds: UiaRect;
     fLastListBoxIndex: Integer;
     fLastRaisedProviderState: TProviderStateSnapshot;
+    fListBoxSelectionTracker: IAccessibilityListBoxSelectionTracker;
     fOriginalWindowProc: TWndMethod;
     fPassive: Boolean;
     fPreserveNativeWindowAccessibility: Boolean;
@@ -143,6 +144,7 @@ type
     function NativeListBoxShouldHandleGetObject(const aMessage: TMessage): Boolean;
     function NativeListBoxShouldHandleNavigationMessage(const aMessage: TMessage): Boolean;
     function NativeFocusUsesOnlyNativeStateEvents: Boolean;
+    procedure NotifyListBoxSelectionMayHaveChanged;
     procedure MaybeRaiseGridFocusChanged;
     procedure MaybeRaiseListBoxFocusChanged;
     procedure MaybeRaiseProviderHover(aLParam: LPARAM; aClientsKnown: Boolean; aClientsListening: Boolean);
@@ -1332,6 +1334,18 @@ begin
   end;
 end;
 
+function ListBoxMessageMayChangeSelection(const aMessage: TMessage): Boolean;
+begin
+  case aMessage.Msg of
+    WM_KEYDOWN, WM_CHAR, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_LBUTTONDBLCLK, CM_CHANGED, CN_COMMAND,
+    LB_ADDSTRING, LB_INSERTSTRING, LB_DELETESTRING, LB_SELITEMRANGEEX, LB_RESETCONTENT, LB_SETSEL,
+    LB_SETCURSEL, LB_SELITEMRANGE, LB_SETCOUNT:
+      Result := True;
+  else
+    Result := False;
+  end;
+end;
+
 function ListBoxCurrentItemText(aListBox: TCustomListBox): string;
 var
   lItemIndex: Integer;
@@ -1905,6 +1919,10 @@ begin
   end;
   fControl.FreeNotification(Self);
   fControl.WindowProc := WindowProc;
+  if Supports(fProvider, IAccessibilityListBoxSelectionTracker, fListBoxSelectionTracker) then
+  begin
+    fListBoxSelectionTracker.StartSelectionTracking;
+  end;
   if TAccessibilityDiagnostics.Enabled then
   begin
     TAccessibilityDiagnostics.Log(Format('Installed child hook control=%s hwnd=%d',
@@ -2021,6 +2039,14 @@ function TAccessibilityControlWindowHook.NativeFocusUsesOnlyNativeStateEvents: B
 begin
   Result := fPreserveNativeWindowAccessibility and (fProvider <> nil) and ProviderUsesPlatformStateEvents(fProvider) and
     not ProviderNeedsSupplementalRadioAnnouncements(fProvider);
+end;
+
+procedure TAccessibilityControlWindowHook.NotifyListBoxSelectionMayHaveChanged;
+begin
+  if fListBoxSelectionTracker <> nil then
+  begin
+    fListBoxSelectionTracker.SelectionMayHaveChanged;
+  end;
 end;
 
 function TAccessibilityControlWindowHook.ProviderPublishesControlNativeWindowHandle: Boolean;
@@ -2228,6 +2254,7 @@ begin
     end;
 
     fControl := nil;
+    fListBoxSelectionTracker := nil;
     fProvider := nil;
     fProviderIsGrid := False;
     fRootProvider := nil;
@@ -2239,6 +2266,7 @@ begin
   Result := False;
   ClearHoverCache(fLastHoverAnnouncement, fHasLastHoverLeafBounds);
   fApi := nil;
+  fListBoxSelectionTracker := nil;
   fProvider := nil;
   fProviderIsGrid := False;
   fRootProvider := nil;
@@ -2476,6 +2504,7 @@ var
   lIsBlurMessage: Boolean;
   lIsFocusMessage: Boolean;
   lIsGridNavigationMessage: Boolean;
+  lListBoxSelectionMayChange: Boolean;
   lIsListBoxSelectionMessage: Boolean;
   lIsMouseMoveMessage: Boolean;
   lIsOuterProviderStateMessage: Boolean;
@@ -2507,7 +2536,11 @@ begin
 
   if NativeListBoxShouldHandleNavigationMessage(aMessage) then
   begin
-    fOriginalWindowProc(aMessage);
+    try
+      fOriginalWindowProc(aMessage);
+    finally
+      NotifyListBoxSelectionMayHaveChanged;
+    end;
     Exit;
   end;
 
@@ -2552,6 +2585,8 @@ begin
   lIsFocusMessage := (aMessage.Msg = CM_ENTER) or (aMessage.Msg = WM_SETFOCUS);
   lIsGridNavigationMessage := fProviderIsGrid and (aMessage.Msg = WM_KEYDOWN) and
     IsGridNavigationKey(aMessage.WParam);
+  lListBoxSelectionMayChange := (fControl is TCustomListBox) and
+    ListBoxMessageMayChangeSelection(aMessage);
   lIsListBoxSelectionMessage := (fControl is TCustomListBox) and
     (((aMessage.Msg = WM_KEYDOWN) and IsListBoxNavigationKey(aMessage.WParam)) or
     (aMessage.Msg = WM_LBUTTONUP) or (aMessage.Msg = CM_CHANGED));
@@ -2597,6 +2632,10 @@ begin
     if lIsProviderStateMessage then
     begin
       Dec(fProviderStateMessageDepth);
+    end;
+    if lListBoxSelectionMayChange then
+    begin
+      NotifyListBoxSelectionMayHaveChanged;
     end;
   end;
   if lIsBlurMessage or lIsFocusMessage or lIsOuterProviderStateMessage or lIsGridNavigationMessage or

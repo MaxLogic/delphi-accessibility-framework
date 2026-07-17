@@ -17,6 +17,10 @@ type
     [Test]
     procedure FragmentSiblingNavigationReusesPreparedChildren;
     [Test]
+    procedure FailedChildInsertionLeavesChildDetached;
+    [Test]
+    procedure FailedBatchDisconnectDetachesEveryRemovedChild;
+    [Test]
     procedure FragmentNextSiblingEnumerationScalesLinearly;
     [Test]
     procedure FragmentOwnerDestroyDisconnectsFragmentProvider;
@@ -80,7 +84,8 @@ type
 implementation
 
 uses
-  System.Classes, System.Diagnostics, System.IOUtils, System.SysUtils, System.Variants, Winapi.ActiveX, Winapi.Windows,
+  System.Classes, System.Diagnostics, System.Generics.Collections, System.IOUtils, System.SysUtils, System.Variants,
+  Winapi.ActiveX, Winapi.Windows,
   MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.UIAutomationCore;
 
 type
@@ -109,6 +114,7 @@ type
     function NotificationCalls: Integer;
     function PropertyCalls: Integer;
     function ReentrantHandled: Boolean;
+    procedure SetRaiseOnDisconnectCall(aValue: Integer);
     function StructureCalls: Integer;
     procedure SetClientsAreListening(aValue: Boolean);
     procedure SetReentrantProvider(const aProvider: IRawElementProviderSimple);
@@ -129,6 +135,7 @@ type
     fLastStructureChangeType: StructureChangeType;
     fNotificationCalls: Integer;
     fPropertyCalls: Integer;
+    fRaiseOnDisconnectCall: Integer;
     fReentrantHandled: Boolean;
     fReentrantProvider: IRawElementProviderSimple;
     fReturnCalls: Integer;
@@ -150,6 +157,7 @@ type
     function NotificationCalls: Integer;
     function PropertyCalls: Integer;
     function ReentrantHandled: Boolean;
+    procedure SetRaiseOnDisconnectCall(aValue: Integer);
     function StructureCalls: Integer;
     function RaiseAutomationEvent(const aProvider: IRawElementProviderSimple; aEventId: EVENTID): HRESULT;
     function RaiseAutomationPropertyChanged(const aProvider: IRawElementProviderSimple; aPropertyId: PROPERTYID;
@@ -195,6 +203,22 @@ type
   public
     constructor Create;
     function PrepareCount: Integer;
+  end;
+
+  TFailingInsertProviderNode = class(TAccessibilityProviderNode)
+  private
+    fFailNextInsertion: Boolean;
+  protected
+    procedure InsertChildIntoList(aChildren: TList<IAccessibilityProviderNode>; aIndex: Integer;
+      const aChild: IAccessibilityProviderNode); override;
+  public
+    constructor Create;
+  end;
+
+  TBatchRemovalProviderNode = class(TAccessibilityProviderNode)
+  public
+    constructor Create(const aApi: IAccessibilityUiaApi);
+    procedure RemoveChildren(const aFirstChild, aSecondChild: IAccessibilityProviderNode);
   end;
 
   TPatternProbeProviderNode = class(TAccessibilityProviderNode)
@@ -440,6 +464,10 @@ end;
 function TTestUiaApi.DisconnectProvider(const aProvider: IRawElementProviderSimple): HRESULT;
 begin
   Inc(fDisconnectCalls);
+  if fDisconnectCalls = fRaiseOnDisconnectCall then
+  begin
+    raise EOutOfMemory.Create('Controlled disconnect failure.');
+  end;
   Result := S_OK;
 end;
 
@@ -516,6 +544,11 @@ end;
 function TTestUiaApi.ReentrantHandled: Boolean;
 begin
   Result := fReentrantHandled;
+end;
+
+procedure TTestUiaApi.SetRaiseOnDisconnectCall(aValue: Integer);
+begin
+  fRaiseOnDisconnectCall := aValue;
 end;
 
 function TTestUiaApi.RaiseAutomationEvent(const aProvider: IRawElementProviderSimple; aEventId: EVENTID): HRESULT;
@@ -679,6 +712,34 @@ end;
 constructor TPreparingProviderNode.Create;
 begin
   inherited CreateNode([900], 0, nil, nil);
+end;
+
+constructor TFailingInsertProviderNode.Create;
+begin
+  inherited CreateNode([903], 0, nil, nil);
+  fFailNextInsertion := True;
+end;
+
+constructor TBatchRemovalProviderNode.Create(const aApi: IAccessibilityUiaApi);
+begin
+  inherited CreateNode([906], 0, aApi, nil);
+end;
+
+procedure TBatchRemovalProviderNode.RemoveChildren(const aFirstChild,
+  aSecondChild: IAccessibilityProviderNode);
+begin
+  RemoveChildNodes([aFirstChild, aSecondChild], True);
+end;
+
+procedure TFailingInsertProviderNode.InsertChildIntoList(aChildren: TList<IAccessibilityProviderNode>;
+  aIndex: Integer; const aChild: IAccessibilityProviderNode);
+begin
+  inherited InsertChildIntoList(aChildren, aIndex, aChild);
+  if fFailNextInsertion then
+  begin
+    fFailNextInsertion := False;
+    raise EOutOfMemory.Create('Controlled child insertion failure.');
+  end;
 end;
 
 function TPreparingProviderNode.PrepareCount: Integer;
@@ -900,6 +961,95 @@ begin
   Assert.IsNotNull(lFirst);
   Assert.AreEqual(1, lPrepareProbe.PrepareCount,
     'Previous sibling navigation should reuse the prepared child snapshot while child indexes remain current.');
+end;
+
+procedure TProviderCoreTests.FailedChildInsertionLeavesChildDetached;
+var
+  lAttached: Boolean;
+  lChild: IAccessibilityProviderNode;
+  lChildAccess: IAccessibilityProviderChildAccess;
+  lChildCount: Integer;
+  lFailingParent: IAccessibilityProviderNode;
+  lInsertionFailed: Boolean;
+  lSecondParent: IAccessibilityProviderNode;
+begin
+  lFailingParent := TFailingInsertProviderNode.Create;
+  lSecondParent := TAccessibilityProviderFactory.CreateFragment([904]);
+  lChild := TAccessibilityProviderFactory.CreateFragment([905]);
+  lInsertionFailed := False;
+  try
+    lFailingParent.AddChild(lChild);
+  except
+    on EOutOfMemory do
+    begin
+      lInsertionFailed := True;
+    end;
+  end;
+  Assert.IsTrue(lInsertionFailed, 'The controlled child insertion must fail.');
+  Assert.IsTrue(Supports(lFailingParent.RawElementProvider, IAccessibilityProviderChildAccess, lChildAccess));
+  Assert.AreEqual(S_OK, lChildAccess.DirectChildCount(lChildCount));
+  Assert.AreEqual(0, lChildCount, 'A failed insertion must not leave the child in the failed parent.');
+
+  lAttached := True;
+  try
+    lSecondParent.AddChild(lChild);
+  except
+    on Exception do
+    begin
+      lAttached := False;
+    end;
+  end;
+  Assert.IsTrue(lAttached, 'A failed insertion must leave the child detached and reusable.');
+  Assert.IsTrue(Supports(lSecondParent.RawElementProvider, IAccessibilityProviderChildAccess, lChildAccess));
+  Assert.AreEqual(S_OK, lChildAccess.DirectChildCount(lChildCount));
+  Assert.AreEqual(1, lChildCount, 'The reused child must be attached exactly once.');
+end;
+
+procedure TProviderCoreTests.FailedBatchDisconnectDetachesEveryRemovedChild;
+var
+  lApi: ITestUiaApi;
+  lDisconnectFailed: Boolean;
+  lFirstChild: IAccessibilityProviderNode;
+  lOptions: ProviderOptions;
+  lParent: IAccessibilityProviderNode;
+  lSecondChild: IAccessibilityProviderNode;
+  lSecondParent: IAccessibilityProviderNode;
+begin
+  lApi := TTestUiaApi.Create;
+  lApi.SetRaiseOnDisconnectCall(1);
+  lParent := TBatchRemovalProviderNode.Create(lApi);
+  lFirstChild := TAccessibilityProviderFactory.CreateFragment([907]);
+  lSecondChild := TAccessibilityProviderFactory.CreateFragment([908]);
+  lSecondParent := TAccessibilityProviderFactory.CreateFragment([909]);
+  lParent.AddChild(lFirstChild);
+  lParent.AddChild(lSecondChild);
+
+  lDisconnectFailed := False;
+  try
+    TBatchRemovalProviderNode((lParent as IAccessibilityProviderNodeInternal).ProviderObject).RemoveChildren(
+      lFirstChild, lSecondChild);
+  except
+    on EOutOfMemory do
+    begin
+      lDisconnectFailed := True;
+    end;
+  end;
+  Assert.IsTrue(lDisconnectFailed, 'The controlled first-child disconnect must fail.');
+  Assert.AreEqual(UIA_E_ELEMENTNOTAVAILABLE, lFirstChild.RawElementProvider.Get_ProviderOptions(lOptions),
+    'The child whose callback failed must remain disconnected.');
+  Assert.AreEqual(UIA_E_ELEMENTNOTAVAILABLE, lSecondChild.RawElementProvider.Get_ProviderOptions(lOptions),
+    'Every later removed child must be disconnected before callbacks begin.');
+  Assert.AreEqual(2, lApi.DisconnectCalls,
+    'A failed callback must not prevent later removed providers from notifying UIA.');
+
+  try
+    lSecondParent.AddChild(lSecondChild);
+  except
+    on EInvalidOperation do
+    begin
+      Assert.Fail('Every removed child must detach before the first disconnect callback can raise.');
+    end;
+  end;
 end;
 
 procedure TProviderCoreTests.FragmentNextSiblingEnumerationScalesLinearly;

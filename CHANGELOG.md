@@ -5,6 +5,8 @@
 - The complex demo now enables file diagnostics only when launched with `--a11y-diagnostics`.
 
 ### Fixed
+- Memo and listbox virtual providers now evict stale off-screen children, keep retained sets bounded by viewport/focus/selection, batch partial pruning, and avoid repeated multi-select snapshots after one manager-tracked mutation reconciliation.
+- Failed provider-child insertion now rolls back both parent and child state, retained listbox item providers disconnect when their control is destroyed, and batch disconnect marks every removed subtree unavailable before attempting exception-prone UIA callbacks.
 - App-wide active-form changes now install only the newly active VCL form instead of rescanning every live form and recursively refreshing existing hint trees.
 - Hint observers now use a constant-time pointer-identity index, are owned by their forms, and unregister when transient dialogs are destroyed.
 - UI Automation Core wrapper calls now cache atomically published export pointers, avoiding repeated export-name conversion and `GetProcAddress`; the System32 module is pinned before publication so shutdown cannot invalidate concurrent cached calls.

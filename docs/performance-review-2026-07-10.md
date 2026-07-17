@@ -30,6 +30,7 @@ The practical conclusion is that further micro-optimizing already-small provider
 | T-110 | Complete | Diagnostics use a bounded non-blocking producer queue and one lazy background writer; the demo is opt-in, logs are share-readable and capped, and hot-path traces perform no extra provider reads. Debug tests pass 337/337, Release UIA probes pass 5/5, and shutdown tests pass 6/6. Defender remained active, so timing distributions below are evidence records rather than acceptance claims. |
 | T-111 | Complete | All nine real wrappers cache one atomically published export pointer, concurrent first use resolves once, and the System32 module is pinned before publication. Focused tests pass 9/9, the full Debug suite passes 342/342, and the final Release Basic UIA probe passes. |
 | T-112 | Complete | Active-form notifications install only `Screen.ActiveCustomForm`; pointer-keyed, form-owned hint observers avoid repeated refreshes and unregister on destruction. Manager passes 91/91, T-112 scaling passes 1/1, Hints passes 24/24, shutdown passes 6/6, and Release Basic/Hint UIA probes pass. The unrelated bridge scaling performance test timed out under Defender, so that gate and all wall-time acceptance remain deferred. |
+| T-113 | Complete | Memo/listbox retained providers are bounded by viewport plus focus/selection; pruning uses one item-count read and a direct index bitmap; stale subtrees become unavailable before disconnect callbacks. The final Debug suite passes 362/362 and Release `MemoListStatus` passes. Defender remained active, so wall-time acceptance is deferred. |
 
 ### T-110 measurement record
 
@@ -109,6 +110,37 @@ The final external run uses Win32 Release, diagnostics disabled, and 200 samples
 | Disabled | Scan selected child | 0.052 ms | 0.068 ms | 0.076 ms | 0.084 ms |
 
 CPU was 18% before and 29% after with Defender active. The enabled 28-node tree sample took 1,056.168 ms and the disabled 36-node sample took 577.962 ms; the listbox HWND again surfaced as a zero-child UIA Pane. These are contaminated external-boundary records, not semantic listbox or idle-machine acceptance evidence.
+
+### T-113 measurement record
+
+The process-local Win32 Release run used diagnostics disabled. Cache preparation used 100 samples; stable manager-installed selection traversal used 200 samples for each selected-item cardinality. Percentiles use nearest rank.
+
+| Path | Samples | Retained / bulk reads | Median | p95 | p99 | Maximum |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Memo viewport reconciliation | 100 | 8 retained | 0.1937 ms | 0.6283 ms | 2.4369 ms | 2.5618 ms |
+| Listbox viewport reconciliation | 100 | 11 retained | 8.8976 ms | 24.8139 ms | 31.2540 ms | 35.8500 ms |
+| Stable sibling traversal, zero selected | 200 | 0 bulk reads | 0.0643 ms | 0.4435 ms | 1.7790 ms | 2.4343 ms |
+| Stable sibling traversal, one selected | 200 | 0 bulk reads | 0.0651 ms | 0.4510 ms | 2.5491 ms | 4.2502 ms |
+| Stable sibling traversal, 300 selected | 200 | 0 bulk reads | 0.0667 ms | 0.5236 ms | 2.0945 ms | 3.4847 ms |
+
+Ten CPU samples before the process-local run had median/p95/p99/maximum 29/50/50/50%; ten after had 20/29/29/29%. Defender real-time protection was active with a 533.4 MiB working set, so these wall times are evidence records rather than accepted performance bounds. Structural acceptance is deterministic: retained counts are bounded, stable traversal performs zero native selection snapshots, pruning reads `Items.Count` once and passes direct removal flags to the provider core, and lower-half partial pruning passes its 6x ceiling using three samples per size. The old implementation measured 6.89x growth; a later RED issued 259 `LB_GETCOUNT` messages for 256 items. A controlled callback-failure RED also proved that sequential disconnect could leave a later provider live; the two-phase implementation now marks every removed subtree unavailable, attempts every callback, and rethrows the first exception.
+
+External UIA wall time used Win32 Release, diagnostics disabled, and 200 samples per mode at 13% CPU before and 20% after, with Defender active.
+
+| Framework | Operation | Median | p95 | p99 | Maximum |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Enabled | Send `WM_KEYDOWN`/`WM_KEYUP` | 2.271 ms | 11.117 ms | 13.115 ms | 14.226 ms |
+| Enabled | `AutomationElement.FromHandle` | 1.568 ms | 8.341 ms | 13.033 ms | 57.819 ms |
+| Enabled | Current properties | 0.363 ms | 1.109 ms | 4.661 ms | 6.560 ms |
+| Enabled | `FindAll` children | 0.079 ms | 0.136 ms | 0.200 ms | 12.897 ms |
+| Enabled | Scan selected child | 0.081 ms | 0.123 ms | 0.130 ms | 4.072 ms |
+| Disabled | Send `WM_KEYDOWN`/`WM_KEYUP` | 2.122 ms | 11.540 ms | 15.740 ms | 21.262 ms |
+| Disabled | `AutomationElement.FromHandle` | 1.643 ms | 5.274 ms | 10.602 ms | 11.490 ms |
+| Disabled | Current properties | 0.355 ms | 1.232 ms | 1.975 ms | 9.135 ms |
+| Disabled | `FindAll` children | 0.058 ms | 0.115 ms | 0.221 ms | 1.943 ms |
+| Disabled | Scan selected child | 0.043 ms | 0.063 ms | 0.073 ms | 0.089 ms |
+
+The enabled tree sample returned 28 nodes in 339.166 ms; disabled returned 36 in 198.308 ms. The target listbox HWND surfaced as `ControlType.Pane` with zero children in both modes. These values therefore measure the native HWND/UIA host boundary, not direct virtual-fragment traversal, and no enabled/disabled speed claim is accepted.
 
 ## Ranked findings
 

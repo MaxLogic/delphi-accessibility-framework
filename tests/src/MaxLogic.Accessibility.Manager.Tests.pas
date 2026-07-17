@@ -180,6 +180,11 @@ type
     [Test]
     procedure FormInstallLeavesListBoxArrowKeySpeechToNativeWindow;
     [Test]
+    procedure FormInstallTracksListBoxSelectionOncePerMutation;
+    [Test]
+    [Category('T113SelectionPerformance')]
+    procedure FormInstallListBoxSelectionTrackingLatencyDistribution;
+    [Test]
     procedure FormInstallDoesNotRaiseGridMsaaFocusWinEventAfterCellNotification;
     [Test]
     procedure FormInstallRaisesGridCellFocusEventAfterAdvStringGridCellChangeMessage;
@@ -408,6 +413,30 @@ type
     property GetObjectCalls: Integer read fGetObjectCalls;
   end;
 
+  TSelectionReadProbeListBox = class(TListBox)
+  private
+    fBulkSelectionMessageCount: Integer;
+  protected
+    procedure WndProc(var aMessage: TMessage); override;
+  public
+    procedure ResetBulkSelectionMessageCount;
+    property BulkSelectionMessageCount: Integer read fBulkSelectionMessageCount;
+  end;
+
+  TManagerListBoxFixture = record
+    fApi: IManagerTestUiaApi;
+    fCurrent: IRawElementProviderFragment;
+    fForm: TForm;
+    fListBox: TSelectionReadProbeListBox;
+    fListBoxFragment: IRawElementProviderFragment;
+  end;
+
+  TManagerListBoxMeasurement = record
+    fBulkSelectionMessageCount: Integer;
+    fSamples: TArray<Int64>;
+    fSelectedCount: Integer;
+  end;
+
   TLyingRadioGroupAdapter = class(TInterfacedObject, IAccessibilityControlAdapter, IAccessibilityVclProviderAdapter)
   public
     function CreateInfo(aControl: TControl; const aFallback: TAccessibilityTextInfo): TAccessibilityControlInfo;
@@ -584,6 +613,20 @@ begin
     Exit;
   end;
 
+  inherited WndProc(aMessage);
+end;
+
+procedure TSelectionReadProbeListBox.ResetBulkSelectionMessageCount;
+begin
+  fBulkSelectionMessageCount := 0;
+end;
+
+procedure TSelectionReadProbeListBox.WndProc(var aMessage: TMessage);
+begin
+  if (aMessage.Msg = LB_GETSELCOUNT) or (aMessage.Msg = LB_GETSELITEMS) then
+  begin
+    Inc(fBulkSelectionMessageCount);
+  end;
   inherited WndProc(aMessage);
 end;
 
@@ -1173,6 +1216,165 @@ begin
   end;
 
   Result := Point(lX, lY);
+end;
+
+procedure PopulateManagerListBox(aListBox: TSelectionReadProbeListBox; aSelectedCount: Integer);
+const
+  cItemCount = 600;
+var
+  i: Integer;
+begin
+  for i := 0 to Pred(cItemCount) do
+  begin
+    aListBox.Items.Add(Format('Client %.4d', [i]));
+  end;
+  for i := 0 to Pred(aSelectedCount) do
+  begin
+    aListBox.Selected[i] := True;
+  end;
+end;
+
+procedure PrimeManagerListBoxSelection(const aListBoxFragment: IRawElementProviderFragment);
+var
+  lPattern: IUnknown;
+  lSafeArray: PSafeArray;
+  lSelection: ISelectionProvider;
+begin
+  lPattern := ProviderPattern(aListBoxFragment, UIA_SelectionPatternId);
+  Assert.IsTrue(Supports(lPattern, ISelectionProvider, lSelection));
+  lSafeArray := nil;
+  Assert.AreEqual(S_OK, lSelection.GetSelection(lSafeArray));
+  Assert.IsNotNull(lSafeArray);
+  SafeArrayDestroy(lSafeArray);
+end;
+
+function CreateManagerListBoxFixture(aSelectedCount: Integer): TManagerListBoxFixture;
+var
+  lMessage: TMessage;
+  lRoot: IRawElementProviderFragment;
+begin
+  Result := Default(TManagerListBoxFixture);
+  ResetManager;
+  Result.fApi := TManagerTestUiaApi.Create;
+  TAccessibilityManagerInternals.SetUiaApi(Result.fApi);
+  Result.fForm := TForm.Create(nil);
+  try
+    Result.fListBox := TSelectionReadProbeListBox.Create(Result.fForm);
+    Result.fListBox.Parent := Result.fForm;
+    Result.fListBox.MultiSelect := True;
+    Result.fListBox.SetBounds(16, 16, 280, 140);
+    Result.fForm.HandleNeeded;
+    Result.fListBox.HandleNeeded;
+    PopulateManagerListBox(Result.fListBox, aSelectedCount);
+    Result.fListBox.ItemIndex := 0;
+
+    TAccessibilityManager.Install(Result.fForm);
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.WParam := 7;
+    lMessage.LParam := UiaRootObjectId;
+    Result.fForm.WindowProc(lMessage);
+    Assert.IsNotNull(Result.fApi.ReturnedProvider);
+    lRoot := FragmentFromSimple(Result.fApi.ReturnedProvider);
+    Result.fListBoxFragment := FirstChildFragment(lRoot);
+    PrimeManagerListBoxSelection(Result.fListBoxFragment);
+    Result.fCurrent := FirstChildFragment(Result.fListBoxFragment);
+  except
+    Result.fForm.Free;
+    Result.fForm := nil;
+    ResetManager;
+    raise;
+  end;
+end;
+
+function MeasureManagerListBoxSiblingNavigation(aSelectedCount: Integer;
+  aSampleCount: Integer): TManagerListBoxMeasurement;
+var
+  i: Integer;
+  lElapsedTicks: Int64;
+  lFixture: TManagerListBoxFixture;
+  lNext: IRawElementProviderFragment;
+  lStopwatch: TStopwatch;
+begin
+  Result := Default(TManagerListBoxMeasurement);
+  Result.fSelectedCount := aSelectedCount;
+  lFixture := CreateManagerListBoxFixture(aSelectedCount);
+  try
+    SetLength(Result.fSamples, aSampleCount);
+    lFixture.fListBox.ResetBulkSelectionMessageCount;
+    for i := 0 to Pred(aSampleCount) do
+    begin
+      lStopwatch := TStopwatch.StartNew;
+      if Odd(i) then
+      begin
+        lNext := NavigateFragment(lFixture.fCurrent, NavigateDirection_PreviousSibling);
+      end else begin
+        lNext := NavigateFragment(lFixture.fCurrent, NavigateDirection_NextSibling);
+      end;
+      lElapsedTicks := lStopwatch.ElapsedTicks;
+      if lElapsedTicks < 1 then
+      begin
+        lElapsedTicks := 1;
+      end;
+      Result.fSamples[i] := lElapsedTicks;
+      Assert.IsNotNull(lNext);
+      lFixture.fCurrent := lNext;
+    end;
+    Result.fBulkSelectionMessageCount := lFixture.fListBox.BulkSelectionMessageCount;
+  finally
+    lFixture.fForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure NavigateManagerListBox(var aFixture: TManagerListBoxFixture; aCount: Integer;
+  const aContext: string);
+var
+  i: Integer;
+  lNext: IRawElementProviderFragment;
+begin
+  for i := 1 to aCount do
+  begin
+    lNext := NavigateFragment(aFixture.fCurrent, NavigateDirection_NextSibling);
+    Assert.IsNotNull(lNext, Format('%s traversal failed at step %d.', [aContext, i]));
+    aFixture.fCurrent := lNext;
+  end;
+end;
+
+procedure AssertManagerListBoxReconcilesOnce(var aFixture: TManagerListBoxFixture;
+  const aContext: string);
+begin
+  aFixture.fListBox.ResetBulkSelectionMessageCount;
+  NavigateManagerListBox(aFixture, 1, aContext + ' reconciliation');
+  Assert.IsTrue((aFixture.fListBox.BulkSelectionMessageCount > 0) and
+    (aFixture.fListBox.BulkSelectionMessageCount <= 2),
+    Format('%s must trigger exactly one bulk refresh.', [aContext]));
+
+  aFixture.fListBox.ResetBulkSelectionMessageCount;
+  NavigateManagerListBox(aFixture, 10, aContext + ' stable follow-up');
+  Assert.AreEqual(0, aFixture.fListBox.BulkSelectionMessageCount,
+    Format('%s must leave stable traversal clean.', [aContext]));
+end;
+
+function TickCsvLine(const aSamples: TArray<Int64>): string;
+var
+  i: Integer;
+  lBuilder: TStringBuilder;
+begin
+  lBuilder := TStringBuilder.Create;
+  try
+    for i := 0 to High(aSamples) do
+    begin
+      if i > 0 then
+      begin
+        lBuilder.Append(',');
+      end;
+      lBuilder.Append(aSamples[i]);
+    end;
+    Result := lBuilder.ToString;
+  finally
+    lBuilder.Free;
+  end;
 end;
 
 procedure AssertManagerGridCellName(const aApi: IManagerTestUiaApi; aForm: TCustomForm;
@@ -5077,6 +5279,87 @@ begin
     lForm.Free;
     ResetManager;
   end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallTracksListBoxSelectionOncePerMutation;
+const
+  cNavigationCount = 100;
+  cSelectedCount = 300;
+var
+  lFixture: TManagerListBoxFixture;
+  lPattern: IUnknown;
+  lSelectionItem: ISelectionItemProvider;
+begin
+  lFixture := CreateManagerListBoxFixture(cSelectedCount);
+  try
+    lFixture.fListBox.ResetBulkSelectionMessageCount;
+    NavigateManagerListBox(lFixture, cNavigationCount, 'Initial stable');
+    Assert.IsTrue(lFixture.fListBox.BulkSelectionMessageCount <= 2,
+      Format('Stable traversal used %d bulk selection messages.',
+      [lFixture.fListBox.BulkSelectionMessageCount]));
+
+    lFixture.fListBox.Perform(WM_KEYDOWN, VK_SHIFT, 0);
+    AssertManagerListBoxReconcilesOnce(lFixture, 'A no-op native key message');
+
+    lFixture.fListBox.Selected[Pred(cSelectedCount)] := False;
+    lFixture.fListBox.Selected[599] := True;
+    AssertManagerListBoxReconcilesOnce(lFixture, 'A same-count native selection mutation');
+
+    lFixture.fCurrent := FirstChildFragment(lFixture.fListBoxFragment);
+    lPattern := ProviderPattern(lFixture.fCurrent, UIA_SelectionItemPatternId);
+    Assert.IsTrue(Supports(lPattern, ISelectionItemProvider, lSelectionItem));
+    Assert.AreEqual(S_OK, lSelectionItem.RemoveFromSelection);
+    lFixture.fListBox.ItemIndex := 0;
+    AssertManagerListBoxReconcilesOnce(lFixture, 'A framework selection-item mutation');
+  finally
+    lFixture.fForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallListBoxSelectionTrackingLatencyDistribution;
+const
+  cManySelectedCount = 300;
+  cSampleCount = 200;
+var
+  lDirectory: string;
+  lDiagnosticsState: string;
+  lMany: TManagerListBoxMeasurement;
+  lOne: TManagerListBoxMeasurement;
+  lText: string;
+  lZero: TManagerListBoxMeasurement;
+begin
+  lZero := MeasureManagerListBoxSiblingNavigation(0, cSampleCount);
+  lOne := MeasureManagerListBoxSiblingNavigation(1, cSampleCount);
+  lMany := MeasureManagerListBoxSiblingNavigation(cManySelectedCount, cSampleCount);
+
+  Assert.IsTrue(lZero.fBulkSelectionMessageCount <= 2,
+    Format('Zero-selection traversal used %d bulk selection messages.', [lZero.fBulkSelectionMessageCount]));
+  Assert.IsTrue(lOne.fBulkSelectionMessageCount <= 2,
+    Format('One-selection traversal used %d bulk selection messages.', [lOne.fBulkSelectionMessageCount]));
+  Assert.IsTrue(lMany.fBulkSelectionMessageCount <= 2,
+    Format('Many-selection traversal used %d bulk selection messages.', [lMany.fBulkSelectionMessageCount]));
+
+  lDirectory := GetEnvironmentVariable('MAXLOGIC_T113_MEASURE_DIR');
+  if lDirectory = '' then
+  begin
+    Exit;
+  end;
+
+  ForceDirectories(lDirectory);
+  if TAccessibilityDiagnostics.Enabled then
+  begin
+    lDiagnosticsState := 'enabled';
+  end else begin
+    lDiagnosticsState := 'disabled';
+  end;
+  lText := Format('sampleCount=%d,frequency=%d,diagnostics=%s,zeroSelected=0,zeroBulk=%d,' +
+    'oneSelected=1,oneBulk=%d,manySelected=%d,manyBulk=%d%s',
+    [cSampleCount, TStopwatch.Frequency, lDiagnosticsState, lZero.fBulkSelectionMessageCount,
+    lOne.fBulkSelectionMessageCount, lMany.fSelectedCount, lMany.fBulkSelectionMessageCount, sLineBreak]) +
+    TickCsvLine(lZero.fSamples) + sLineBreak + TickCsvLine(lOne.fSamples) + sLineBreak +
+    TickCsvLine(lMany.fSamples) + sLineBreak;
+  TFile.WriteAllText(TPath.Combine(lDirectory, 'listbox-selection.csv'), lText, TEncoding.UTF8);
 end;
 
 procedure TAccessibilityManagerTests.FormInstallDoesNotRaiseGridMsaaFocusWinEventAfterCellNotification;

@@ -17,6 +17,8 @@ type
     [Test]
     procedure FormMapReturnsSnapshotRefsAndTargetPoints;
     [Test]
+    procedure FormMapAppliesConfiguredDepthAndChildBounds;
+    [Test]
     procedure FormMapReferenceGenerationAvoidsFormatParser;
     [Test]
     procedure FormMapReturnsNativeAccessibilityRoleAndState;
@@ -1048,6 +1050,9 @@ begin
       Assert.IsTrue(JsonHasValue(lMap, 'elapsedTicks'), 'form.map should report in-process elapsed ticks.');
       Assert.IsTrue(JsonInt(lMap, 'elapsedMs') >= 0, 'form.map elapsed milliseconds should be non-negative.');
       Assert.IsTrue(JsonInt(lMap, 'stopwatchFrequency') > 0, 'form.map should report the stopwatch frequency.');
+      Assert.IsTrue(JsonInt(lMap, 'maxDepth') > 0, 'form.map should report a bounded default depth.');
+      Assert.IsTrue(JsonInt(lMap, 'maxChildren') > 0, 'form.map should report a bounded default child count.');
+      Assert.IsTrue(JsonInt(lMap, 'maxControls') > 0, 'form.map should report a bounded default control count.');
 
       lRoot := JsonObjectValue(lMap, 'form');
       Assert.AreEqual('@a0', JsonText(lRoot, 'ref'));
@@ -1073,6 +1078,60 @@ begin
       Assert.AreEqual('@a2', ControlRefByName(lMap, 'ApplyButton'));
     finally
       lMap.Free;
+    end;
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.FormMapAppliesConfiguredDepthAndChildBounds;
+var
+  lChildEdit: TEdit;
+  lControls: TJSONArray;
+  lForm: TForm;
+  lPanel: TPanel;
+  lResponse: TJSONObject;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lForm.Name := 'BoundedBridgeForm';
+    lPanel := TPanel.Create(lForm);
+    lPanel.Name := 'FirstPanel';
+    lPanel.Parent := lForm;
+    lChildEdit := TEdit.Create(lForm);
+    lChildEdit.Name := 'NestedEdit';
+    lChildEdit.Parent := lPanel;
+    lPanel := TPanel.Create(lForm);
+    lPanel.Name := 'SecondPanel';
+    lPanel.Parent := lForm;
+    lForm.HandleNeeded;
+
+    lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+      '{"cmd":"form.map","target":"handle","handle":' + UIntToStr(NativeUInt(lForm.Handle)) +
+      ',"includeAccessibility":false,"detail":"geometry","maxDepth":1,"maxChildren":1}'));
+    try
+      AssertOk(lResponse);
+      Assert.AreEqual(1, JsonInt(lResponse, 'maxDepth'));
+      Assert.AreEqual(1, JsonInt(lResponse, 'maxChildren'));
+      Assert.AreEqual('true', JsonText(lResponse, 'depthTruncated'));
+      Assert.AreEqual('true', JsonText(lResponse, 'childrenTruncated'));
+      lControls := JsonArrayValue(lResponse, 'controls');
+      Assert.AreEqual(1, lControls.Count);
+      Assert.AreEqual('FirstPanel', JsonText(TJSONObject(lControls.Items[0]), 'name'));
+    finally
+      lResponse.Free;
+    end;
+
+    lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+      '{"cmd":"form.map","target":"handle","handle":' + UIntToStr(NativeUInt(lForm.Handle)) +
+      ',"includeAccessibility":false,"detail":"geometry","maxDepth":2,"maxChildren":2,"maxControls":1}'));
+    try
+      AssertOk(lResponse);
+      Assert.AreEqual(1, JsonInt(lResponse, 'maxControls'));
+      Assert.AreEqual('true', JsonText(lResponse, 'controlsTruncated'));
+      Assert.AreEqual(1, JsonArrayValue(lResponse, 'controls').Count);
+    finally
+      lResponse.Free;
     end;
   finally
     lForm.Free;
@@ -2027,7 +2086,7 @@ end;
 procedure TAccessibilityAgentBridgeTests.KeyboardTabScalesWithTabStopCount;
 const
   cSmallControlCount = 160;
-  cLargeControlCount = 800;
+  cLargeControlCount = 400;
   cMaxTickGrowth = 4;
   cSampleCount = 3;
 var

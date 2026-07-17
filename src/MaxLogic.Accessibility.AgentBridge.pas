@@ -15,6 +15,7 @@ type
 
   TAccessibilityAgentBridgeInternals = record
   public
+    class function ExecuteTransportRequest(const aRequestJson: string): string; static;
     class function SerializeProviderNode(const aProvider: IRawElementProviderSimple; aFullDetail: Boolean;
       aMaxDepth: Integer; aMaxChildren: Integer): string; static;
   end;
@@ -33,6 +34,15 @@ uses
 type
   TAccessibilityAgentBridgeMapDetail = (abmdFull, abmdGeometry);
 
+const
+  cFormMapDefaultMaxChildren = 500;
+  cFormMapDefaultMaxControls = 2000;
+  cFormMapDefaultMaxDepth = 16;
+  cFormMapMaximumMaxChildren = 2000;
+  cFormMapMaximumMaxControls = 10000;
+  cFormMapMaximumMaxDepth = 64;
+
+type
   TAgentBridgeCheckBoxAccess = class(TCustomCheckBox);
   TAgentBridgeControlAccess = class(TControl);
   TAgentBridgeWinControlAccess = class(TWinControl);
@@ -46,6 +56,28 @@ type
     function Lookup(aObject: TObject; const aPropertyName: string): PPropInfo;
   end;
 
+  TAgentBridgeFormMapContext = record
+    ChildrenTruncated: Boolean;
+    ControlCount: Integer;
+    Controls: TJSONArray;
+    ControlsTruncated: Boolean;
+    DepthTruncated: Boolean;
+    Detail: TAccessibilityAgentBridgeMapDetail;
+    FocusedHandle: HWND;
+    IncludeAccessibility: Boolean;
+    MaxChildren: Integer;
+    MaxControls: Integer;
+    MaxDepth: Integer;
+    RttiCache: TAgentBridgeRttiPropertyCache;
+    SnapshotId: Integer;
+    Tree: IAccessibilityScanTree;
+    VisibleOnly: Boolean;
+  end;
+
+  TAgentBridgeTimingPhase = (btpCapture, btpParse, btpSerialization, btpSynchronized);
+  TAgentBridgeTimingThreadIds = array[TAgentBridgeTimingPhase] of Cardinal;
+  TAgentBridgeTimingTicks = array[TAgentBridgeTimingPhase] of Int64;
+
   TAccessibilityAgentBridgeState = class(TComponent)
   private
     fControlsByRef: TDictionary<string, TControl>;
@@ -56,13 +88,14 @@ type
     fScreenRectsByControl: TDictionary<TControl, TRect>;
     fSnapshotId: Integer;
     function BuildControlInfo(aControl: TControl; aIncludeAccessibility: Boolean;
-      aDetail: TAccessibilityAgentBridgeMapDetail): string;
+      aDetail: TAccessibilityAgentBridgeMapDetail): TJSONObject;
     function BuildControlsInfo(aRefs: TJSONArray; aIncludeAccessibility: Boolean;
-      aDetail: TAccessibilityAgentBridgeMapDetail): string;
+      aDetail: TAccessibilityAgentBridgeMapDetail): TJSONObject;
     function BuildFormMap(aForm: TCustomForm; aIncludeAccessibility: Boolean; aVisibleOnly: Boolean;
-      aDetail: TAccessibilityAgentBridgeMapDetail): string;
+      aDetail: TAccessibilityAgentBridgeMapDetail; aMaxDepth: Integer; aMaxChildren: Integer;
+      aMaxControls: Integer): TJSONObject;
     function BuildProviderMap(aForm: TCustomForm; aDetail: TAccessibilityAgentBridgeMapDetail; aMaxDepth: Integer;
-      aMaxChildren: Integer): string;
+      aMaxChildren: Integer): TJSONObject;
     function ControlAtScreenPoint(aParent: TWinControl; const aPoint: TPoint): TControl;
     function ControlJson(aControl: TControl; const aParentRef: string; aDepth: Integer;
       const aScreenRect: TRect; const aTree: IAccessibilityScanTree; aDetail: TAccessibilityAgentBridgeMapDetail;
@@ -72,25 +105,24 @@ type
     function ControlScreenRect(aControl: TControl): TRect;
     function ControlScreenRectFromParentOrigin(aControl: TControl; const aParentClientOrigin: TPoint): TRect;
     function ControlScreenRectFromSnapshot(aControl: TControl): TRect;
-    function ExecuteClick(aRequest: TJSONObject): string;
-    function ExecuteControlInfo(aRequest: TJSONObject): string;
-    function ExecuteControlsInfo(aRequest: TJSONObject): string;
-    function ExecuteFocus(aRequest: TJSONObject): string;
-    function ExecuteFormMap(aRequest: TJSONObject): string;
-    function ExecuteFormsList: string;
-    function ExecuteHello: string;
-    function ExecuteHitTest(aRequest: TJSONObject): string;
-    function ExecuteKeyboardTab(aRequest: TJSONObject): string;
-    function ExecuteProviderHotspots: string;
-    function ExecuteProviderMap(aRequest: TJSONObject): string;
-    function ExecuteSetText(aRequest: TJSONObject; aAppend: Boolean): string;
-    function ExecuteWindowInfo(aRequest: TJSONObject): string;
-    function Failure(const aErrorCode: string; const aMessage: string): string;
+    function ExecuteClick(aRequest: TJSONObject): TJSONObject;
+    function ExecuteControlInfo(aRequest: TJSONObject): TJSONObject;
+    function ExecuteControlsInfo(aRequest: TJSONObject): TJSONObject;
+    function ExecuteFocus(aRequest: TJSONObject): TJSONObject;
+    function ExecuteFormMap(aRequest: TJSONObject): TJSONObject;
+    function ExecuteFormsList: TJSONObject;
+    function ExecuteHello: TJSONObject;
+    function ExecuteHitTest(aRequest: TJSONObject): TJSONObject;
+    function ExecuteKeyboardTab(aRequest: TJSONObject): TJSONObject;
+    function ExecuteProviderHotspots: TJSONObject;
+    function ExecuteProviderMap(aRequest: TJSONObject): TJSONObject;
+    function ExecuteSetText(aRequest: TJSONObject; aAppend: Boolean): TJSONObject;
+    function ExecuteWindowInfo(aRequest: TJSONObject): TJSONObject;
+    function Failure(const aErrorCode: string; const aMessage: string): TJSONObject;
     function FormSummaryJson(aForm: TCustomForm): TJSONObject;
     function HitControlAt(const aPoint: TPoint): TControl;
     procedure AddChildControls(aParent: TWinControl; const aParentRef: string; aDepth: Integer;
-      const aParentClientOrigin: TPoint; aControls: TJSONArray; const aTree: IAccessibilityScanTree; aVisibleOnly: Boolean;
-      aDetail: TAccessibilityAgentBridgeMapDetail; aFocusedHandle: HWND; aRttiCache: TAgentBridgeRttiPropertyCache);
+      const aParentClientOrigin: TPoint; var aContext: TAgentBridgeFormMapContext);
     procedure AddControlState(aJson: TJSONObject; aControl: TControl; const aTree: IAccessibilityScanTree;
       aRttiCache: TAgentBridgeRttiPropertyCache);
     procedure AddControlTargeting(aJson: TJSONObject; aControl: TControl; const aScreenRect: TRect;
@@ -101,14 +133,14 @@ type
     function RegisterControl(aControl: TControl): string;
     function ResolveControl(aRequest: TJSONObject; out aControl: TControl): Boolean;
     function ResolveForm(aRequest: TJSONObject): TCustomForm;
-    function SuccessCommand(const aCommand: string): string;
-    function SuccessMutation: string;
+    function SuccessCommand(const aCommand: string): TJSONObject;
+    function SuccessMutation: TJSONObject;
     function WindowInfoJson(aForm: TCustomForm): TJSONObject;
     procedure FocusWinControl(aControl: TWinControl);
   public
     constructor Create; reintroduce;
     destructor Destroy; override;
-    function Execute(aRequest: TJSONObject): string;
+    function Execute(aRequest: TJSONObject): TJSONObject;
   end;
 
 var
@@ -165,7 +197,7 @@ begin
   Result := aObject.AddPair(aName, TJSONBool.Create(aValue));
 end;
 
-function AddInt(aObject: TJSONObject; const aName: string; aValue: Int64): TJSONObject;
+function AddInt(aObject: TJSONObject; const aName: string; aValue: Integer): TJSONObject;
 begin
   Result := aObject.AddPair(aName, TJSONNumber.Create(aValue));
 end;
@@ -184,14 +216,19 @@ begin
   end;
 end;
 
+function FailureJson(const aErrorCode: string; const aMessage: string): TJSONObject;
+begin
+  Result := TJSONObject.Create;
+  AddBool(Result, 'ok', False);
+  Result.AddPair('errorCode', aErrorCode);
+  Result.AddPair('message', aMessage);
+end;
+
 function FailureResponse(const aErrorCode: string; const aMessage: string): string;
 var
   lResponse: TJSONObject;
 begin
-  lResponse := TJSONObject.Create;
-  AddBool(lResponse, 'ok', False);
-  lResponse.AddPair('errorCode', aErrorCode);
-  lResponse.AddPair('message', aMessage);
+  lResponse := FailureJson(aErrorCode, aMessage);
   Result := JsonObjectToString(lResponse);
 end;
 
@@ -1001,7 +1038,7 @@ begin
 end;
 
 function TAccessibilityAgentBridgeState.BuildControlInfo(aControl: TControl; aIncludeAccessibility: Boolean;
-  aDetail: TAccessibilityAgentBridgeMapDetail): string;
+  aDetail: TAccessibilityAgentBridgeMapDetail): TJSONObject;
 var
   lControl: TJSONObject;
   lFocusedHandle: HWND;
@@ -1046,14 +1083,14 @@ begin
     lResponse.AddPair('detail', MapDetailName(aDetail));
     AddInt(lResponse, 'snapshotId', fSnapshotId);
     lResponse.AddPair('control', lControl);
-    Result := JsonObjectToString(lResponse);
+    Result := lResponse;
   finally
     lRttiCache.Free;
   end;
 end;
 
 function TAccessibilityAgentBridgeState.BuildControlsInfo(aRefs: TJSONArray; aIncludeAccessibility: Boolean;
-  aDetail: TAccessibilityAgentBridgeMapDetail): string;
+  aDetail: TAccessibilityAgentBridgeMapDetail): TJSONObject;
 var
   i: Integer;
   lControl: TControl;
@@ -1132,7 +1169,7 @@ begin
       lResponse.AddPair('detail', MapDetailName(aDetail));
       AddInt(lResponse, 'snapshotId', fSnapshotId);
       lResponse.AddPair('controls', lControls);
-      Result := JsonObjectToString(lResponse);
+      Result := lResponse;
     finally
       lRttiCache.Free;
     end;
@@ -1161,36 +1198,58 @@ begin
 end;
 
 procedure TAccessibilityAgentBridgeState.AddChildControls(aParent: TWinControl; const aParentRef: string;
-  aDepth: Integer; const aParentClientOrigin: TPoint; aControls: TJSONArray; const aTree: IAccessibilityScanTree;
-  aVisibleOnly: Boolean; aDetail: TAccessibilityAgentBridgeMapDetail; aFocusedHandle: HWND;
-  aRttiCache: TAgentBridgeRttiPropertyCache);
+  aDepth: Integer; const aParentClientOrigin: TPoint; var aContext: TAgentBridgeFormMapContext);
 var
   i: Integer;
   lChild: TControl;
   lChildClientOrigin: TPoint;
+  lChildCount: Integer;
   lChildRef: string;
   lChildRect: TRect;
-  lWinControl: TWinControl;
 begin
+  if aDepth > aContext.MaxDepth then
+  begin
+    aContext.DepthTruncated := aParent.ControlCount > 0;
+    Exit;
+  end;
+
+  lChildCount := 0;
   for i := 0 to Pred(aParent.ControlCount) do
   begin
     lChild := aParent.Controls[i];
-    if aVisibleOnly and not ControlIsVisibleChildInActivePage(lChild) then
+    if aContext.VisibleOnly and not ControlIsVisibleChildInActivePage(lChild) then
     begin
       Continue;
     end;
 
-    lChildRect := ControlScreenRectFromParentOrigin(lChild, aParentClientOrigin);
-    aControls.AddElement(ControlJson(lChild, aParentRef, aDepth, lChildRect, aTree, aDetail, aFocusedHandle,
-      aRttiCache, lChildRef));
-    if lChild is TWinControl then
+    if lChildCount >= aContext.MaxChildren then
     begin
-      lWinControl := TWinControl(lChild);
-      if lWinControl.ControlCount > 0 then
+      aContext.ChildrenTruncated := True;
+      Break;
+    end;
+    if aContext.ControlCount >= aContext.MaxControls then
+    begin
+      aContext.ControlsTruncated := True;
+      Exit;
+    end;
+
+    Inc(lChildCount);
+    Inc(aContext.ControlCount);
+    lChildRect := ControlScreenRectFromParentOrigin(lChild, aParentClientOrigin);
+    aContext.Controls.AddElement(ControlJson(lChild, aParentRef, aDepth, lChildRect, aContext.Tree, aContext.Detail,
+      aContext.FocusedHandle, aContext.RttiCache, lChildRef));
+    if (lChild is TWinControl) and (TWinControl(lChild).ControlCount > 0) then
+    begin
+      if aDepth >= aContext.MaxDepth then
       begin
-        lChildClientOrigin := ControlClientOriginForChildren(lWinControl, lChildRect);
-        AddChildControls(lWinControl, lChildRef, Succ(aDepth), lChildClientOrigin, aControls, aTree, aVisibleOnly,
-          aDetail, aFocusedHandle, aRttiCache);
+        aContext.DepthTruncated := True;
+      end else begin
+        lChildClientOrigin := ControlClientOriginForChildren(TWinControl(lChild), lChildRect);
+        AddChildControls(TWinControl(lChild), lChildRef, Succ(aDepth), lChildClientOrigin, aContext);
+        if aContext.ControlsTruncated then
+        begin
+          Exit;
+        end;
       end;
     end;
   end;
@@ -1263,66 +1322,75 @@ begin
   aJson.AddPair('targetPoints', lTargetPoints);
 end;
 
+function FormMapResponse(aRoot: TJSONObject; const aContext: TAgentBridgeFormMapContext): TJSONObject;
+begin
+  Result := TJSONObject.Create;
+  AddBool(Result, 'ok', True);
+  Result.AddPair('cmd', 'form.map');
+  AddInt(Result, 'protocolVersion', 1);
+  AddBool(Result, 'includeAccessibility', aContext.IncludeAccessibility);
+  AddBool(Result, 'visibleOnly', aContext.VisibleOnly);
+  Result.AddPair('detail', MapDetailName(aContext.Detail));
+  AddInt(Result, 'snapshotId', aContext.SnapshotId);
+  Result.AddPair('refModel', 'snapshot');
+  AddInt(Result, 'maxDepth', aContext.MaxDepth);
+  AddInt(Result, 'maxChildren', aContext.MaxChildren);
+  AddInt(Result, 'maxControls', aContext.MaxControls);
+  AddInt(Result, 'controlCount', aContext.ControlCount);
+  AddBool(Result, 'depthTruncated', aContext.DepthTruncated);
+  AddBool(Result, 'childrenTruncated', aContext.ChildrenTruncated);
+  AddBool(Result, 'controlsTruncated', aContext.ControlsTruncated);
+  Result.AddPair('form', aRoot);
+  Result.AddPair('controls', aContext.Controls);
+end;
+
 function TAccessibilityAgentBridgeState.BuildFormMap(aForm: TCustomForm; aIncludeAccessibility: Boolean;
-  aVisibleOnly: Boolean; aDetail: TAccessibilityAgentBridgeMapDetail): string;
+  aVisibleOnly: Boolean; aDetail: TAccessibilityAgentBridgeMapDetail; aMaxDepth: Integer; aMaxChildren: Integer;
+  aMaxControls: Integer): TJSONObject;
 var
-  lControls: TJSONArray;
-  lFocusedHandle: HWND;
+  lContext: TAgentBridgeFormMapContext;
   lFormClientOrigin: TPoint;
-  lIncludeAccessibility: Boolean;
   lFormRef: string;
-  lResponse: TJSONObject;
   lRttiCache: TAgentBridgeRttiPropertyCache;
   lRoot: TJSONObject;
   lRootRect: TRect;
-  lStopwatch: TStopwatch;
-  lTree: IAccessibilityScanTree;
 begin
   lRttiCache := TAgentBridgeRttiPropertyCache.Create;
   try
-    lStopwatch := TStopwatch.StartNew;
     ClearSnapshot;
     Inc(fSnapshotId);
     fForm := aForm;
     fNextRefIndex := 0;
-    lTree := nil;
-    lIncludeAccessibility := aIncludeAccessibility and (aDetail = abmdFull);
-    if lIncludeAccessibility then
+    lContext := Default(TAgentBridgeFormMapContext);
+    lContext.Detail := aDetail;
+    lContext.IncludeAccessibility := aIncludeAccessibility and (aDetail = abmdFull);
+    lContext.MaxChildren := aMaxChildren;
+    lContext.MaxControls := aMaxControls;
+    lContext.MaxDepth := aMaxDepth;
+    lContext.RttiCache := lRttiCache;
+    lContext.SnapshotId := fSnapshotId;
+    lContext.VisibleOnly := aVisibleOnly;
+    if lContext.IncludeAccessibility then
     begin
-      lTree := TAccessibilityScanner.ScanForm(aForm);
+      lContext.Tree := TAccessibilityScanner.ScanForm(aForm);
     end;
 
     lRootRect := ControlScreenRect(aForm);
     TAccessibilityDiagnostics.RecordAgentBridgeFocusProbe;
-    lFocusedHandle := GetFocus;
-    lRoot := ControlJson(aForm, '', 0, lRootRect, lTree, aDetail, lFocusedHandle, lRttiCache, lFormRef);
+    lContext.FocusedHandle := GetFocus;
+    lRoot := ControlJson(aForm, '', 0, lRootRect, lContext.Tree, lContext.Detail, lContext.FocusedHandle,
+      lContext.RttiCache, lFormRef);
     lFormClientOrigin := ControlClientOriginForChildren(aForm, lRootRect);
-    lControls := TJSONArray.Create;
-    AddChildControls(aForm, lFormRef, 1, lFormClientOrigin, lControls, lTree, aVisibleOnly, aDetail,
-      lFocusedHandle, lRttiCache);
-
-    lResponse := TJSONObject.Create;
-    AddBool(lResponse, 'ok', True);
-    lResponse.AddPair('cmd', 'form.map');
-    AddInt(lResponse, 'protocolVersion', 1);
-    AddBool(lResponse, 'includeAccessibility', lIncludeAccessibility);
-    AddBool(lResponse, 'visibleOnly', aVisibleOnly);
-    lResponse.AddPair('detail', MapDetailName(aDetail));
-    AddInt(lResponse, 'snapshotId', fSnapshotId);
-    lResponse.AddPair('refModel', 'snapshot');
-    AddInt(lResponse, 'elapsedMs', lStopwatch.ElapsedMilliseconds);
-    AddInt(lResponse, 'elapsedTicks', lStopwatch.ElapsedTicks);
-    AddInt(lResponse, 'stopwatchFrequency', TStopwatch.Frequency);
-    lResponse.AddPair('form', lRoot);
-    lResponse.AddPair('controls', lControls);
-    Result := JsonObjectToString(lResponse);
+    lContext.Controls := TJSONArray.Create;
+    AddChildControls(aForm, lFormRef, 1, lFormClientOrigin, lContext);
+    Result := FormMapResponse(lRoot, lContext);
   finally
     lRttiCache.Free;
   end;
 end;
 
 function TAccessibilityAgentBridgeState.BuildProviderMap(aForm: TCustomForm; aDetail: TAccessibilityAgentBridgeMapDetail;
-  aMaxDepth: Integer; aMaxChildren: Integer): string;
+  aMaxDepth: Integer; aMaxChildren: Integer): TJSONObject;
 var
   lNodeCount: Integer;
   lOwnsProvider: Boolean;
@@ -1331,9 +1399,7 @@ var
   lRawProvider: IRawElementProviderSimple;
   lResponse: TJSONObject;
   lRoot: TJSONObject;
-  lStopwatch: TStopwatch;
 begin
-  lStopwatch := TStopwatch.StartNew;
   lProvider := nil;
   lOwnsProvider := False;
   if TAccessibilityManagerInternals.TryGetInstalledFormProvider(aForm, lRawProvider) then
@@ -1359,11 +1425,8 @@ begin
     AddInt(lResponse, 'maxDepth', aMaxDepth);
     AddInt(lResponse, 'maxChildren', aMaxChildren);
     AddInt(lResponse, 'nodeCount', lNodeCount);
-    AddInt(lResponse, 'elapsedMs', lStopwatch.ElapsedMilliseconds);
-    AddInt(lResponse, 'elapsedTicks', lStopwatch.ElapsedTicks);
-    AddInt(lResponse, 'stopwatchFrequency', TStopwatch.Frequency);
     lResponse.AddPair('root', lRoot);
-    Result := JsonObjectToString(lResponse);
+    Result := lResponse;
   finally
     if lOwnsProvider and (lProvider <> nil) then
     begin
@@ -1562,7 +1625,7 @@ begin
   Result := ControlScreenRect(aControl);
 end;
 
-function TAccessibilityAgentBridgeState.Execute(aRequest: TJSONObject): string;
+function TAccessibilityAgentBridgeState.Execute(aRequest: TJSONObject): TJSONObject;
 var
   lCommand: string;
 begin
@@ -1626,7 +1689,7 @@ begin
   end;
 end;
 
-function TAccessibilityAgentBridgeState.ExecuteClick(aRequest: TJSONObject): string;
+function TAccessibilityAgentBridgeState.ExecuteClick(aRequest: TJSONObject): TJSONObject;
 var
   lControl: TControl;
   lMouseParam: LPARAM;
@@ -1663,7 +1726,7 @@ begin
   Result := SuccessMutation;
 end;
 
-function TAccessibilityAgentBridgeState.ExecuteControlInfo(aRequest: TJSONObject): string;
+function TAccessibilityAgentBridgeState.ExecuteControlInfo(aRequest: TJSONObject): TJSONObject;
 var
   lControl: TControl;
 begin
@@ -1676,13 +1739,13 @@ begin
     RequestMapDetail(aRequest));
 end;
 
-function TAccessibilityAgentBridgeState.ExecuteControlsInfo(aRequest: TJSONObject): string;
+function TAccessibilityAgentBridgeState.ExecuteControlsInfo(aRequest: TJSONObject): TJSONObject;
 begin
   Result := BuildControlsInfo(RequestArray(aRequest, 'refs'), RequestBool(aRequest, 'includeAccessibility', False),
     RequestMapDetail(aRequest));
 end;
 
-function TAccessibilityAgentBridgeState.ExecuteFocus(aRequest: TJSONObject): string;
+function TAccessibilityAgentBridgeState.ExecuteFocus(aRequest: TJSONObject): TJSONObject;
 var
   lControl: TControl;
   lWinControl: TWinControl;
@@ -1708,7 +1771,7 @@ begin
   Result := SuccessMutation;
 end;
 
-function TAccessibilityAgentBridgeState.ExecuteFormMap(aRequest: TJSONObject): string;
+function TAccessibilityAgentBridgeState.ExecuteFormMap(aRequest: TJSONObject): TJSONObject;
 var
   lForm: TCustomForm;
 begin
@@ -1719,10 +1782,13 @@ begin
   end;
 
   Result := BuildFormMap(lForm, RequestBool(aRequest, 'includeAccessibility', True),
-    RequestBool(aRequest, 'visibleOnly', False), RequestMapDetail(aRequest));
+    RequestBool(aRequest, 'visibleOnly', False), RequestMapDetail(aRequest),
+    RequestBoundedInt(aRequest, 'maxDepth', cFormMapDefaultMaxDepth, 0, cFormMapMaximumMaxDepth),
+    RequestBoundedInt(aRequest, 'maxChildren', cFormMapDefaultMaxChildren, 1, cFormMapMaximumMaxChildren),
+    RequestBoundedInt(aRequest, 'maxControls', cFormMapDefaultMaxControls, 1, cFormMapMaximumMaxControls));
 end;
 
-function TAccessibilityAgentBridgeState.ExecuteProviderMap(aRequest: TJSONObject): string;
+function TAccessibilityAgentBridgeState.ExecuteProviderMap(aRequest: TJSONObject): TJSONObject;
 var
   lForm: TCustomForm;
 begin
@@ -1736,7 +1802,7 @@ begin
     RequestBoundedInt(aRequest, 'maxChildren', 200, 1, 2000));
 end;
 
-function TAccessibilityAgentBridgeState.ExecuteFormsList: string;
+function TAccessibilityAgentBridgeState.ExecuteFormsList: TJSONObject;
 var
   i: Integer;
   lForms: TJSONArray;
@@ -1756,10 +1822,10 @@ begin
   lResponse.AddPair('cmd', 'forms.list');
   AddInt(lResponse, 'protocolVersion', 1);
   lResponse.AddPair('forms', lForms);
-  Result := JsonObjectToString(lResponse);
+  Result := lResponse;
 end;
 
-function TAccessibilityAgentBridgeState.ExecuteHello: string;
+function TAccessibilityAgentBridgeState.ExecuteHello: TJSONObject;
 var
   lResponse: TJSONObject;
 begin
@@ -1770,10 +1836,10 @@ begin
   lResponse.AddPair('frameworkName', cAccessibilityFrameworkName);
   AddUInt(lResponse, 'processId', GetCurrentProcessId);
   AddBool(lResponse, 'mutationEnabled', gMutationEnabled);
-  Result := JsonObjectToString(lResponse);
+  Result := lResponse;
 end;
 
-function TAccessibilityAgentBridgeState.ExecuteHitTest(aRequest: TJSONObject): string;
+function TAccessibilityAgentBridgeState.ExecuteHitTest(aRequest: TJSONObject): TJSONObject;
 var
   lControl: TControl;
   lPoint: TPoint;
@@ -1806,10 +1872,10 @@ begin
   lResponse.AddPair('ref', lRef);
   lResponse.AddPair('name', lControl.Name);
   lResponse.AddPair('className', lControl.ClassName);
-  Result := JsonObjectToString(lResponse);
+  Result := lResponse;
 end;
 
-function TAccessibilityAgentBridgeState.ExecuteKeyboardTab(aRequest: TJSONObject): string;
+function TAccessibilityAgentBridgeState.ExecuteKeyboardTab(aRequest: TJSONObject): TJSONObject;
 var
   lForm: TCustomForm;
   lForward: Boolean;
@@ -1841,7 +1907,7 @@ begin
   Result := SuccessMutation;
 end;
 
-function TAccessibilityAgentBridgeState.ExecuteProviderHotspots: string;
+function TAccessibilityAgentBridgeState.ExecuteProviderHotspots: TJSONObject;
 var
   lMetrics: TJSONValue;
   lResponse: TJSONObject;
@@ -1859,10 +1925,10 @@ begin
   lResponse.AddPair('cmd', 'diagnostics.providerHotspots');
   AddInt(lResponse, 'protocolVersion', 1);
   lResponse.AddPair('metrics', lMetrics);
-  Result := JsonObjectToString(lResponse);
+  Result := lResponse;
 end;
 
-function TAccessibilityAgentBridgeState.ExecuteSetText(aRequest: TJSONObject; aAppend: Boolean): string;
+function TAccessibilityAgentBridgeState.ExecuteSetText(aRequest: TJSONObject; aAppend: Boolean): TJSONObject;
 var
   lControl: TControl;
   lCurrentText: string;
@@ -1893,7 +1959,7 @@ begin
   Result := SuccessMutation;
 end;
 
-function TAccessibilityAgentBridgeState.ExecuteWindowInfo(aRequest: TJSONObject): string;
+function TAccessibilityAgentBridgeState.ExecuteWindowInfo(aRequest: TJSONObject): TJSONObject;
 var
   lForm: TCustomForm;
   lResponse: TJSONObject;
@@ -1909,12 +1975,12 @@ begin
   lResponse.AddPair('cmd', 'window.info');
   AddInt(lResponse, 'protocolVersion', 1);
   lResponse.AddPair('window', WindowInfoJson(lForm));
-  Result := JsonObjectToString(lResponse);
+  Result := lResponse;
 end;
 
-function TAccessibilityAgentBridgeState.Failure(const aErrorCode: string; const aMessage: string): string;
+function TAccessibilityAgentBridgeState.Failure(const aErrorCode: string; const aMessage: string): TJSONObject;
 begin
-  Result := FailureResponse(aErrorCode, aMessage);
+  Result := FailureJson(aErrorCode, aMessage);
 end;
 
 function TAccessibilityAgentBridgeState.FormSummaryJson(aForm: TCustomForm): TJSONObject;
@@ -2084,7 +2150,7 @@ begin
   end;
 end;
 
-function TAccessibilityAgentBridgeState.SuccessCommand(const aCommand: string): string;
+function TAccessibilityAgentBridgeState.SuccessCommand(const aCommand: string): TJSONObject;
 var
   lResponse: TJSONObject;
 begin
@@ -2092,17 +2158,17 @@ begin
   AddBool(lResponse, 'ok', True);
   lResponse.AddPair('cmd', aCommand);
   AddInt(lResponse, 'protocolVersion', 1);
-  Result := JsonObjectToString(lResponse);
+  Result := lResponse;
 end;
 
-function TAccessibilityAgentBridgeState.SuccessMutation: string;
+function TAccessibilityAgentBridgeState.SuccessMutation: TJSONObject;
 var
   lResponse: TJSONObject;
 begin
   lResponse := TJSONObject.Create;
   AddBool(lResponse, 'ok', True);
   AddBool(lResponse, 'snapshotInvalidated', True);
-  Result := JsonObjectToString(lResponse);
+  Result := lResponse;
 end;
 
 function TAccessibilityAgentBridgeState.WindowInfoJson(aForm: TCustomForm): TJSONObject;
@@ -2120,44 +2186,197 @@ begin
   Result.AddPair('clientScreenRect', RectJson(lClientScreenRect));
 end;
 
-class function TAccessibilityAgentBridge.Execute(const aRequestJson: string): string;
+function ElapsedMillisecondsFromTicks(aElapsedTicks: Int64): Int64;
+begin
+  Result := ((aElapsedTicks div TStopwatch.Frequency) * 1000) +
+    (((aElapsedTicks mod TStopwatch.Frequency) * 1000) div TStopwatch.Frequency);
+end;
+
+function AppendBridgeTiming(const aJson: string; aRequestElapsedTicks: Int64;
+  const aTicks: TAgentBridgeTimingTicks; const aThreadIds: TAgentBridgeTimingThreadIds): string;
 var
-  lRequest: TJSONObject;
+  lSeparator: string;
+  lTiming: string;
+begin
+  if Length(aJson) < 2 then
+  begin
+    Exit(FailureResponse('serialization_error', 'Agent bridge response was not a JSON object.'));
+  end;
+  if aJson[Length(aJson)] <> '}' then
+  begin
+    Exit(FailureResponse('serialization_error', 'Agent bridge response was not a JSON object.'));
+  end;
+
+  if aJson = '{}' then
+  begin
+    lSeparator := '';
+  end else begin
+    lSeparator := ',';
+  end;
+
+  lTiming := lSeparator +
+    '"elapsedMs":' + IntToStr(ElapsedMillisecondsFromTicks(aRequestElapsedTicks)) +
+    ',"elapsedTicks":' + IntToStr(aRequestElapsedTicks) +
+    ',"captureBuildElapsedMs":' + IntToStr(ElapsedMillisecondsFromTicks(aTicks[btpCapture])) +
+    ',"captureBuildElapsedTicks":' + IntToStr(aTicks[btpCapture]) +
+    ',"synchronizedElapsedMs":' + IntToStr(ElapsedMillisecondsFromTicks(aTicks[btpSynchronized])) +
+    ',"synchronizedElapsedTicks":' + IntToStr(aTicks[btpSynchronized]) +
+    ',"serializationElapsedMs":' + IntToStr(ElapsedMillisecondsFromTicks(aTicks[btpSerialization])) +
+    ',"serializationElapsedTicks":' + IntToStr(aTicks[btpSerialization]) +
+    ',"parseElapsedMs":' + IntToStr(ElapsedMillisecondsFromTicks(aTicks[btpParse])) +
+    ',"parseElapsedTicks":' + IntToStr(aTicks[btpParse]) +
+    ',"stopwatchFrequency":' + IntToStr(TStopwatch.Frequency) +
+    ',"parseThreadId":' + UIntToStr(aThreadIds[btpParse]) +
+    ',"captureThreadId":' + UIntToStr(aThreadIds[btpCapture]) +
+    ',"serializationThreadId":' + UIntToStr(aThreadIds[btpSerialization]) + '}';
+  Result := Copy(aJson, 1, Pred(Length(aJson))) + lTiming;
+end;
+
+function CaptureBridgeResponse(aRequest: TJSONObject; out aElapsedTicks: Int64;
+  out aThreadId: Cardinal): TJSONObject;
+var
+  lStartedTicks: Int64;
+begin
+  aThreadId := GetCurrentThreadId;
+  lStartedTicks := TStopwatch.GetTimeStamp;
+  try
+    if aThreadId <> MainThreadID then
+    begin
+      Result := FailureJson('wrong_thread', 'Agent bridge commands must run on the VCL main thread.');
+    end else begin
+      try
+        Result := BridgeState.Execute(aRequest);
+      except
+        on lException: Exception do
+        begin
+          Result := FailureJson('exception', lException.Message);
+        end;
+      end;
+    end;
+  finally
+    aElapsedTicks := TStopwatch.GetTimeStamp - lStartedTicks;
+  end;
+
+  if Result = nil then
+  begin
+    Result := FailureJson('exception', 'Agent bridge command produced no response.');
+  end;
+end;
+
+function SerializeBridgeResponse(aResponse: TJSONObject; out aElapsedTicks: Int64;
+  out aThreadId: Cardinal): string;
+var
+  lStartedTicks: Int64;
+begin
+  aThreadId := GetCurrentThreadId;
+  lStartedTicks := TStopwatch.GetTimeStamp;
+  try
+    try
+      Result := aResponse.ToJSON;
+    except
+      on lException: Exception do
+      begin
+        Exit(FailureResponse('serialization_error', lException.Message));
+      end;
+    end;
+  finally
+    aElapsedTicks := TStopwatch.GetTimeStamp - lStartedTicks;
+  end;
+end;
+
+function ParseBridgeRequest(const aRequestJson: string; out aRequest: TJSONObject;
+  out aElapsedTicks: Int64; out aThreadId: Cardinal): TJSONObject;
+var
+  lStartedTicks: Int64;
   lValue: TJSONValue;
+begin
+  aRequest := nil;
+  aThreadId := GetCurrentThreadId;
+  lStartedTicks := TStopwatch.GetTimeStamp;
+  lValue := nil;
+  Result := nil;
+  try
+    try
+      lValue := TJSONObject.ParseJSONValue(aRequestJson, True, True);
+    except
+      on lException: Exception do
+      begin
+        Result := FailureJson('invalid_json', lException.Message);
+      end;
+    end;
+
+    if (Result = nil) and (lValue is TJSONObject) then
+    begin
+      aRequest := TJSONObject(lValue);
+      lValue := nil;
+    end else if Result = nil then
+    begin
+      Result := FailureJson('invalid_request', 'Agent bridge request must be a JSON object.');
+    end;
+  finally
+    lValue.Free;
+    aElapsedTicks := TStopwatch.GetTimeStamp - lStartedTicks;
+  end;
+end;
+
+function ExecuteBridgeRequest(const aRequestJson: string; aMarshalToMainThread: Boolean): string;
+var
+  lPhaseStartedTicks: Int64;
+  lRequest: TJSONObject;
+  lRequestStartedTicks: Int64;
+  lResponse: TJSONObject;
+  lThreadIds: TAgentBridgeTimingThreadIds;
+  lTicks: TAgentBridgeTimingTicks;
+begin
+  lThreadIds[btpSynchronized] := 0;
+  lRequestStartedTicks := TStopwatch.GetTimeStamp;
+  lResponse := nil;
+  try
+    lResponse := ParseBridgeRequest(aRequestJson, lRequest, lTicks[btpParse], lThreadIds[btpParse]);
+
+    if lResponse = nil then
+    begin
+      if aMarshalToMainThread and (GetCurrentThreadId <> MainThreadID) then
+      begin
+        TThread.Synchronize(nil,
+          procedure
+          begin
+            lPhaseStartedTicks := TStopwatch.GetTimeStamp;
+            lResponse := CaptureBridgeResponse(lRequest, lTicks[btpCapture], lThreadIds[btpCapture]);
+            lTicks[btpSynchronized] := TStopwatch.GetTimeStamp - lPhaseStartedTicks;
+          end);
+      end else begin
+        lPhaseStartedTicks := TStopwatch.GetTimeStamp;
+        lResponse := CaptureBridgeResponse(lRequest, lTicks[btpCapture], lThreadIds[btpCapture]);
+        lTicks[btpSynchronized] := TStopwatch.GetTimeStamp - lPhaseStartedTicks;
+      end;
+    end else begin
+      lThreadIds[btpCapture] := 0;
+      lTicks[btpCapture] := 0;
+      lTicks[btpSynchronized] := 0;
+    end;
+
+    Result := SerializeBridgeResponse(lResponse, lTicks[btpSerialization], lThreadIds[btpSerialization]);
+    Result := AppendBridgeTiming(Result, TStopwatch.GetTimeStamp - lRequestStartedTicks, lTicks, lThreadIds);
+  finally
+    lResponse.Free;
+    lRequest.Free;
+  end;
+end;
+
+class function TAccessibilityAgentBridge.Execute(const aRequestJson: string): string;
 begin
   if GetCurrentThreadId <> MainThreadID then
   begin
     Exit(FailureResponse('wrong_thread', 'Agent bridge commands must run on the VCL main thread.'));
   end;
 
-  lValue := nil;
-  try
-    try
-      try
-        lValue := TJSONObject.ParseJSONValue(aRequestJson, True, True);
-      except
-        on lException: Exception do
-        begin
-          Exit(FailureResponse('invalid_json', lException.Message));
-        end;
-      end;
+  Result := ExecuteBridgeRequest(aRequestJson, False);
+end;
 
-      if not (lValue is TJSONObject) then
-      begin
-        Exit(FailureResponse('invalid_request', 'Agent bridge request must be a JSON object.'));
-      end;
-
-      lRequest := TJSONObject(lValue);
-      Result := BridgeState.Execute(lRequest);
-    except
-      on lException: Exception do
-      begin
-        Result := FailureResponse('exception', lException.Message);
-      end;
-    end;
-  finally
-    lValue.Free;
-  end;
+class function TAccessibilityAgentBridgeInternals.ExecuteTransportRequest(const aRequestJson: string): string;
+begin
+  Result := ExecuteBridgeRequest(aRequestJson, True);
 end;
 
 class function TAccessibilityAgentBridge.MutationEnabled: Boolean;

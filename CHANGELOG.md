@@ -3,8 +3,11 @@
 ## 2026-07-10
 ### Added
 - The complex demo now enables file diagnostics only when launched with `--a11y-diagnostics`.
+- Agent bridge responses now report parse, capture/build, synchronized main-thread, serialization, total timing, stopwatch frequency, and phase thread IDs.
+- Agent bridge form maps now have bounded depth, per-parent child, and total-control defaults with explicit truncation metadata.
 
 ### Fixed
+- Built-in agent bridge pipe requests now parse and serialize detached response data on the pipe worker, leaving only VCL/provider capture and response-tree construction on the VCL main thread.
 - Repeated MSAA `OBJID_CLIENT` requests now reuse one wrapper per installed form or control and route directly to the MSAA handler, avoiding per-request wrapper construction and unrelated UIA-handler work while preserving clean shutdown.
 - Repeated mouse moves within a stable blank form, panel, or group-box region now reuse one conservatively validated negative hover result instead of repeating listener, hit-test, provider, and property work; virtual custom providers remain uncached unless they explicitly prove complete VCL geometry.
 - Memo and listbox virtual providers now evict stale off-screen children, keep retained sets bounded by viewport/focus/selection, batch partial pruning, and avoid repeated multi-select snapshots after one manager-tracked mutation reconciliation.

@@ -33,6 +33,7 @@ The practical conclusion is that further micro-optimizing already-small provider
 | T-113 | Complete | Memo/listbox retained providers are bounded by viewport plus focus/selection; pruning uses one item-count read and a direct index bitmap; stale subtrees become unavailable before disconnect callbacks. The final Debug suite passes 362/362 and Release `MemoListStatus` passes. Defender remained active, so wall-time acceptance is deferred. |
 | T-114 | Complete | Stable blank regions on forms, panels, and group boxes cache one conservative negative hover resolution. Direct-child identity, bounds, visibility, semantic messages, focus, and geometry guard invalidation; custom virtual providers remain uncached unless they explicitly prove VCL-complete geometry. Manager passes 103/103, the full Debug suite passes 374/374, shutdown passes 8/8, and the Release Basic UIA probe passes. Defender remained active, so wall-time acceptance is deferred. |
 | T-115 | Complete | Each installed form/control hook retains one MSAA wrapper, routes `OBJID_CLIENT` without entering the UIA handler, and releases the wrapper before provider disconnect. MSAA passes 18/18, the full Debug suite passes 378/378, shutdown passes 8/8, and the Release Basic UIA probe passes. Defender remained active, so deterministic query-count reduction is accepted and wall-time acceptance is deferred. |
+| T-116 | Complete | The built-in pipe transport parses and serializes on its worker while synchronizing only VCL/provider capture and detached response-tree construction. Phase timings and thread IDs are explicit, maps have bounded defaults and caps, AgentBridge passes 32/32, the full Debug suite passes 380/380, shutdown passes 8/8, and the Release Basic UIA probe passes. Defender remained active, so the threading/bounds result is accepted and wall-time acceptance is deferred. |
 
 ### T-110 measurement record
 
@@ -212,6 +213,46 @@ External UIA wall time used the exact normal-path Win32 Release demo, diagnostic
 
 External CPU was 34% before and 32% after with Defender active. The enabled tree sample returned 28 nodes in 367.558 ms; disabled returned 36 in 327.600 ms. The target listbox again surfaced as a zero-child `ControlType.Pane`, so this is host-boundary and correctness context rather than semantic listbox or idle performance acceptance. Exact artifacts are `.agents/runs/t115-msaa-getobject-release-exact.json` and `.agents/runs/t115-external-uia-final-release-defender-20260717.json`.
 
+### T-116 measurement record
+
+The built-in pipe transport now parses request JSON on its worker, synchronizes only VCL/provider capture plus construction of an owned detached JSON value tree, and serializes that tree on the worker. `captureBuildElapsedTicks` measures the main-thread capture/build body; `synchronizedElapsedTicks` measures total work inside the synchronized callback and excludes queue wait; `serializationElapsedTicks` measures worker-side response-body serialization. `elapsedTicks` includes parsing, synchronization queue wait, synchronized work, and body serialization, but excludes pipe I/O and final timing-suffix construction. Thread IDs prove capture remains on the VCL thread while parsing and serialization occur on the pipe worker.
+
+Process-local evidence used the exact Win32 Release demo (`SHA-256 86A2F16D81D1D9462D72F4D3D9238E4DC52742B0448B8E2847F90EA12B1DDADC`), diagnostics disabled, 20 warmups, and 200 samples per command.
+
+| Command / phase | Samples | Median | p95 | p99 | Maximum |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Full `form.map`, pipe wall | 200 | 107.5129 ms | 185.4831 ms | 204.8084 ms | 225.6807 ms |
+| Full `form.map`, synchronized main thread | 200 | 101.9872 ms | 174.5370 ms | 199.1639 ms | 214.4132 ms |
+| Full `form.map`, worker serialization | 200 | 0.4448 ms | 0.8231 ms | 0.9964 ms | 1.0224 ms |
+| Full `form.map`, estimated old synchronized work | 200 | 102.4217 ms | 175.2816 ms | 199.6256 ms | 214.9052 ms |
+| Geometry `form.map`, pipe wall | 200 | 6.1331 ms | 9.3512 ms | 12.4395 ms | 14.9080 ms |
+| Geometry `form.map`, synchronized main thread | 200 | 0.6749 ms | 1.0024 ms | 2.3208 ms | 2.7619 ms |
+| Geometry `form.map`, worker serialization | 200 | 0.1401 ms | 0.3692 ms | 0.4336 ms | 0.4797 ms |
+| Geometry `form.map`, estimated old synchronized work | 200 | 0.8701 ms | 1.2985 ms | 2.5882 ms | 2.8923 ms |
+| `provider.map`, pipe wall | 200 | 83.7203 ms | 191.5580 ms | 228.8772 ms | 270.4853 ms |
+| `provider.map`, synchronized main thread | 200 | 79.0849 ms | 183.3378 ms | 214.3324 ms | 256.2851 ms |
+| `provider.map`, worker serialization | 200 | 0.3985 ms | 0.6868 ms | 0.8177 ms | 1.4164 ms |
+| `provider.map`, estimated old synchronized work | 200 | 79.6068 ms | 183.9219 ms | 214.5959 ms | 256.6143 ms |
+
+The geometry path removes about 22% of median and 23% of p95 estimated synchronized work by moving parse/serialization off-thread. Full and provider maps remain dominated by capture/provider construction, so no broader latency claim is made. CPU was 51% before and 45% after; Defender was active at 629.3/632.8 MiB. Those conditions contaminate all wall times.
+
+External UIA wall time used the same exact Release binary, diagnostics disabled, 10 warmups, and 200 samples per framework mode.
+
+| Framework | Operation | Samples | Median | p95 | p99 | Maximum |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Enabled | Send `WM_KEYDOWN`/`WM_KEYUP` | 200 | 25.909 ms | 67.327 ms | 116.637 ms | 130.451 ms |
+| Enabled | `AutomationElement.FromHandle` | 200 | 43.108 ms | 119.696 ms | 179.650 ms | 193.012 ms |
+| Enabled | Current properties | 200 | 6.894 ms | 36.301 ms | 53.068 ms | 79.435 ms |
+| Enabled | `FindAll` children | 200 | 0.136 ms | 1.633 ms | 1.969 ms | 2.319 ms |
+| Enabled | Scan selected child | 200 | 0.062 ms | 0.102 ms | 0.132 ms | 0.150 ms |
+| Disabled | Send `WM_KEYDOWN`/`WM_KEYUP` | 200 | 22.799 ms | 59.328 ms | 98.573 ms | 110.720 ms |
+| Disabled | `AutomationElement.FromHandle` | 200 | 33.989 ms | 91.721 ms | 120.726 ms | 167.211 ms |
+| Disabled | Current properties | 200 | 5.854 ms | 38.479 ms | 53.467 ms | 61.489 ms |
+| Disabled | `FindAll` children | 200 | 0.122 ms | 1.268 ms | 1.806 ms | 2.382 ms |
+| Disabled | Scan selected child | 200 | 0.060 ms | 0.084 ms | 0.112 ms | 0.164 ms |
+
+External CPU was 56% before and 43% after with Defender active. The enabled tree returned 28 nodes in 1,567.522 ms and the disabled tree returned 36 nodes in 2,936.894 ms. The target listbox again surfaced as a zero-child `ControlType.Pane`, so this is host-boundary telemetry rather than semantic listbox or idle-machine acceptance. Exact artifacts are `.agents/runs/t116-agent-bridge-exact-final-release-defender-20260717.json` and `.agents/runs/t116-external-uia-exact-final-release-defender-20260717.json`.
+
 ## Ranked findings
 
 ### 1. P0 - Synchronous diagnostics block accessibility requests
@@ -353,6 +394,8 @@ Recommended change:
 Expected effect: bridge automation can coexist with screen-reader traffic with shorter main-thread stalls.
 
 Proof required: a large map reports honest total time and spends materially less time in the synchronized section without touching VCL objects off-thread.
+
+Implemented by T-116. The pipe worker owns parsing and serialization, the VCL thread owns all capture/provider access, and tests verify thread IDs, timing relationships, response equivalence, and configured map bounds. The exact geometry sample reduced median synchronized work from an estimated 0.8701 ms to 0.6749 ms, but Defender contaminated wall time; structural threading and bounded-work acceptance is complete while idle timing acceptance remains deferred.
 
 ### 8. P2 - Dynamic hint changes can rescan a growing form repeatedly
 

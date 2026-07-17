@@ -15,6 +15,8 @@ type
     [Test]
     procedure PipeConnectionAcceptsSequentialRequests;
     [Test]
+    procedure PipeFormMapCapturesOnMainThreadAndSerializesOnWorker;
+    [Test]
     procedure PipeRoundTripExecutesBridgeOnMainThread;
   end;
 
@@ -22,7 +24,9 @@ implementation
 
 uses
   System.Classes, System.Diagnostics, System.JSON, System.SyncObjs, System.SysUtils, Winapi.Windows,
-  MaxLogic.Accessibility.AgentBridge.PipeServer, MaxLogic.Accessibility.Diagnostics;
+  Vcl.Forms, Vcl.StdCtrls,
+  MaxLogic.Accessibility.AgentBridge, MaxLogic.Accessibility.AgentBridge.PipeServer,
+  MaxLogic.Accessibility.Diagnostics;
 
 function JsonObjectFrom(const aText: string): TJSONObject;
 var
@@ -41,6 +45,11 @@ begin
   lValue := aObject.GetValue(aName);
   Assert.IsNotNull(lValue, 'Missing text value: ' + aName);
   Result := lValue.Value;
+end;
+
+function JsonInt64(aObject: TJSONObject; const aName: string): Int64;
+begin
+  Result := StrToInt64(JsonText(aObject, aName));
 end;
 
 function ReadPipeLine(aPipe: THandle): string;
@@ -315,6 +324,93 @@ begin
     end;
   finally
     TAccessibilityAgentBridgePipeServer.Stop;
+  end;
+end;
+
+function CreatePipeBridgeForm: TForm;
+var
+  lButton: TButton;
+  lEdit: TEdit;
+begin
+  Result := TForm.Create(nil);
+  Result.Name := 'PipeBridgeForm';
+  Result.Caption := 'Pipe bridge form';
+  lEdit := TEdit.Create(Result);
+  lEdit.Name := 'PipeEdit';
+  lEdit.Parent := Result;
+  lButton := TButton.Create(Result);
+  lButton.Name := 'PipeButton';
+  lButton.Parent := Result;
+  Result.HandleNeeded;
+end;
+
+procedure AssertPipeHelloEquivalent(const aPipeName: string);
+var
+  lDirectHello: TJSONObject;
+  lPipeHello: TJSONObject;
+begin
+  lDirectHello := JsonObjectFrom(TAccessibilityAgentBridge.Execute('{"cmd":"hello"}'));
+  try
+    Assert.AreEqual(Int64(MainThreadID), JsonInt64(lDirectHello, 'captureThreadId'));
+    Assert.AreEqual(Int64(MainThreadID), JsonInt64(lDirectHello, 'serializationThreadId'));
+    lPipeHello := JsonObjectFrom(RequestPipeLineFromWorker(aPipeName, '{"cmd":"hello"}'));
+    try
+      Assert.AreEqual(JsonText(lDirectHello, 'frameworkName'), JsonText(lPipeHello, 'frameworkName'));
+      Assert.AreEqual(JsonText(lDirectHello, 'processId'), JsonText(lPipeHello, 'processId'));
+      Assert.AreEqual(JsonText(lDirectHello, 'mutationEnabled'), JsonText(lPipeHello, 'mutationEnabled'));
+    finally
+      lPipeHello.Free;
+    end;
+  finally
+    lDirectHello.Free;
+  end;
+end;
+
+procedure AssertPipeFormMapTiming(aForm: TForm; const aPipeName: string);
+var
+  lRequest: string;
+  lResponse: string;
+  lResponseJson: TJSONObject;
+begin
+  lRequest := '{"cmd":"form.map","target":"handle","handle":' + UIntToStr(NativeUInt(aForm.Handle)) +
+    ',"includeAccessibility":false,"visibleOnly":true,"detail":"geometry"}';
+  lResponse := RequestPipeLineFromWorker(aPipeName, lRequest);
+  lResponseJson := JsonObjectFrom(lResponse);
+  try
+    Assert.AreEqual('true', JsonText(lResponseJson, 'ok'), lResponse);
+    Assert.AreEqual(Int64(MainThreadID), JsonInt64(lResponseJson, 'captureThreadId'));
+    Assert.AreNotEqual(Int64(MainThreadID), JsonInt64(lResponseJson, 'serializationThreadId'));
+    Assert.IsTrue(JsonInt64(lResponseJson, 'captureBuildElapsedTicks') > 0);
+    Assert.IsTrue(JsonInt64(lResponseJson, 'synchronizedElapsedTicks') >=
+      JsonInt64(lResponseJson, 'captureBuildElapsedTicks'));
+    Assert.IsTrue(JsonInt64(lResponseJson, 'serializationElapsedTicks') > 0);
+    Assert.IsTrue(JsonInt64(lResponseJson, 'elapsedTicks') >=
+      JsonInt64(lResponseJson, 'synchronizedElapsedTicks'));
+    Assert.IsTrue(JsonInt64(lResponseJson, 'elapsedTicks') >=
+      JsonInt64(lResponseJson, 'serializationElapsedTicks'));
+  finally
+    lResponseJson.Free;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgePipeServerTests.PipeFormMapCapturesOnMainThreadAndSerializesOnWorker;
+var
+  lForm: TForm;
+  lPipeName: string;
+begin
+  lForm := CreatePipeBridgeForm;
+  try
+    lPipeName := Format('MaxLogicA11yBridgeDetachedMapTest.%d.%d',
+      [GetCurrentProcessId, GetTickCount]);
+    TAccessibilityAgentBridgePipeServer.Start(lPipeName);
+    try
+      AssertPipeHelloEquivalent(lPipeName);
+      AssertPipeFormMapTiming(lForm, lPipeName);
+    finally
+      TAccessibilityAgentBridgePipeServer.Stop;
+    end;
+  finally
+    lForm.Free;
   end;
 end;
 

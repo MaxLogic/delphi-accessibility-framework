@@ -157,21 +157,8 @@ begin
 end;
 
 function TAccessibilityAgentBridgePipeServerThread.ExecuteBridge(const aRequest: string): string;
-var
-  lResponse: string;
 begin
-  if GetCurrentThreadId = MainThreadID then
-  begin
-    Exit(TAccessibilityAgentBridge.Execute(aRequest));
-  end;
-
-  lResponse := '';
-  TThread.Synchronize(nil,
-    procedure
-    begin
-      lResponse := TAccessibilityAgentBridge.Execute(aRequest);
-    end);
-  Result := lResponse;
+  Result := TAccessibilityAgentBridgeInternals.ExecuteTransportRequest(aRequest);
 end;
 
 procedure TAccessibilityAgentBridgePipeServerThread.HandleClient(aPipe: THandle);

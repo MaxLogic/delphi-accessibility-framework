@@ -47,6 +47,7 @@ uses
   MaxLogic.Accessibility.Text, MaxLogic.Accessibility.VclAdapters;
 
 const
+  cMaxHoverMissChildCount = 128;
   cMsaaObjIdClient = Cardinal($FFFFFFFC);
 
 type
@@ -59,6 +60,41 @@ type
     Kind: TProviderStateKind;
     IsSelected: Boolean;
     ToggleState: ToggleState;
+  end;
+
+  THoverChildGeometry = record
+    Bounds: TRect;
+    Control: TControl;
+    Visible: Boolean;
+  end;
+
+  THoverPoints = record
+    Client: TPoint;
+    Screen: TPoint;
+  end;
+
+  THoverResolution = record
+    Announcement: string;
+    HasLeafBounds: Boolean;
+    HasMissBounds: Boolean;
+    HitProvider: IRawElementProviderSimple;
+    LeafBounds: UiaRect;
+    MissBounds: TRect;
+    MissChildren: TArray<THoverChildGeometry>;
+  end;
+
+  THoverCache = record
+    Announcement: string;
+    HasLeafBounds: Boolean;
+    HasMissBounds: Boolean;
+    LeafBounds: UiaRect;
+    MissBounds: TRect;
+    MissChildren: TArray<THoverChildGeometry>;
+    procedure Clear;
+    procedure ClearMiss;
+    function Matches(aControl: TWinControl; const aPoints: THoverPoints): Boolean;
+    procedure RememberHitBounds(const aResolution: THoverResolution);
+    procedure RememberMiss(const aResolution: THoverResolution);
   end;
 
   TAccessibilityInstalledFormMarker = class(TComponent)
@@ -80,9 +116,7 @@ type
     fChildHooks: TList<TAccessibilityControlWindowHook>;
     fChildHooksByControl: TDictionary<TWinControl, TAccessibilityControlWindowHook>;
     fForm: TCustomForm;
-    fHasLastHoverLeafBounds: Boolean;
-    fLastHoverAnnouncement: string;
-    fLastHoverLeafBounds: UiaRect;
+    fHoverCache: THoverCache;
     fOriginalWindowProc: TWndMethod;
     fPassive: Boolean;
     fProvider: IAccessibilityProviderNode;
@@ -114,14 +148,12 @@ type
     fApi: IAccessibilityUiaApi;
     fControl: TWinControl;
     fHasLastGridCell: Boolean;
-    fHasLastHoverLeafBounds: Boolean;
     fHasLastListBoxIndex: Boolean;
     fHasLastRaisedProviderState: Boolean;
+    fHoverCache: THoverCache;
     fLastFocusAnnouncement: string;
     fLastGridCol: Integer;
     fLastGridRow: Integer;
-    fLastHoverAnnouncement: string;
-    fLastHoverLeafBounds: UiaRect;
     fLastListBoxIndex: Integer;
     fLastRaisedProviderState: TProviderStateSnapshot;
     fListBoxSelectionTracker: IAccessibilityListBoxSelectionTracker;
@@ -150,6 +182,8 @@ type
     procedure MaybeRaiseProviderHover(aLParam: LPARAM; aClientsKnown: Boolean; aClientsListening: Boolean);
     procedure MaybeRaiseRadioNavigationChanged(aPreviousRadio: TRadioButton);
     function Passivate: Boolean;
+    procedure RaiseResolvedProviderHover(const aResolution: THoverResolution; aClientsKnown: Boolean;
+      aClientsListening: Boolean);
     function ProviderPublishesControlNativeWindowHandle: Boolean;
     procedure RaiseFocusChanged;
     procedure NotifyFocusHint;
@@ -365,13 +399,19 @@ begin
   Result := PointToMouseLParam(lPoint);
 end;
 
-function MouseScreenPoint(aControl: TWinControl; aLParam: LPARAM): TPoint;
+function MouseClientPoint(aLParam: LPARAM): TPoint;
 begin
   Result := Point(SignedMouseCoordinate(MouseLParamLowWord(aLParam)),
     SignedMouseCoordinate(MouseLParamHighWord(aLParam)));
+end;
+
+function MouseHoverPoints(aControl: TWinControl; aLParam: LPARAM): THoverPoints;
+begin
+  Result.Client := MouseClientPoint(aLParam);
+  Result.Screen := Result.Client;
   if aControl <> nil then
   begin
-    Result := aControl.ClientToScreen(Result);
+    Result.Screen := aControl.ClientToScreen(Result.Screen);
   end;
 end;
 
@@ -381,7 +421,7 @@ begin
     (aPoint.Y < aRect.Top + aRect.Height);
 end;
 
-function TryGetVclLeafControlBounds(aControl: TControl; out aBounds: UiaRect): Boolean;
+function TryGetVclControlBounds(aControl: TControl; out aBounds: UiaRect): Boolean;
 var
   lPoint: TPoint;
 begin
@@ -392,17 +432,24 @@ begin
     Exit;
   end;
 
-  if (aControl is TWinControl) and (TWinControl(aControl).ControlCount > 0) then
-  begin
-    Exit;
-  end;
-
   lPoint := aControl.ClientToScreen(Point(0, 0));
   aBounds.Left := lPoint.X;
   aBounds.Top := lPoint.Y;
   aBounds.Width := aControl.Width;
   aBounds.Height := aControl.Height;
   Result := True;
+end;
+
+function TryGetVclLeafControlBounds(aControl: TControl; out aBounds: UiaRect): Boolean;
+begin
+  aBounds := Default(UiaRect);
+  Result := False;
+  if (aControl is TWinControl) and (TWinControl(aControl).ControlCount > 0) then
+  begin
+    Exit;
+  end;
+
+  Result := TryGetVclControlBounds(aControl, aBounds);
 end;
 
 function TryGetVclLeafProviderBounds(const aProvider: IRawElementProviderSimple; out aBounds: UiaRect): Boolean;
@@ -421,16 +468,80 @@ begin
   Result := TryGetVclLeafControlBounds(lControl, aBounds);
 end;
 
-procedure ClearHoverCache(var aAnnouncement: string; var aHasLeafBounds: Boolean);
+procedure THoverCache.Clear;
 begin
-  aAnnouncement := '';
-  aHasLeafBounds := False;
+  Announcement := '';
+  HasLeafBounds := False;
+  ClearMiss;
 end;
 
-function HoverLeafCacheMatches(const aAnnouncement: string; aHasLeafBounds: Boolean;
-  const aLeafBounds: UiaRect; const aScreenPoint: TPoint): Boolean;
+procedure THoverCache.ClearMiss;
 begin
-  Result := (aAnnouncement <> '') and aHasLeafBounds and UiaRectContainsScreenPoint(aLeafBounds, aScreenPoint);
+  HasMissBounds := False;
+  MissChildren := nil;
+end;
+
+function HoverChildGeometryMatches(aControl: TWinControl;
+  const aChildren: TArray<THoverChildGeometry>): Boolean;
+var
+  i: Integer;
+  lBounds: TRect;
+  lChild: TControl;
+begin
+  Result := False;
+  if (aControl = nil) or (aControl.ControlCount <> Length(aChildren)) then
+  begin
+    Exit;
+  end;
+
+  for i := 0 to Pred(aControl.ControlCount) do
+  begin
+    lChild := aControl.Controls[i];
+    lBounds := lChild.BoundsRect;
+    if (lChild <> aChildren[i].Control) or (lChild.Visible <> aChildren[i].Visible) or
+      not EqualRect(lBounds, aChildren[i].Bounds) then
+    begin
+      Exit;
+    end;
+  end;
+
+  Result := True;
+end;
+
+function THoverCache.Matches(aControl: TWinControl; const aPoints: THoverPoints): Boolean;
+begin
+  Result := (Announcement <> '') and HasLeafBounds and UiaRectContainsScreenPoint(LeafBounds, aPoints.Screen);
+  if Result or not HasMissBounds or not PtInRect(MissBounds, aPoints.Client) then
+  begin
+    Exit;
+  end;
+
+  Result := HoverChildGeometryMatches(aControl, MissChildren);
+end;
+
+procedure THoverCache.RememberMiss(const aResolution: THoverResolution);
+begin
+  Clear;
+  if not aResolution.HasMissBounds then
+  begin
+    Exit;
+  end;
+
+  HasMissBounds := True;
+  MissBounds := aResolution.MissBounds;
+  MissChildren := aResolution.MissChildren;
+end;
+
+function HoverMissCacheInvalidatingMessage(aMessageId: Cardinal): Boolean;
+begin
+  case aMessageId of
+    CM_CHANGED, CM_CONTROLCHANGE, CM_CONTROLLISTCHANGE, CM_ENABLEDCHANGED, CM_ENTER, CM_EXIT, CM_FOCUSCHANGED,
+    CM_SHOWINGCHANGED, CM_TEXTCHANGED, CM_VISIBLECHANGED, WM_ENABLE, WM_KILLFOCUS, WM_MOVE, WM_SETFOCUS,
+    WM_SETTEXT, WM_SHOWWINDOW, WM_SIZE, WM_WINDOWPOSCHANGED:
+      Result := True;
+  else
+    Result := False;
+  end;
 end;
 
 function ShouldInstallForm(aForm: TCustomForm): Boolean;
@@ -512,6 +623,18 @@ begin
 
   aLeafBounds := lBounds;
   aHasLeafBounds := True;
+end;
+
+procedure THoverCache.RememberHitBounds(const aResolution: THoverResolution);
+begin
+  ClearMiss;
+  if aResolution.HasLeafBounds then
+  begin
+    LeafBounds := aResolution.LeafBounds;
+    HasLeafBounds := True;
+  end else begin
+    UpdateHoverLeafCache(aResolution.HitProvider, HasLeafBounds, LeafBounds);
+  end;
 end;
 
 function ProviderHelpText(const aProvider: IRawElementProviderSimple): string;
@@ -781,9 +904,7 @@ begin
   Result := ProviderHoverAnnouncementText(aProvider);
 end;
 
-function HoverTargetControlFromPoint(aControl: TWinControl; const aScreenPoint: TPoint): TControl;
-var
-  lPoint: TPoint;
+function HoverTargetControlFromClientPoint(aControl: TWinControl; const aClientPoint: TPoint): TControl;
 begin
   Result := nil;
   if aControl = nil then
@@ -791,16 +912,112 @@ begin
     Exit;
   end;
 
-  lPoint := aControl.ScreenToClient(aScreenPoint);
-  if not PtInRect(aControl.ClientRect, lPoint) then
+  if not PtInRect(aControl.ClientRect, aClientPoint) then
   begin
     Exit;
   end;
 
-  Result := aControl.ControlAtPos(lPoint, True, True, True);
+  Result := aControl.ControlAtPos(aClientPoint, True, True, True);
   if Result = nil then
   begin
     Result := aControl;
+  end;
+end;
+
+function ExcludeHoverChildBounds(const aChildBounds: TRect; const aClientPoint: TPoint;
+  var aRegion: TRect): Boolean;
+begin
+  if PtInRect(aChildBounds, aClientPoint) then
+  begin
+    Exit(False);
+  end;
+
+  if aClientPoint.X < aChildBounds.Left then
+  begin
+    if aChildBounds.Left < aRegion.Right then
+    begin
+      aRegion.Right := aChildBounds.Left;
+    end;
+  end else if aClientPoint.X >= aChildBounds.Right then
+  begin
+    if aChildBounds.Right > aRegion.Left then
+    begin
+      aRegion.Left := aChildBounds.Right;
+    end;
+  end else if aClientPoint.Y < aChildBounds.Top then
+  begin
+    if aChildBounds.Top < aRegion.Bottom then
+    begin
+      aRegion.Bottom := aChildBounds.Top;
+    end;
+  end else if aClientPoint.Y >= aChildBounds.Bottom then
+  begin
+    if aChildBounds.Bottom > aRegion.Top then
+    begin
+      aRegion.Top := aChildBounds.Bottom;
+    end;
+  end else begin
+    Exit(False);
+  end;
+
+  Result := True;
+end;
+
+function TryGetVclHoverMissBounds(aTargetControl: TControl; const aProvider: IRawElementProviderSimple;
+  const aClientPoint: TPoint; out aBounds: TRect; out aChildren: TArray<THoverChildGeometry>): Boolean;
+var
+  i: Integer;
+  lChild: TControl;
+  lPartition: IAccessibilityVclHoverGeometryPartition;
+  lWinControl: TWinControl;
+begin
+  aBounds := TRect.Empty;
+  aChildren := nil;
+  Result := False;
+  if (aTargetControl = nil) or
+    not ((aTargetControl is TCustomForm) or (aTargetControl is TCustomPanel) or
+    (aTargetControl is TCustomGroupBox)) or
+    not Supports(aProvider, IAccessibilityVclHoverGeometryPartition, lPartition) or
+    not lPartition.VclGeometryPartitionsHoverTargets then
+  begin
+    Exit;
+  end;
+
+  lWinControl := aTargetControl as TWinControl;
+  aBounds := lWinControl.ClientRect;
+  if not PtInRect(aBounds, aClientPoint) then
+  begin
+    Exit;
+  end;
+
+  if lWinControl.ControlCount > cMaxHoverMissChildCount then
+  begin
+    Exit;
+  end;
+
+  SetLength(aChildren, lWinControl.ControlCount);
+  for i := 0 to Pred(lWinControl.ControlCount) do
+  begin
+    lChild := lWinControl.Controls[i];
+    aChildren[i].Bounds := lChild.BoundsRect;
+    aChildren[i].Control := lChild;
+    aChildren[i].Visible := lChild.Visible;
+    if not lChild.Visible then
+    begin
+      Continue;
+    end;
+
+    if not ExcludeHoverChildBounds(lChild.BoundsRect, aClientPoint, aBounds) then
+    begin
+      aChildren := nil;
+      Exit;
+    end;
+  end;
+
+  Result := not aBounds.IsEmpty and PtInRect(aBounds, aClientPoint);
+  if not Result then
+  begin
+    aChildren := nil;
   end;
 end;
 
@@ -811,15 +1028,14 @@ begin
   Result := Supports(aProvider, IRawElementProviderFragmentRoot, lRoot);
 end;
 
-function TryResolveHoverProviderFromVclLookup(aControl: TWinControl; const aProvider: IRawElementProviderSimple;
-  const aScreenPoint: TPoint; out aHitProvider: IRawElementProviderSimple; out aAnnouncementText: string;
+function TryResolveHoverProviderFromVclLookup(aTargetControl: TControl;
+  const aProvider: IRawElementProviderSimple; out aHitProvider: IRawElementProviderSimple; out aAnnouncementText: string;
   out aHasLeafBounds: Boolean; out aLeafBounds: UiaRect): Boolean;
 var
   lHitProvider: IRawElementProviderSimple;
   lInfo: IAccessibilityVclControlProviderInfo;
   lLeafControl: TControl;
   lLookup: IAccessibilityVclProviderLookup;
-  lTarget: TControl;
 begin
   aHitProvider := nil;
   aAnnouncementText := '';
@@ -831,14 +1047,13 @@ begin
     Exit;
   end;
 
-  lTarget := HoverTargetControlFromPoint(aControl, aScreenPoint);
-  if (lTarget = nil) or (lTarget is TPageControl) or (lTarget is TTabSheet) then
+  if (aTargetControl = nil) or (aTargetControl is TPageControl) or (aTargetControl is TTabSheet) then
   begin
     Exit;
   end;
 
   lHitProvider := nil;
-  if not lLookup.TryFindProviderForControl(lTarget, lHitProvider) or (lHitProvider = nil) or
+  if not lLookup.TryFindProviderForControl(aTargetControl, lHitProvider) or (lHitProvider = nil) or
     ProvidersAreSame(aProvider, lHitProvider) or ProviderIsGrid(lHitProvider) or
     ProviderIsFragmentRoot(lHitProvider) or ProviderSupportsPattern(lHitProvider, UIA_GridItemPatternId) then
   begin
@@ -852,7 +1067,7 @@ begin
   end;
 
   aHitProvider := lHitProvider;
-  lLeafControl := lTarget;
+  lLeafControl := aTargetControl;
   if Supports(lHitProvider, IAccessibilityVclControlProviderInfo, lInfo) and (lInfo.Control <> nil) then
   begin
     lLeafControl := lInfo.Control;
@@ -1213,61 +1428,73 @@ begin
   end;
 end;
 
+procedure CaptureHoverMiss(aControl: TWinControl; aTargetControl: TControl;
+  const aProvider: IRawElementProviderSimple; const aClientPoint: TPoint; var aResolution: THoverResolution);
+begin
+  if aTargetControl = aControl then
+  begin
+    aResolution.HasMissBounds := TryGetVclHoverMissBounds(aTargetControl, aProvider, aClientPoint,
+      aResolution.MissBounds, aResolution.MissChildren);
+  end;
+end;
+
 function TryResolveHoverProvider(aControl: TWinControl; const aProvider: IRawElementProviderSimple;
-  const aScreenPoint: TPoint; out aHitProvider: IRawElementProviderSimple; out aAnnouncementText: string;
-  out aHasLeafBounds: Boolean; out aLeafBounds: UiaRect): Boolean;
+  const aPoints: THoverPoints; out aResolution: THoverResolution): Boolean;
 var
   lHit: IRawElementProviderFragment;
   lRoot: IRawElementProviderFragmentRoot;
+  lTargetControl: TControl;
 begin
-  aHitProvider := nil;
-  aAnnouncementText := '';
-  aHasLeafBounds := False;
-  aLeafBounds := Default(UiaRect);
   Result := False;
   if (aControl = nil) or (aProvider = nil) or ProviderIsGrid(aProvider) then
   begin
     Exit;
   end;
 
-  if TryResolveHoverProviderFromVclLookup(aControl, aProvider, aScreenPoint, aHitProvider, aAnnouncementText,
-    aHasLeafBounds, aLeafBounds) then
+  lTargetControl := HoverTargetControlFromClientPoint(aControl, aPoints.Client);
+  if TryResolveHoverProviderFromVclLookup(lTargetControl, aProvider, aResolution.HitProvider,
+    aResolution.Announcement, aResolution.HasLeafBounds, aResolution.LeafBounds) then
   begin
     Exit(True);
   end;
 
   if not Supports(aProvider, IRawElementProviderFragmentRoot, lRoot) then
   begin
-    aAnnouncementText := ProviderHoverResolutionText(aProvider);
-    if aAnnouncementText <> '' then
+    aResolution.Announcement := ProviderHoverResolutionText(aProvider);
+    if aResolution.Announcement <> '' then
     begin
-      aHitProvider := aProvider;
-      aHasLeafBounds := TryGetVclLeafProviderBounds(aProvider, aLeafBounds);
+      aResolution.HitProvider := aProvider;
+      aResolution.HasLeafBounds := TryGetVclLeafProviderBounds(aProvider, aResolution.LeafBounds);
       Exit(True);
     end;
 
+    CaptureHoverMiss(aControl, lTargetControl, aProvider, aPoints.Client, aResolution);
     Exit;
   end;
 
   lHit := nil;
-  if (lRoot.ElementProviderFromPoint(aScreenPoint.X, aScreenPoint.Y, lHit) <> S_OK) or (lHit = nil) or
-    not Supports(lHit, IRawElementProviderSimple, aHitProvider) then
+  if (lRoot.ElementProviderFromPoint(aPoints.Screen.X, aPoints.Screen.Y, lHit) <> S_OK) or (lHit = nil) or
+    not Supports(lHit, IRawElementProviderSimple, aResolution.HitProvider) then
   begin
+    CaptureHoverMiss(aControl, lTargetControl, aProvider, aPoints.Client, aResolution);
     Exit;
   end;
 
-  if ProvidersAreSame(aProvider, aHitProvider) or ProviderIsGrid(aHitProvider) or
-    ProviderSupportsPattern(aHitProvider, UIA_GridItemPatternId) then
+  if ProvidersAreSame(aProvider, aResolution.HitProvider) or ProviderIsGrid(aResolution.HitProvider) or
+    ProviderSupportsPattern(aResolution.HitProvider, UIA_GridItemPatternId) then
   begin
-    aHitProvider := nil;
+    aResolution.HitProvider := nil;
+    CaptureHoverMiss(aControl, lTargetControl, aProvider, aPoints.Client, aResolution);
     Exit;
   end;
 
-  aAnnouncementText := ProviderHoverResolutionText(aHitProvider);
-  Result := aAnnouncementText <> '';
+  aResolution.Announcement := ProviderHoverResolutionText(aResolution.HitProvider);
+  Result := aResolution.Announcement <> '';
   if Result then
   begin
-    aHasLeafBounds := TryGetVclLeafProviderBounds(aHitProvider, aLeafBounds);
+    aResolution.HasLeafBounds := TryGetVclLeafProviderBounds(aResolution.HitProvider, aResolution.LeafBounds);
+  end else begin
+    CaptureHoverMiss(aControl, lTargetControl, aProvider, aPoints.Client, aResolution);
   end;
 end;
 
@@ -1499,7 +1726,7 @@ end;
 
 procedure TAccessibilityFormWindowHook.DisconnectProvider;
 begin
-  ClearHoverCache(fLastHoverAnnouncement, fHasLastHoverLeafBounds);
+  fHoverCache.Clear;
   if fProvider <> nil then
   begin
     fProvider.Disconnect;
@@ -1694,14 +1921,11 @@ procedure TAccessibilityFormWindowHook.MaybeRaiseProviderHover(aLParam: LPARAM; 
   aClientsListening: Boolean);
 var
   lClientsListening: Boolean;
-  lHasLeafBounds: Boolean;
-  lHitProvider: IRawElementProviderSimple;
-  lLeafBounds: UiaRect;
-  lName: string;
-  lScreenPoint: TPoint;
+  lPoints: THoverPoints;
+  lResolution: THoverResolution;
 begin
-  lScreenPoint := MouseScreenPoint(fForm, aLParam);
-  if HoverLeafCacheMatches(fLastHoverAnnouncement, fHasLastHoverLeafBounds, fLastHoverLeafBounds, lScreenPoint) then
+  lPoints := MouseHoverPoints(fForm, aLParam);
+  if fHoverCache.Matches(fForm, lPoints) then
   begin
     Exit;
   end;
@@ -1713,32 +1937,30 @@ begin
   end;
   if not lClientsListening then
   begin
-    ClearHoverCache(fLastHoverAnnouncement, fHasLastHoverLeafBounds);
+    fHoverCache.Clear;
     Exit;
   end;
 
-  if (fProvider = nil) or not TryResolveHoverProvider(fForm, fProvider.RawElementProvider, lScreenPoint,
-    lHitProvider, lName, lHasLeafBounds, lLeafBounds) then
+  if fProvider = nil then
   begin
-    ClearHoverCache(fLastHoverAnnouncement, fHasLastHoverLeafBounds);
+    fHoverCache.Clear;
     Exit;
   end;
 
-  if lHasLeafBounds then
+  if not TryResolveHoverProvider(fForm, fProvider.RawElementProvider, lPoints, lResolution) then
   begin
-    fLastHoverLeafBounds := lLeafBounds;
-    fHasLastHoverLeafBounds := True;
-  end else begin
-    UpdateHoverLeafCache(lHitProvider, fHasLastHoverLeafBounds, fLastHoverLeafBounds);
+    fHoverCache.RememberMiss(lResolution);
+    Exit;
   end;
 
-  if SameText(fLastHoverAnnouncement, lName) then
+  fHoverCache.RememberHitBounds(lResolution);
+  if SameText(fHoverCache.Announcement, lResolution.Announcement) then
   begin
     Exit;
   end;
 
-  fLastHoverAnnouncement := lName;
-  RaiseProviderHover(lHitProvider, lName, fApi);
+  fHoverCache.Announcement := lResolution.Announcement;
+  RaiseProviderHover(lResolution.HitProvider, lResolution.Announcement, fApi);
 end;
 
 procedure TAccessibilityFormWindowHook.Notification(aComponent: TComponent; aOperation: TOperation);
@@ -1838,9 +2060,13 @@ var
   lIsMouseMoveMessage: Boolean;
   lMouseParam: LPARAM;
   lResult: Winapi.Windows.LRESULT;
-  lScreenPoint: TPoint;
 begin
   lIsMouseMoveMessage := (aMessage.Msg = WM_MOUSEMOVE) or (aMessage.Msg = WM_NCMOUSEMOVE);
+  if HoverMissCacheInvalidatingMessage(aMessage.Msg) then
+  begin
+    fHoverCache.ClearMiss;
+  end;
+
   if (not fPassive) and (fForm <> nil) and (fProvider <> nil) and (aMessage.Msg = WM_GETOBJECT) and
     TAccessibilityProviderWindowMessages.TryHandleGetObject(fForm.Handle, aMessage.WParam, aMessage.LParam,
     fProvider.RawElementProvider, fApi, lResult) then
@@ -1871,8 +2097,7 @@ begin
   if (not fPassive) and (fForm <> nil) and (fProvider <> nil) and lIsMouseMoveMessage then
   begin
     lMouseParam := MouseMoveClientLParam(fForm, aMessage);
-    lScreenPoint := MouseScreenPoint(fForm, lMouseParam);
-    if HoverLeafCacheMatches(fLastHoverAnnouncement, fHasLastHoverLeafBounds, fLastHoverLeafBounds, lScreenPoint) then
+    if fHoverCache.Matches(fForm, MouseHoverPoints(fForm, lMouseParam)) then
     begin
       Exit;
     end;
@@ -1880,7 +2105,7 @@ begin
     lClientsAreListening := TAccessibilityProviderEvents.ClientsAreListening(fApi);
     if not lClientsAreListening then
     begin
-      ClearHoverCache(fLastHoverAnnouncement, fHasLastHoverLeafBounds);
+      fHoverCache.Clear;
       Exit;
     end;
 
@@ -1942,7 +2167,7 @@ end;
 
 procedure TAccessibilityControlWindowHook.Detach;
 begin
-  ClearHoverCache(fLastHoverAnnouncement, fHasLastHoverLeafBounds);
+  fHoverCache.Clear;
   if fControl <> nil then
   begin
     if SameWndMethod(fControl.WindowProc, WindowProc) then
@@ -2096,14 +2321,11 @@ procedure TAccessibilityControlWindowHook.MaybeRaiseProviderHover(aLParam: LPARA
 var
   lClientsKnown: Boolean;
   lClientsListening: Boolean;
-  lHasLeafBounds: Boolean;
-  lHitProvider: IRawElementProviderSimple;
-  lLeafBounds: UiaRect;
-  lName: string;
-  lScreenPoint: TPoint;
+  lPoints: THoverPoints;
+  lResolution: THoverResolution;
 begin
-  lScreenPoint := MouseScreenPoint(fControl, aLParam);
-  if HoverLeafCacheMatches(fLastHoverAnnouncement, fHasLastHoverLeafBounds, fLastHoverLeafBounds, lScreenPoint) then
+  lPoints := MouseHoverPoints(fControl, aLParam);
+  if fHoverCache.Matches(fControl, lPoints) then
   begin
     Exit;
   end;
@@ -2117,49 +2339,51 @@ begin
   end;
   if (not fPreserveNativeWindowAccessibility) and not lClientsListening then
   begin
-    ClearHoverCache(fLastHoverAnnouncement, fHasLastHoverLeafBounds);
+    fHoverCache.Clear;
     Exit;
   end;
 
-  if not TryResolveHoverProvider(fControl, fProvider, lScreenPoint, lHitProvider, lName, lHasLeafBounds,
-    lLeafBounds) then
+  if not TryResolveHoverProvider(fControl, fProvider, lPoints, lResolution) then
   begin
-    ClearHoverCache(fLastHoverAnnouncement, fHasLastHoverLeafBounds);
+    fHoverCache.RememberMiss(lResolution);
     Exit;
   end;
 
-  if lHasLeafBounds then
-  begin
-    fLastHoverLeafBounds := lLeafBounds;
-    fHasLastHoverLeafBounds := True;
-  end else begin
-    UpdateHoverLeafCache(lHitProvider, fHasLastHoverLeafBounds, fLastHoverLeafBounds);
-  end;
-
-  if SameText(fLastHoverAnnouncement, lName) then
+  fHoverCache.RememberHitBounds(lResolution);
+  if SameText(fHoverCache.Announcement, lResolution.Announcement) then
   begin
     Exit;
   end;
 
-  fLastHoverAnnouncement := lName;
+  fHoverCache.Announcement := lResolution.Announcement;
+  RaiseResolvedProviderHover(lResolution, lClientsKnown, lClientsListening);
+end;
+
+procedure TAccessibilityControlWindowHook.RaiseResolvedProviderHover(const aResolution: THoverResolution;
+  aClientsKnown: Boolean; aClientsListening: Boolean);
+var
+  lClientsListening: Boolean;
+begin
+  lClientsListening := aClientsListening;
   if fPreserveNativeWindowAccessibility then
   begin
-    if not lClientsKnown then
+    if not aClientsKnown then
     begin
       lClientsListening := TAccessibilityProviderEvents.ClientsAreListening(fApi);
     end;
 
-    if lClientsListening and ProviderUsesPlatformStateEvents(lHitProvider) then
+    if lClientsListening and ProviderUsesPlatformStateEvents(aResolution.HitProvider) then
     begin
-      TAccessibilityProviderEvents.RaiseAutomationEvent(lHitProvider, UIA_AutomationFocusChangedEventId, fApi);
+      TAccessibilityProviderEvents.RaiseAutomationEvent(aResolution.HitProvider, UIA_AutomationFocusChangedEventId,
+        fApi);
     end;
-    NotifyProviderNativeFocusAndState(lHitProvider, fControl.Handle);
-    if lClientsListening and ProviderNeedsSupplementalRadioAnnouncements(lHitProvider) then
+    NotifyProviderNativeFocusAndState(aResolution.HitProvider, fControl.Handle);
+    if lClientsListening and ProviderNeedsSupplementalRadioAnnouncements(aResolution.HitProvider) then
     begin
-      RaiseProviderAnnouncement(lHitProvider, 'vcl-hover', fApi);
+      RaiseProviderAnnouncement(aResolution.HitProvider, 'vcl-hover', fApi);
     end;
   end else begin
-    RaiseProviderHover(lHitProvider, lName, fApi);
+    RaiseProviderHover(aResolution.HitProvider, aResolution.Announcement, fApi);
   end;
 end;
 
@@ -2247,7 +2471,7 @@ begin
   inherited Notification(aComponent, aOperation);
   if (aOperation = opRemove) and (aComponent = fControl) then
   begin
-    ClearHoverCache(fLastHoverAnnouncement, fHasLastHoverLeafBounds);
+    fHoverCache.Clear;
     if SameWndMethod(fControl.WindowProc, WindowProc) then
     begin
       fControl.WindowProc := fOriginalWindowProc;
@@ -2264,7 +2488,7 @@ end;
 function TAccessibilityControlWindowHook.Passivate: Boolean;
 begin
   Result := False;
-  ClearHoverCache(fLastHoverAnnouncement, fHasLastHoverLeafBounds);
+  fHoverCache.Clear;
   fApi := nil;
   fListBoxSelectionTracker := nil;
   fProvider := nil;
@@ -2520,8 +2744,12 @@ var
   lOldProviderState: TProviderStateSnapshot;
   lOldSelectedRadio: TRadioButton;
   lResult: Winapi.Windows.LRESULT;
-  lScreenPoint: TPoint;
 begin
+  if HoverMissCacheInvalidatingMessage(aMessage.Msg) then
+  begin
+    fHoverCache.ClearMiss;
+  end;
+
   if NativeListBoxShouldHandleGetObject(aMessage) then
   begin
     if TAccessibilityDiagnostics.Enabled then
@@ -2641,7 +2869,7 @@ begin
   if lIsBlurMessage or lIsFocusMessage or lIsOuterProviderStateMessage or lIsGridNavigationMessage or
     (fProviderIsGrid and (aMessage.Msg = CM_CHANGED)) or lIsListBoxSelectionMessage or lIsRadioNavigationMessage then
   begin
-    ClearHoverCache(fLastHoverAnnouncement, fHasLastHoverLeafBounds);
+    fHoverCache.Clear;
   end;
   if (not fPassive) and (fControl <> nil) and (fProvider <> nil) and lHasPostMessageWork then
   begin
@@ -2660,8 +2888,7 @@ begin
 
     if lIsMouseMoveMessage and (not lHasNonHoverPostMessageWork) then
     begin
-      lScreenPoint := MouseScreenPoint(fControl, lMouseParam);
-      if HoverLeafCacheMatches(fLastHoverAnnouncement, fHasLastHoverLeafBounds, fLastHoverLeafBounds, lScreenPoint) then
+      if fHoverCache.Matches(fControl, MouseHoverPoints(fControl, lMouseParam)) then
       begin
         Exit;
       end;
@@ -2674,7 +2901,7 @@ begin
         begin
           MaybeRaiseProviderHover(lMouseParam, lHoverClientsKnown, lHoverClientsListening);
         end else begin
-          ClearHoverCache(fLastHoverAnnouncement, fHasLastHoverLeafBounds);
+          fHoverCache.Clear;
         end;
         Exit;
       end;

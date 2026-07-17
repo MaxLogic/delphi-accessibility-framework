@@ -23,6 +23,11 @@ type
     function TryFindProviderForControl(aControl: TControl; out aProvider: IRawElementProviderSimple): Boolean;
   end;
 
+  IAccessibilityVclHoverGeometryPartition = interface
+    ['{463E21F1-28E8-40F2-8686-3A098DFFC492}']
+    function VclGeometryPartitionsHoverTargets: Boolean;
+  end;
+
   IAccessibilityListBoxSelectionTracker = interface
     ['{2CDB3FE4-6203-47BC-ADDD-0E99641AC47D}']
     procedure SelectionMayHaveChanged;
@@ -115,7 +120,7 @@ type
   end;
 
   TAccessibilityVclFormProviderRoot = class(TAccessibilityProviderRoot, IAccessibilityVclRootProvider,
-    IAccessibilityVclProviderLookup)
+    IAccessibilityVclProviderLookup, IAccessibilityVclHoverGeometryPartition)
   private
     fForm: TCustomForm;
     fHitTestRoots: TList<IRawElementProviderFragmentRoot>;
@@ -135,12 +140,14 @@ type
     procedure AddHitTestRoot(const aRoot: IRawElementProviderFragmentRoot);
     procedure RegisterControlProvider(aControl: TControl; const aProvider: IRawElementProviderFragment);
     function TryFindProviderForControl(aControl: TControl; out aProvider: IRawElementProviderSimple): Boolean;
+    function VclGeometryPartitionsHoverTargets: Boolean;
   end;
 
   TAccessibilityStringGridProvider = class;
 
   TAccessibilityVclControlProvider = class(TAccessibilityProviderNode, IAccessibilityVclControlProviderInfo,
-    IInvokeProvider, IToggleProvider, IValueProvider, ISelectionItemProvider)
+    IAccessibilityVclHoverGeometryPartition, IInvokeProvider, IToggleProvider, IValueProvider,
+    ISelectionItemProvider)
   private
     fControl: TControl;
     class function CheckBoxToggleState(aControl: TControl): ToggleState; static;
@@ -168,6 +175,7 @@ type
     function SetValue(aValue: PWideChar): HResult; stdcall;
     function Toggle: HResult; stdcall;
     function TryGetValueText(out aValue: string): Boolean; override;
+    function VclGeometryPartitionsHoverTargets: Boolean;
   end;
 
   TAccessibilityMemoProvider = class;
@@ -2066,6 +2074,11 @@ begin
     aProvider);
 end;
 
+function TAccessibilityVclFormProviderRoot.VclGeometryPartitionsHoverTargets: Boolean;
+begin
+  Result := fHitTestRoots.Count = 0;
+end;
+
 function TAccessibilityVclFormProviderRoot.CanUseDirectHitTarget(aControl: TControl): Boolean;
 begin
   Result := (aControl <> nil) and not (aControl is TPageControl) and not (aControl is TTabSheet);
@@ -2284,6 +2297,13 @@ end;
 function TAccessibilityVclControlProvider.Control: TControl;
 begin
   Result := fControl;
+end;
+
+function TAccessibilityVclControlProvider.VclGeometryPartitionsHoverTargets: Boolean;
+var
+  lRoot: IRawElementProviderFragmentRoot;
+begin
+  Result := not Supports(Self, IRawElementProviderFragmentRoot, lRoot);
 end;
 
 function TAccessibilityVclControlProvider.DoGetBoundingRectangle(out aValue: UiaRect): Boolean;

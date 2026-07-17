@@ -150,6 +150,8 @@ The manager only returns framework providers for controls that are part of the f
 
 For controls such as `TVirtualStringTree` that already provide their own accessibility, do not register a framework adapter unless the framework is meant to replace that native tree. If a custom adapter is registered, it becomes the explicit accessibility surface for that control.
 
+Negative hover caching is conservative for custom providers. Built-in form, panel, and group-box providers implement `IAccessibilityVclHoverGeometryPartition` only when their direct VCL child rectangles fully describe every possible hover target. A custom provider with virtual or non-VCL children should not implement this optional interface. A custom provider may opt in by implementing it and returning `True` only when the same direct-child geometry guarantee holds; otherwise the manager resolves every hover point so virtual targets cannot be hidden by a stale miss.
+
 ## Diagnostics
 
 ### Agent Bridge

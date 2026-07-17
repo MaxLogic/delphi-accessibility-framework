@@ -112,6 +112,31 @@ type
     [Test]
     procedure FormInstallCachesRepeatedLeafHoverHitTesting;
     [Test]
+    procedure FormInstallCachesRepeatedBlankPanelHoverResolution;
+    [Test]
+    procedure FormInstallCachesRepeatedBlankFormHoverResolution;
+    [Test]
+    procedure FormInstallCachesRepeatedBlankGroupBoxHoverResolution;
+    [Test]
+    procedure FormInstallDoesNotCacheBlankHoverAcrossUnprovenVirtualChildren;
+    [Test]
+    procedure FormInstallKeepsBlankHoverCachedAcrossRepaint;
+    [Test]
+    procedure FormInstallKeepsSuccessfulHoverCachedAcrossRepaint;
+    [Test]
+    procedure FormInstallInvalidatesBlankPanelHoverCacheAfterChildGeometryChange;
+    [Test]
+    procedure FormInstallInvalidatesBlankPanelHoverCacheAfterAncestorMove;
+    [Test]
+    procedure FormInstallInvalidatesBlankPanelHoverCacheAfterSiblingFocusChange;
+    [Test]
+    procedure FormInstallInvalidatesBlankPanelHoverCacheAfterSemanticChanges;
+    [Test]
+    procedure UninstallPassivatesPopulatedBlankPanelHoverSnapshot;
+    [Test]
+    [Category('T114Performance')]
+    procedure FormInstallHoverMissCacheLatencyDistribution;
+    [Test]
     procedure FormInstallHoverUsesVclLookupForSimpleLeafProviders;
     [Test]
     procedure FormInstallRaisesWindowedButtonHoverNotificationAndKeepsCheckBoxNative;
@@ -213,7 +238,20 @@ uses
   MaxLogic.Accessibility.TmsAdvStringGridAdapters, MaxLogic.Accessibility.UIAutomationCore,
   MaxLogic.Accessibility.VclAdapters;
 
+const
+{$IFDEF RELEASE}
+  cT114BuildConfiguration = 'Release';
+{$ELSE}
+  cT114BuildConfiguration = 'Debug';
+{$ENDIF}
+  cT114CaseCount = 4;
+  cT114ChildCounts: array[0..Pred(cT114CaseCount)] of Integer = (0, 1, 32, 128);
+  cT114SampleCount = 200;
+  cT114WarmupCount = 20;
+
 type
+  TT114SampleCases = array[0..Pred(cT114CaseCount)] of TArray<Int64>;
+
   IFormInstallRecorder = interface(IAccessibilityFormInstaller)
     ['{89B798B7-0880-4AE5-B799-58E4EB14DF22}']
     function CountFor(aForm: TCustomForm): Integer;
@@ -462,6 +500,36 @@ type
   public
     constructor Create(aControl: TControl; aRuntimeId: Integer; aControlTypeId: Integer; const aName: string;
       const aHelpText: string; const aApi: IAccessibilityUiaApi);
+    function Control: TControl;
+  end;
+
+  TVirtualHoverPanelAdapter = class(TInterfacedObject, IAccessibilityControlAdapter,
+    IAccessibilityVclProviderAdapter)
+  public
+    function CreateInfo(aControl: TControl; const aFallback: TAccessibilityTextInfo): TAccessibilityControlInfo;
+    function CreateProvider(aControl: TControl; aRuntimeId: Integer; const aName: string; const aHelpText: string;
+      const aApi: IAccessibilityUiaApi): IAccessibilityProviderNode;
+  end;
+
+  TVirtualHoverChildProvider = class(TAccessibilityProviderNode)
+  private
+    fPanel: TCustomPanel;
+  protected
+    function DoGetBoundingRectangle(out aValue: UiaRect): Boolean; override;
+  public
+    constructor Create(aPanel: TCustomPanel; aRuntimeId: Integer; const aApi: IAccessibilityUiaApi);
+  end;
+
+  TVirtualHoverPanelProvider = class(TAccessibilityProviderRoot, IAccessibilityVclControlProviderInfo)
+  private
+    fPanel: TCustomPanel;
+    fVirtualProvider: IAccessibilityProviderNode;
+  protected
+    function DoElementProviderFromPoint(aX: Double; aY: Double; out aProvider: IRawElementProviderFragment):
+      HResult; override;
+  public
+    constructor Create(aPanel: TCustomPanel; aRuntimeId: Integer; const aName: string; const aHelpText: string;
+      const aApi: IAccessibilityUiaApi);
     function Control: TControl;
   end;
 
@@ -718,12 +786,102 @@ begin
   end;
 end;
 
+function TVirtualHoverPanelAdapter.CreateInfo(aControl: TControl;
+  const aFallback: TAccessibilityTextInfo): TAccessibilityControlInfo;
+begin
+  if aControl is TCustomPanel then
+  begin
+    Result := TAccessibilityControlInfo.Include(aControl, aFallback.Name, aFallback.HelpText);
+  end else begin
+    Result := TAccessibilityControlInfo.Omit;
+  end;
+end;
+
+function TVirtualHoverPanelAdapter.CreateProvider(aControl: TControl; aRuntimeId: Integer; const aName: string;
+  const aHelpText: string; const aApi: IAccessibilityUiaApi): IAccessibilityProviderNode;
+begin
+  Result := TVirtualHoverPanelProvider.Create(aControl as TCustomPanel, aRuntimeId, aName, aHelpText, aApi) as
+    IAccessibilityProviderNode;
+end;
+
+constructor TVirtualHoverChildProvider.Create(aPanel: TCustomPanel; aRuntimeId: Integer;
+  const aApi: IAccessibilityUiaApi);
+begin
+  inherited CreateNode([aRuntimeId], 0, aApi, aPanel);
+  fPanel := aPanel;
+  SetProperty(UIA_NamePropertyId, 'Virtual action');
+  SetProperty(UIA_ControlTypePropertyId, UIA_TextControlTypeId);
+  SetProperty(UIA_ClassNamePropertyId, 'VirtualHoverChild');
+end;
+
+function TVirtualHoverChildProvider.DoGetBoundingRectangle(out aValue: UiaRect): Boolean;
+var
+  lPoint: TPoint;
+begin
+  Result := fPanel <> nil;
+  if not Result then
+  begin
+    aValue := Default(UiaRect);
+    Exit;
+  end;
+
+  lPoint := fPanel.ClientToScreen(Point(8, 8));
+  aValue.Left := lPoint.X;
+  aValue.Top := lPoint.Y;
+  aValue.Width := 120;
+  aValue.Height := 24;
+end;
+
+constructor TVirtualHoverPanelProvider.Create(aPanel: TCustomPanel; aRuntimeId: Integer; const aName: string;
+  const aHelpText: string; const aApi: IAccessibilityUiaApi);
+begin
+  aPanel.HandleNeeded;
+  inherited CreateNode([aRuntimeId], aPanel.Handle, aApi, aPanel);
+  fPanel := aPanel;
+  SetProperty(UIA_NamePropertyId, aName);
+  SetProperty(UIA_ControlTypePropertyId, UIA_PaneControlTypeId);
+  SetProperty(UIA_ClassNamePropertyId, aPanel.ClassName);
+  SetProperty(UIA_HelpTextPropertyId, aHelpText);
+  SetProperty(UIA_NativeWindowHandlePropertyId, Integer(aPanel.Handle));
+  fVirtualProvider := TVirtualHoverChildProvider.Create(aPanel, (aRuntimeId * 100) + 1, aApi) as
+    IAccessibilityProviderNode;
+  AddChild(fVirtualProvider);
+end;
+
+function TVirtualHoverPanelProvider.Control: TControl;
+begin
+  Result := fPanel;
+end;
+
+function TVirtualHoverPanelProvider.DoElementProviderFromPoint(aX: Double; aY: Double;
+  out aProvider: IRawElementProviderFragment): HResult;
+var
+  lPoint: TPoint;
+begin
+  lPoint := fPanel.ScreenToClient(Point(Round(aX), Round(aY)));
+  if PtInRect(Rect(8, 8, 128, 32), lPoint) then
+  begin
+    aProvider := fVirtualProvider.FragmentProvider;
+  end else begin
+    aProvider := Self as IRawElementProviderFragment;
+  end;
+  Result := S_OK;
+end;
+
 procedure ResetManager;
 begin
   TAccessibilityManager.Uninstall;
   TAccessibilityManagerInternals.SetFormInstaller(nil);
   TAccessibilityManagerInternals.SetUiaApi(nil);
   TAccessibilityManagerInternals.SetWinEventSink(nil);
+end;
+
+procedure AssertBlankHoverReResolved(aPanel: TCustomPanel; const aApi: IManagerTestUiaApi;
+  const aPoint: TPoint; const aReason: string);
+begin
+  aApi.ResetClientsAreListeningCalls;
+  aPanel.Perform(WM_MOUSEMOVE, 0, PointToLParam(aPoint));
+  Assert.AreEqual(1, aApi.ClientsAreListeningCalls, aReason);
 end;
 
 procedure HideTestForm(aForm: TCustomForm);
@@ -1370,6 +1528,137 @@ begin
         lBuilder.Append(',');
       end;
       lBuilder.Append(aSamples[i]);
+    end;
+    Result := lBuilder.ToString;
+  finally
+    lBuilder.Free;
+  end;
+end;
+
+function CreateT114BenchmarkForm(aChildCount: Integer): TForm;
+var
+  i: Integer;
+  lLabel: TLabel;
+begin
+  Result := TForm.Create(nil);
+  try
+    Result.SetBounds(100, 100, 460, 260);
+    for i := 0 to Pred(aChildCount) do
+    begin
+      lLabel := TLabel.Create(Result);
+      lLabel.Parent := Result;
+      lLabel.Caption := 'Measured child ' + IntToStr(i);
+      lLabel.SetBounds(250 + (i mod 4), 120 + (i mod 8), 150, 20);
+    end;
+    Result.Show;
+  except
+    Result.Free;
+    raise;
+  end;
+end;
+
+procedure WarmT114HoverMissCache(aForm: TCustomForm);
+var
+  i: Integer;
+  lPoint: TPoint;
+begin
+  for i := 0 to Pred(cT114WarmupCount) do
+  begin
+    lPoint := Point(8 + (i mod 20), 8 + ((i div 20) mod 4));
+    aForm.Perform(CM_CHANGED, 0, 0);
+    aForm.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
+    aForm.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
+  end;
+end;
+
+procedure MeasureT114HoverMissSamples(aForm: TCustomForm; const aApi: IManagerTestUiaApi;
+  out aResolvedSamples: TArray<Int64>; out aCachedSamples: TArray<Int64>);
+var
+  i: Integer;
+  lPoint: TPoint;
+  lStopwatch: TStopwatch;
+begin
+  SetLength(aResolvedSamples, cT114SampleCount);
+  SetLength(aCachedSamples, cT114SampleCount);
+  aApi.ResetClientsAreListeningCalls;
+  for i := 0 to Pred(cT114SampleCount) do
+  begin
+    lPoint := Point(8 + (i mod 20), 8 + ((i div 20) mod 4));
+    if Odd(i) then
+    begin
+      aForm.Perform(CM_CHANGED, 0, 0);
+      aForm.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
+      lStopwatch := TStopwatch.StartNew;
+      aForm.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
+      aCachedSamples[i] := lStopwatch.ElapsedTicks;
+      aForm.Perform(CM_CHANGED, 0, 0);
+      lStopwatch := TStopwatch.StartNew;
+      aForm.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
+      aResolvedSamples[i] := lStopwatch.ElapsedTicks;
+    end else begin
+      aForm.Perform(CM_CHANGED, 0, 0);
+      lStopwatch := TStopwatch.StartNew;
+      aForm.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
+      aResolvedSamples[i] := lStopwatch.ElapsedTicks;
+      lStopwatch := TStopwatch.StartNew;
+      aForm.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
+      aCachedSamples[i] := lStopwatch.ElapsedTicks;
+    end;
+  end;
+end;
+
+procedure MeasureT114HoverMissCase(const aApi: IManagerTestUiaApi; aChildCount: Integer;
+  out aResolvedSamples: TArray<Int64>; out aCachedSamples: TArray<Int64>);
+var
+  lExpectedResolutionCalls: Integer;
+  lForm: TForm;
+begin
+  ResetManager;
+  TAccessibilityManagerInternals.SetUiaApi(aApi);
+  lForm := CreateT114BenchmarkForm(aChildCount);
+  try
+    TAccessibilityManager.Install(lForm);
+    lForm.Update;
+    WarmT114HoverMissCache(lForm);
+    MeasureT114HoverMissSamples(lForm, aApi, aResolvedSamples, aCachedSamples);
+    lExpectedResolutionCalls := cT114SampleCount + (cT114SampleCount div 2);
+    Assert.AreEqual(lExpectedResolutionCalls, aApi.ClientsAreListeningCalls,
+      Format('Child count %d must resolve once per measured pair plus cached-first preparation.', [aChildCount]));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+function T114DiagnosticsState: string;
+begin
+  if TAccessibilityDiagnostics.Enabled then
+  begin
+    Result := 'enabled';
+  end else begin
+    Result := 'disabled';
+  end;
+end;
+
+function BuildT114HoverMissCsv(const aResolvedSamples: TT114SampleCases;
+  const aCachedSamples: TT114SampleCases): string;
+var
+  i: Integer;
+  lBuilder: TStringBuilder;
+begin
+  lBuilder := TStringBuilder.Create;
+  try
+    lBuilder.Append(Format('sampleCountPerMode=%d,warmupCount=%d,frequency=%d,build=%s,diagnostics=%s%s',
+      [cT114SampleCount, cT114WarmupCount, TStopwatch.Frequency, cT114BuildConfiguration,
+      T114DiagnosticsState, sLineBreak]));
+    for i := 0 to Pred(cT114CaseCount) do
+    begin
+      lBuilder.Append(Format('childCount=%d,mode=resolved,', [cT114ChildCounts[i]]));
+      lBuilder.Append(TickCsvLine(aResolvedSamples[i]));
+      lBuilder.Append(sLineBreak);
+      lBuilder.Append(Format('childCount=%d,mode=cached,', [cT114ChildCounts[i]]));
+      lBuilder.Append(TickCsvLine(aCachedSamples[i]));
+      lBuilder.Append(sLineBreak);
     end;
     Result := lBuilder.ToString;
   finally
@@ -3613,6 +3902,604 @@ begin
     lForm.Free;
     TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
     ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallCachesRepeatedBlankPanelHoverResolution;
+const
+  cMoveCount = 100;
+var
+  i: Integer;
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lLabel: TLabel;
+  lPanel: TPanel;
+  lPoint: TPoint;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 180);
+
+    lPanel := TPanel.Create(lForm);
+    lPanel.Parent := lForm;
+    lPanel.Caption := '';
+    lPanel.SetBounds(20, 20, 300, 120);
+
+    lLabel := TLabel.Create(lForm);
+    lLabel.Parent := lPanel;
+    lLabel.Caption := 'Completed action';
+    lLabel.SetBounds(170, 46, 110, 24);
+
+    lForm.Show;
+    lPanel.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    lPanel.Update;
+    lApi.ResetClientsAreListeningCalls;
+
+    for i := 0 to Pred(cMoveCount) do
+    begin
+      lPoint := Point(8 + (i mod 20), 8 + ((i div 20) mod 4));
+      lPanel.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
+    end;
+
+    Assert.AreEqual(0, lApi.NotificationCalls);
+    Assert.AreEqual(1, lApi.ClientsAreListeningCalls,
+      Format('%d moves in one blank panel region must perform one hover resolution.', [cMoveCount]));
+
+    lPoint := Point(lLabel.Left + (lLabel.Width div 2), lLabel.Top + (lLabel.Height div 2));
+    lPanel.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
+
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('Completed action', lApi.LastNotificationText);
+    Assert.AreEqual(2, lApi.ClientsAreListeningCalls,
+      'Crossing into a named control must resolve and raise hover semantics immediately.');
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallCachesRepeatedBlankFormHoverResolution;
+const
+  cMoveCount = 100;
+var
+  i: Integer;
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lLabel: TLabel;
+  lPoint: TPoint;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 180);
+
+    lLabel := TLabel.Create(lForm);
+    lLabel.Parent := lForm;
+    lLabel.Caption := 'Form action';
+    lLabel.SetBounds(220, 80, 100, 24);
+
+    lForm.Show;
+    TAccessibilityManager.Install(lForm);
+    lForm.Update;
+    lApi.ResetClientsAreListeningCalls;
+
+    for i := 0 to Pred(cMoveCount) do
+    begin
+      lPoint := Point(8 + (i mod 20), 8 + ((i div 20) mod 4));
+      lForm.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
+    end;
+
+    Assert.AreEqual(0, lApi.NotificationCalls);
+    Assert.AreEqual(1, lApi.ClientsAreListeningCalls,
+      Format('%d moves in one blank form region must perform one hover resolution.', [cMoveCount]));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallCachesRepeatedBlankGroupBoxHoverResolution;
+const
+  cMoveCount = 100;
+var
+  i: Integer;
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lGroupBox: TGroupBox;
+  lLabel: TLabel;
+  lPoint: TPoint;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 180);
+
+    lGroupBox := TGroupBox.Create(lForm);
+    lGroupBox.Parent := lForm;
+    lGroupBox.Caption := '';
+    lGroupBox.SetBounds(20, 20, 300, 120);
+
+    lLabel := TLabel.Create(lForm);
+    lLabel.Parent := lGroupBox;
+    lLabel.Caption := 'Group action';
+    lLabel.SetBounds(170, 46, 110, 24);
+
+    lForm.Show;
+    lGroupBox.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    lGroupBox.Update;
+    lApi.ResetClientsAreListeningCalls;
+
+    for i := 0 to Pred(cMoveCount) do
+    begin
+      lPoint := Point(8 + (i mod 20), 8 + ((i div 20) mod 4));
+      lGroupBox.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
+    end;
+
+    Assert.AreEqual(0, lApi.NotificationCalls);
+    Assert.AreEqual(1, lApi.ClientsAreListeningCalls,
+      Format('%d moves in one blank group-box region must perform one hover resolution.', [cMoveCount]));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallDoesNotCacheBlankHoverAcrossUnprovenVirtualChildren;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lPanel: TPanel;
+  lRegistry: IAccessibilityAdapterRegistry;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lRegistry := TAccessibilityVclAdapters.CreateDefaultRegistry;
+  lRegistry.RegisterAdapter(TPanel, TVirtualHoverPanelAdapter.Create);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 180);
+
+    lPanel := TPanel.Create(lForm);
+    lPanel.Parent := lForm;
+    lPanel.Caption := '';
+    lPanel.SetBounds(20, 20, 300, 120);
+
+    lForm.Show;
+    lPanel.HandleNeeded;
+    TAccessibilityManager.Install(lForm, lRegistry);
+    lPanel.Update;
+    lApi.ResetClientsAreListeningCalls;
+
+    lPanel.Perform(WM_MOUSEMOVE, 0, PointToLParam(Point(200, 80)));
+    Assert.AreEqual(0, lApi.NotificationCalls);
+    Assert.AreEqual(1, lApi.ClientsAreListeningCalls);
+
+    lPanel.Perform(WM_MOUSEMOVE, 0, PointToLParam(Point(20, 20)));
+
+    Assert.AreEqual(2, lApi.ClientsAreListeningCalls,
+      'A provider without a VCL-complete hover capability must resolve each point.');
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('Virtual action', lApi.LastNotificationText);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallKeepsBlankHoverCachedAcrossRepaint;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lLabel: TLabel;
+  lPanel: TPanel;
+  lPoint: TPoint;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 180);
+
+    lPanel := TPanel.Create(lForm);
+    lPanel.Parent := lForm;
+    lPanel.Caption := '';
+    lPanel.SetBounds(20, 20, 300, 120);
+
+    lLabel := TLabel.Create(lForm);
+    lLabel.Parent := lPanel;
+    lLabel.Caption := 'Stable action';
+    lLabel.SetBounds(170, 46, 110, 24);
+
+    lForm.Show;
+    lPanel.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    lPanel.Update;
+    lApi.ResetClientsAreListeningCalls;
+
+    lPoint := Point(12, 12);
+    lPanel.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
+    Assert.AreEqual(1, lApi.ClientsAreListeningCalls);
+
+    lPanel.Perform(WM_PAINT, 0, 0);
+    lPanel.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
+    lPanel.Perform(CM_INVALIDATE, 0, 0);
+    lPanel.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
+
+    Assert.AreEqual(1, lApi.ClientsAreListeningCalls,
+      'Pure paint and invalidate messages must preserve a stable blank-region hover miss.');
+    Assert.AreEqual(0, lApi.NotificationCalls);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallKeepsSuccessfulHoverCachedAcrossRepaint;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lLabel: TLabel;
+  lPanel: TPanel;
+  lPoint: TPoint;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 180);
+
+    lPanel := TPanel.Create(lForm);
+    lPanel.Parent := lForm;
+    lPanel.Caption := '';
+    lPanel.SetBounds(20, 20, 300, 120);
+
+    lLabel := TLabel.Create(lForm);
+    lLabel.Parent := lPanel;
+    lLabel.Caption := 'Stable action';
+    lLabel.SetBounds(20, 20, 110, 24);
+
+    lForm.Show;
+    lPanel.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    lPanel.Update;
+
+    lPoint := Point(lLabel.Left + (lLabel.Width div 2), lLabel.Top + (lLabel.Height div 2));
+    lPanel.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
+    Assert.AreEqual(1, lApi.NotificationCalls);
+
+    lPanel.Perform(WM_PAINT, 0, 0);
+    lPanel.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
+
+    Assert.AreEqual(1, lApi.NotificationCalls,
+      'A purely visual repaint must not duplicate the successful hover announcement.');
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallInvalidatesBlankPanelHoverCacheAfterChildGeometryChange;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lLabel: TLabel;
+  lPanel: TPanel;
+  lPoint: TPoint;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 180);
+
+    lPanel := TPanel.Create(lForm);
+    lPanel.Parent := lForm;
+    lPanel.Caption := '';
+    lPanel.SetBounds(20, 20, 300, 120);
+
+    lLabel := TLabel.Create(lForm);
+    lLabel.Parent := lPanel;
+    lLabel.Caption := 'Moved action';
+    lLabel.SetBounds(170, 46, 110, 24);
+
+    lForm.Show;
+    lPanel.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    lPanel.Update;
+    lApi.ResetClientsAreListeningCalls;
+
+    lPoint := Point(12, 12);
+    lPanel.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
+    Assert.AreEqual(1, lApi.ClientsAreListeningCalls);
+    Assert.AreEqual(0, lApi.NotificationCalls);
+
+    lLabel.SetBounds(4, 4, 110, 24);
+    lPanel.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
+
+    Assert.AreEqual(2, lApi.ClientsAreListeningCalls,
+      'Moving a child into a cached blank region must invalidate the hover miss.');
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('Moved action', lApi.LastNotificationText);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallInvalidatesBlankPanelHoverCacheAfterAncestorMove;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lLabel: TLabel;
+  lPanel: TPanel;
+  lPoint: TPoint;
+  lScreenPoint: TPoint;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(300, 100, 360, 180);
+
+    lPanel := TPanel.Create(lForm);
+    lPanel.Parent := lForm;
+    lPanel.Caption := '';
+    lPanel.SetBounds(20, 20, 300, 120);
+
+    lLabel := TLabel.Create(lForm);
+    lLabel.Parent := lPanel;
+    lLabel.Caption := 'Moved ancestor action';
+    lLabel.SetBounds(170, 46, 110, 24);
+
+    lForm.Show;
+    lPanel.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    lPanel.Update;
+    lApi.ResetClientsAreListeningCalls;
+
+    lPoint := Point(12, 12);
+    lScreenPoint := lPanel.ClientToScreen(lPoint);
+    lPanel.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
+    Assert.AreEqual(1, lApi.ClientsAreListeningCalls);
+    Assert.AreEqual(0, lApi.NotificationCalls);
+
+    Assert.IsTrue(SetWindowPos(lForm.Handle, 0,
+      lForm.Left - (lLabel.Left + (lLabel.Width div 2) - lPoint.X),
+      lForm.Top - (lLabel.Top + (lLabel.Height div 2) - lPoint.Y), 0, 0,
+      SWP_NOACTIVATE or SWP_NOREDRAW or SWP_NOSIZE or SWP_NOZORDER));
+    lPoint := lPanel.ScreenToClient(lScreenPoint);
+    Assert.IsTrue(PtInRect(lLabel.BoundsRect, lPoint),
+      'The ancestor move must place the label beneath the stationary screen point.');
+
+    lPanel.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
+
+    Assert.AreEqual(2, lApi.ClientsAreListeningCalls,
+      'An ancestor move must invalidate a cached blank region expressed in screen coordinates.');
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('Moved ancestor action', lApi.LastNotificationText);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallInvalidatesBlankPanelHoverCacheAfterSiblingFocusChange;
+var
+  lApi: IManagerTestUiaApi;
+  lFirstEdit: TEdit;
+  lForm: TForm;
+  lPanel: TPanel;
+  lPoint: TPoint;
+  lSecondEdit: TEdit;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 180);
+
+    lPanel := TPanel.Create(lForm);
+    lPanel.Parent := lForm;
+    lPanel.Caption := '';
+    lPanel.SetBounds(20, 20, 300, 120);
+
+    lFirstEdit := TEdit.Create(lForm);
+    lFirstEdit.Parent := lPanel;
+    lFirstEdit.SetBounds(150, 12, 120, 24);
+
+    lSecondEdit := TEdit.Create(lForm);
+    lSecondEdit.Parent := lPanel;
+    lSecondEdit.SetBounds(150, 54, 120, 24);
+
+    lForm.Show;
+    lPanel.HandleNeeded;
+    lFirstEdit.HandleNeeded;
+    lSecondEdit.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    lPanel.Update;
+    lFirstEdit.SetFocus;
+    Assert.IsTrue(lFirstEdit.Focused);
+    lApi.ResetClientsAreListeningCalls;
+
+    lPoint := Point(12, 12);
+    lPanel.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
+    Assert.AreEqual(1, lApi.ClientsAreListeningCalls);
+
+    lSecondEdit.SetFocus;
+    Assert.IsTrue(lSecondEdit.Focused);
+    lApi.ResetClientsAreListeningCalls;
+    lPanel.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
+
+    Assert.AreEqual(1, lApi.ClientsAreListeningCalls,
+      'A real sibling focus transition must invalidate the parent panel hover miss.');
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallInvalidatesBlankPanelHoverCacheAfterSemanticChanges;
+var
+  lAnchorLabel: TLabel;
+  lApi: IManagerTestUiaApi;
+  lExtraLabel: TLabel;
+  lForm: TForm;
+  lPanel: TPanel;
+  lPoint: TPoint;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 180);
+
+    lPanel := TPanel.Create(lForm);
+    lPanel.Parent := lForm;
+    lPanel.Caption := '';
+    lPanel.SetBounds(20, 20, 300, 120);
+
+    lAnchorLabel := TLabel.Create(lForm);
+    lAnchorLabel.Parent := lPanel;
+    lAnchorLabel.Caption := 'Anchor action';
+    lAnchorLabel.SetBounds(170, 46, 110, 24);
+
+    lForm.Show;
+    lPanel.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    lPanel.Update;
+    lApi.ResetClientsAreListeningCalls;
+
+    lPoint := Point(12, 12);
+    lPanel.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
+    Assert.AreEqual(1, lApi.ClientsAreListeningCalls);
+
+    lExtraLabel := TLabel.Create(lForm);
+    lExtraLabel.Visible := False;
+    lExtraLabel.Parent := lPanel;
+    AssertBlankHoverReResolved(lPanel, lApi, lPoint,
+      'A control-tree change must invalidate the cached hover miss.');
+
+    lPanel.SetBounds(lPanel.Left, lPanel.Top, lPanel.Width + 1, lPanel.Height);
+    AssertBlankHoverReResolved(lPanel, lApi, lPoint,
+      'A direct geometry change must invalidate the cached hover miss.');
+
+    lPanel.Perform(CM_ENTER, 0, 0);
+    AssertBlankHoverReResolved(lPanel, lApi, lPoint,
+      'A focus change must invalidate the cached hover miss.');
+
+    lPanel.Perform(CM_CHANGED, 0, 0);
+    AssertBlankHoverReResolved(lPanel, lApi, lPoint,
+      'A state change must invalidate the cached hover miss.');
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.UninstallPassivatesPopulatedBlankPanelHoverSnapshot;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lLabel: TLabel;
+  lOriginalWindowProc: TWndMethod;
+  lPanel: TPanel;
+  lProbe: TWindowProcProbe;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  lOriginalWindowProc := nil;
+  lPanel := nil;
+  lProbe := TWindowProcProbe.Create;
+  try
+    lForm.SetBounds(100, 100, 360, 180);
+
+    lPanel := TPanel.Create(lForm);
+    lPanel.Parent := lForm;
+    lPanel.Caption := '';
+    lPanel.SetBounds(20, 20, 300, 120);
+
+    lLabel := TLabel.Create(lForm);
+    lLabel.Parent := lPanel;
+    lLabel.Caption := 'Retained action';
+    lLabel.SetBounds(170, 46, 110, 24);
+
+    lForm.Show;
+    lPanel.HandleNeeded;
+    lOriginalWindowProc := lPanel.WindowProc;
+    TAccessibilityManager.Install(lForm);
+    lPanel.Update;
+    lPanel.Perform(WM_MOUSEMOVE, 0, PointToLParam(Point(12, 12)));
+    Assert.AreEqual(1, lApi.ClientsAreListeningCalls);
+
+    lProbe.Prior := lPanel.WindowProc;
+    lPanel.WindowProc := lProbe.WindowProc;
+    TAccessibilityManager.Uninstall;
+    lPanel.Perform(WM_MOUSEMOVE, 0, PointToLParam(Point(12, 12)));
+
+    Assert.IsTrue(lProbe.Calls > 0);
+    Assert.AreEqual(0, lApi.NotificationCalls,
+      'A passivated hook with a populated miss snapshot must not call UIA after uninstall.');
+  finally
+    if Assigned(lOriginalWindowProc) then
+    begin
+      lPanel.WindowProc := lOriginalWindowProc;
+    end;
+    lForm.Free;
+    ResetManager;
+    lProbe.Free;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallHoverMissCacheLatencyDistribution;
+var
+  i: Integer;
+  lApi: IManagerTestUiaApi;
+  lCachedSamples: TT114SampleCases;
+  lDirectory: string;
+  lResolvedSamples: TT114SampleCases;
+begin
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  for i := 0 to Pred(cT114CaseCount) do
+  begin
+    MeasureT114HoverMissCase(lApi, cT114ChildCounts[i], lResolvedSamples[i], lCachedSamples[i]);
+  end;
+
+  lDirectory := GetEnvironmentVariable('MAXLOGIC_T114_MEASURE_DIR');
+  if lDirectory <> '' then
+  begin
+    ForceDirectories(lDirectory);
+    TFile.WriteAllText(TPath.Combine(lDirectory, 'hover-miss.csv'),
+      BuildT114HoverMissCsv(lResolvedSamples, lCachedSamples), TEncoding.UTF8);
   end;
 end;
 

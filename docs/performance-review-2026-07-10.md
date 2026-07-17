@@ -31,6 +31,7 @@ The practical conclusion is that further micro-optimizing already-small provider
 | T-111 | Complete | All nine real wrappers cache one atomically published export pointer, concurrent first use resolves once, and the System32 module is pinned before publication. Focused tests pass 9/9, the full Debug suite passes 342/342, and the final Release Basic UIA probe passes. |
 | T-112 | Complete | Active-form notifications install only `Screen.ActiveCustomForm`; pointer-keyed, form-owned hint observers avoid repeated refreshes and unregister on destruction. Manager passes 91/91, T-112 scaling passes 1/1, Hints passes 24/24, shutdown passes 6/6, and Release Basic/Hint UIA probes pass. The unrelated bridge scaling performance test timed out under Defender, so that gate and all wall-time acceptance remain deferred. |
 | T-113 | Complete | Memo/listbox retained providers are bounded by viewport plus focus/selection; pruning uses one item-count read and a direct index bitmap; stale subtrees become unavailable before disconnect callbacks. The final Debug suite passes 362/362 and Release `MemoListStatus` passes. Defender remained active, so wall-time acceptance is deferred. |
+| T-114 | Complete | Stable blank regions on forms, panels, and group boxes cache one conservative negative hover resolution. Direct-child identity, bounds, visibility, semantic messages, focus, and geometry guard invalidation; custom virtual providers remain uncached unless they explicitly prove VCL-complete geometry. Manager passes 103/103, the full Debug suite passes 374/374, shutdown passes 8/8, and the Release Basic UIA probe passes. Defender remained active, so wall-time acceptance is deferred. |
 
 ### T-110 measurement record
 
@@ -141,6 +142,44 @@ External UIA wall time used Win32 Release, diagnostics disabled, and 200 samples
 | Disabled | Scan selected child | 0.043 ms | 0.063 ms | 0.073 ms | 0.089 ms |
 
 The enabled tree sample returned 28 nodes in 339.166 ms; disabled returned 36 in 198.308 ms. The target listbox HWND surfaced as `ControlType.Pane` with zero children in both modes. These values therefore measure the native HWND/UIA host boundary, not direct virtual-fragment traversal, and no enabled/disabled speed claim is accepted.
+
+### T-114 measurement record
+
+Negative hover caching is deliberately narrower than a generic "same control" memoization. It applies only to `TCustomForm`, `TCustomPanel`, and `TCustomGroupBox` providers that expose `IAccessibilityVclHoverGeometryPartition` and confirm that direct VCL child geometry completely partitions their hover targets. The manager derives a client-coordinate blank region around the miss, snapshots at most 128 direct child identities, bounds, and visibility flags, and validates that snapshot before every cache hit. Control-tree, geometry, semantic, state, and focus messages clear the miss; paint-only invalidation does not. Moving an ancestor is safe because the blank region is client-relative. Providers with virtual or non-VCL hover children remain uncached by default.
+
+The deterministic RED used 100 mouse moves in one blank region and observed 100 listener/resolution attempts. GREEN observes one attempt. Separate regressions cover forms, panels, group boxes, crossing into a named control, direct-child geometry and visibility, ancestor movement, real sibling focus changes, repaint stability, custom virtual children, and passivation with a populated snapshot.
+
+Process-local work used Win32 Release, diagnostics disabled, 20 warmups, and 200 samples per mode and child count. "Resolved" invalidates the miss before the move; "cached" repeats a move inside the validated region. Percentiles use nearest rank.
+
+| Direct children | Path | Samples | Median | p95 | p99 | Maximum |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 0 | Resolved | 200 | 0.0134 ms | 0.0897 ms | 0.3992 ms | 1.0859 ms |
+| 0 | Cached | 200 | 0.0070 ms | 0.0455 ms | 0.2263 ms | 1.2125 ms |
+| 1 | Resolved | 200 | 0.0139 ms | 0.2991 ms | 1.4017 ms | 4.0670 ms |
+| 1 | Cached | 200 | 0.0070 ms | 0.2508 ms | 0.6979 ms | 5.8717 ms |
+| 32 | Resolved | 200 | 0.0256 ms | 0.2878 ms | 0.7333 ms | 2.8338 ms |
+| 32 | Cached | 200 | 0.0075 ms | 0.1495 ms | 0.4806 ms | 1.4564 ms |
+| 128 | Resolved | 200 | 0.0605 ms | 0.1020 ms | 0.3989 ms | 4.9436 ms |
+| 128 | Cached | 200 | 0.0089 ms | 0.0441 ms | 0.2795 ms | 1.4178 ms |
+
+CPU was 28% before and 24% after. Microsoft Defender real-time protection was enabled, `MsMpEng` was resident at 597-614 MiB, and the operator reported antivirus activity since approximately 07:00. The deterministic call-count reduction is accepted; wall-time acceptance remains deferred until the machine is idle.
+
+External UIA wall time used the exact Win32 Release demo, diagnostics disabled, 10 warmups, and 200 samples per framework mode.
+
+| Framework | Operation | Samples | Median | p95 | p99 | Maximum |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Enabled | Send `WM_KEYDOWN`/`WM_KEYUP` | 200 | 2.589 ms | 13.749 ms | 18.193 ms | 20.750 ms |
+| Enabled | `AutomationElement.FromHandle` | 200 | 1.959 ms | 10.446 ms | 13.642 ms | 39.193 ms |
+| Enabled | Current properties | 200 | 0.402 ms | 1.030 ms | 2.391 ms | 8.608 ms |
+| Enabled | `FindAll` children | 200 | 0.081 ms | 0.154 ms | 0.287 ms | 1.706 ms |
+| Enabled | Scan selected child | 200 | 0.074 ms | 0.122 ms | 0.146 ms | 0.173 ms |
+| Disabled | Send `WM_KEYDOWN`/`WM_KEYUP` | 200 | 2.195 ms | 12.199 ms | 15.973 ms | 18.694 ms |
+| Disabled | `AutomationElement.FromHandle` | 200 | 1.814 ms | 9.254 ms | 13.352 ms | 14.062 ms |
+| Disabled | Current properties | 200 | 0.354 ms | 1.458 ms | 8.061 ms | 11.294 ms |
+| Disabled | `FindAll` children | 200 | 0.057 ms | 0.113 ms | 0.203 ms | 1.834 ms |
+| Disabled | Scan selected child | 200 | 0.043 ms | 0.060 ms | 0.091 ms | 0.172 ms |
+
+External CPU was 14% before and 13% after with Defender active. The enabled tree sample returned 28 nodes in 279.473 ms; disabled returned 36 nodes in 193.463 ms. As in earlier runs, the target listbox HWND surfaced as a zero-child `ControlType.Pane`; this is host-boundary evidence, not virtual-list semantic acceptance. Exact artifacts are `.agents/runs/t114-process-local-exact-release-20260717/summary.json` and `.agents/runs/t114-external-uia-exact-release-defender-20260717.json`.
 
 ## Ranked findings
 

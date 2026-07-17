@@ -2151,6 +2151,10 @@ begin
   end;
 
   Result := lApi.RaiseAutomationEvent(aProvider, aEventId) = S_OK;
+  if Result then
+  begin
+    TAccessibilityDiagnostics.RecordSupplementalUiaAutomationEvent(aEventId);
+  end;
 end;
 
 class function TAccessibilityProviderEvents.RaiseAutomationPropertyChanged(
@@ -2171,6 +2175,10 @@ begin
   end;
 
   Result := lApi.RaiseAutomationPropertyChanged(aProvider, aPropertyId, aOldValue, aNewValue) = S_OK;
+  if Result then
+  begin
+    TAccessibilityDiagnostics.RecordSupplementalUiaPropertyChangedEvent(aPropertyId);
+  end;
 end;
 
 class function TAccessibilityProviderEvents.RaiseNotification(const aProvider: IRawElementProviderSimple;
@@ -2206,6 +2214,10 @@ begin
       TAccessibilityDiagnostics.RecordProviderNotification(lStopwatch.ElapsedTicks);
     end;
   end;
+  if Result then
+  begin
+    TAccessibilityDiagnostics.RecordSupplementalUiaNotificationEvent;
+  end;
 end;
 
 class function TAccessibilityProviderEvents.RaiseStructureChanged(const aProvider: IRawElementProviderSimple;
@@ -2226,6 +2238,10 @@ begin
   end;
 
   Result := lApi.RaiseStructureChanged(aProvider, aStructureChangeType, CopyRuntimeId(aRuntimeId)) = S_OK;
+  if Result then
+  begin
+    TAccessibilityDiagnostics.RecordSupplementalUiaStructureChangedEvent;
+  end;
 end;
 
 class function TAccessibilityProviderWindowMessages.TryHandleGetObject(aHwnd: HWND; aWParam: WPARAM; aLParam: LPARAM;

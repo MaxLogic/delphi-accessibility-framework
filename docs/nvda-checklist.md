@@ -40,6 +40,15 @@ Use this checklist on a real VCL application or on a manual sample built from th
 - `TAdvStringGrid`: HTML text should be stripped before speech, wide text fallback should be preserved, and hidden row/column remapping should not expose hidden cells.
 - `TAdvStringGrid`: after scrolling, a newly visible cell should be announced and the old scrolled-out cell should no longer be exposed as visible.
 
+## Event fanout diagnostics
+
+- Enable `diagnostics.providerHotspots` only for a focused measurement run.
+- Reset the metrics immediately before one mouse, focus, click, Space, or arrow-key interaction.
+- Capture the metrics immediately afterward and correlate them with NVDA Speech Viewer or another configured speech transcript.
+- Treat framework UIA counters as successful helper calls and framework MSAA counters as WinEvent attempts. VCL/Windows events emitted outside the framework wrapper are not included.
+- Do not remove an event because its count appears duplicated. Require live caption and state evidence for every affected input path, including delayed or coalesced speech, before consolidation.
+- Disable provider-hotspot metrics after the run so ordinary callback paths retain the minimal disabled fast path.
+
 ## Regression checks
 
 - App-wide install should cover forms that already exist when `TAccessibilityManager.Install(Application)` runs.

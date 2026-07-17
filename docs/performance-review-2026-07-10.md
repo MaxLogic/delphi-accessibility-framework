@@ -35,6 +35,7 @@ The practical conclusion is that further micro-optimizing already-small provider
 | T-115 | Complete | Each installed form/control hook retains one MSAA wrapper, routes `OBJID_CLIENT` without entering the UIA handler, and releases the wrapper before provider disconnect. MSAA passes 18/18, the full Debug suite passes 378/378, shutdown passes 8/8, and the Release Basic UIA probe passes. Defender remained active, so deterministic query-count reduction is accepted and wall-time acceptance is deferred. |
 | T-116 | Complete | The built-in pipe transport parses and serializes on its worker while synchronizing only VCL/provider capture and detached response-tree construction. Phase timings and thread IDs are explicit, maps have bounded defaults and caps, AgentBridge passes 32/32, the full Debug suite passes 380/380, shutdown passes 8/8, and the Release Basic UIA probe passes. Defender remained active, so the threading/bounds result is accepted and wall-time acceptance is deferred. |
 | T-117 | Complete | An inserting `CM_CONTROLCHANGE` hooks only the added windowed subtree. A 1,020-control test retains 1,021 hooks with one initial full-tree refresh; Hints passes 25/25 in Debug and Release, the full Debug suite passes 381/381, shutdown passes 8/8, and the Release Hints UIA probe passes. Defender remained active, so the bounded-work result is accepted and wall-time acceptance is deferred. |
+| T-118 | Complete | Opt-in diagnostics count typed supplemental UIA and MSAA fanout without synchronous I/O. Deterministic tests and live NVDA evidence did not prove any event redundant, so all accessibility events remain. T118 passes 12/12 in Debug and Release, the full Debug suite passes 386/386, lifecycle tests pass 9/9, and the Release Basic UIA probe passes. |
 
 ### T-110 measurement record
 
@@ -449,6 +450,28 @@ Recommended change: add event-type and per-action fanout counters, correlate the
 Expected effect: possible reduction in screen-reader queue pressure with controlled semantic risk.
 
 Proof required: NVDA still announces caption and state for mouse, Tab, Space, and arrow-key scenarios after any consolidation.
+
+Implemented by T-118 as measurement-only instrumentation. Provider-hotspot diagnostics now count successful supplemental UIA automation, property, notification, and structure events by type, plus framework MSAA focus, state, selection, and other event attempts. Collection remains opt-in and performs no file I/O.
+
+Deterministic interaction fanout:
+
+| Interaction | UIA automation | UIA property | UIA notification | MSAA |
+| --- | --- | --- | --- | --- |
+| Checkbox hover | focus 1 | none | none | focus 1, state 1 |
+| Checkbox focus | none | none | none | focus 1, state 1 |
+| Already-focused checkbox toggle | none | none | none | none; native control owns the state event |
+| Group caption hover | focus 1 | none | 1 | none |
+| Radio hover or focus | focus 1 | none | 1 | focus 1, state 1 |
+| Grouped-radio selection | focus 2, selection 1 | selected 1 | 1 | focus 2, state 3 |
+| Grouped-radio or `TRadioGroup` arrow | focus 1, selection 1 | selected 2 | 1 | focus 1, state 2 |
+
+The exact Win32 Release counter benchmark used 100 warmups and 2,000 samples, with five UIA and three MSAA records per sample. With file diagnostics disabled, the disabled counter path measured median/p95/p99/max 0.0000/0.0001/0.0001/0.0001 ms; enabled provider metrics measured 0.0001/0.0002/0.0002/0.0006 ms. CPU was 82% before and 60% after, and Defender was active.
+
+The exact external UIA run used 10 warmups and 200 samples per enabled/disabled mode with diagnostics disabled. Enabled key dispatch measured median/p95/p99/max 4.556/20.818/28.845/33.844 ms and disabled measured 4.131/18.144/21.521/49.913 ms. Enabled `AutomationElement.FromHandle` measured 3.028/17.846/40.890/61.921 ms and disabled measured 2.555/15.108/30.426/36.772 ms. Enabled current-property reads measured 0.563/7.856/11.017/14.775 ms and disabled measured 0.432/3.983/8.167/11.066 ms. The 28-node enabled tree took 666.084 ms and the 36-node disabled tree took 369.887 ms. CPU was 31% before and 41% after with Defender active, so these wall times are contamination evidence, not comparative performance acceptance.
+
+Live NVDA evidence retained captions for both group hovers, radio hover/focus/click/arrow interactions, and checkbox click/Space state changes. It also showed event results being merged and delayed: one view-radio click utterance arrived 29 ms after a 3.8-second capture boundary, and checkbox hover was not spoken in that run despite the expected supplemental event attempts. This does not prove any event redundant. No event combination was removed; the safer behavior remains in place pending cleaner live evidence.
+
+Final exact-candidate gates: Debug passes 386/386 with zero failures, errors, ignores, or leaks; the nine targeted application-run, passivation, late-hook, destroyed-form, idempotent-uninstall, and active-form-handler lifecycle tests pass; FixInsight remains at 405 and Pascal Analyzer at 7,946 total/218 strong warnings with no semantic addition; normal-path Debug and Release demo rebuilds pass DFM validation; and the Release `BasicVclControls` probe reports `UIA_PROBE_OK`. Exact artifacts are `.agents/runs/t118-event-counter-latency-release-exact-final-defender-20260717.json`, `.agents/runs/t118-external-uia-release-exact-final-defender-20260717.json`, and `.agents/runs/t118-live-nvda-fanout-focused-debug-20260717.json`.
 
 ## Lower-priority opportunities
 

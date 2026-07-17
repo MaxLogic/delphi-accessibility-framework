@@ -5,6 +5,7 @@
 - The complex demo now enables file diagnostics only when launched with `--a11y-diagnostics`.
 - Agent bridge responses now report parse, capture/build, synchronized main-thread, serialization, total timing, stopwatch frequency, and phase thread IDs.
 - Agent bridge form maps now have bounded depth, per-parent child, and total-control defaults with explicit truncation metadata.
+- Provider-hotspot diagnostics now report typed supplemental UIA and MSAA event fanout so focus, hover, selection, and state-change interactions can be correlated with screen-reader speech before any event consolidation.
 
 ### Fixed
 - Dynamically inserted windowed controls now receive hint hooks by scanning only the added subtree, avoiding repeated full-form scans as a form grows.

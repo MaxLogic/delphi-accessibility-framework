@@ -104,6 +104,9 @@ type
     [Test]
     procedure ProviderHotspotMetricsCaptureSpeechTiming;
     [Test]
+    [Category('T118Performance')]
+    procedure SupplementalEventCounterLatencyDistribution;
+    [Test]
     procedure ProviderHotspotBaselineArtifactIsWritten;
     [Test]
     [Category('StringGrid')]
@@ -1969,6 +1972,123 @@ begin
     lForm.Free;
     TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
     ResetManager;
+  end;
+end;
+
+procedure RecordSupplementalEventCounterBurst;
+begin
+  TAccessibilityDiagnostics.RecordSupplementalUiaPropertyChangedEvent(
+    UIA_SelectionItemIsSelectedPropertyId);
+  TAccessibilityDiagnostics.RecordSupplementalUiaPropertyChangedEvent(
+    UIA_SelectionItemIsSelectedPropertyId);
+  TAccessibilityDiagnostics.RecordSupplementalUiaAutomationEvent(
+    UIA_SelectionItem_ElementSelectedEventId);
+  TAccessibilityDiagnostics.RecordSupplementalUiaAutomationEvent(UIA_AutomationFocusChangedEventId);
+  TAccessibilityDiagnostics.RecordSupplementalUiaNotificationEvent;
+  TAccessibilityDiagnostics.RecordSupplementalMsaaEvent(EVENT_OBJECT_STATECHANGE);
+  TAccessibilityDiagnostics.RecordSupplementalMsaaEvent(EVENT_OBJECT_STATECHANGE);
+  TAccessibilityDiagnostics.RecordSupplementalMsaaEvent(EVENT_OBJECT_FOCUS);
+end;
+
+procedure MeasureSupplementalEventCounterBursts(aEnabled: Boolean; aWarmupCount: Integer;
+  aSampleCount: Integer; out aSamples: TArray<Int64>);
+var
+  i: Integer;
+  lSampleIndex: Integer;
+  lStopwatch: TStopwatch;
+begin
+  if aEnabled then
+  begin
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+  end else begin
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+  end;
+
+  SetLength(aSamples, aSampleCount);
+  for i := 0 to Pred(aWarmupCount + aSampleCount) do
+  begin
+    lStopwatch := TStopwatch.StartNew;
+    RecordSupplementalEventCounterBurst;
+    if i >= aWarmupCount then
+    begin
+      lSampleIndex := i - aWarmupCount;
+      aSamples[lSampleIndex] := lStopwatch.ElapsedTicks;
+    end;
+  end;
+  TArray.Sort<Int64>(aSamples);
+end;
+
+function SupplementalEventCounterDistributionJson(const aSamples: TArray<Int64>;
+  aSampleCount: Integer): TJSONObject;
+begin
+  Result := TJSONObject.Create;
+  Result.AddPair('medianMs',
+    TJSONNumber.Create(MillisecondsFromTicks(aSamples[NearestRankIndex(aSampleCount, 50)])));
+  Result.AddPair('p95Ms',
+    TJSONNumber.Create(MillisecondsFromTicks(aSamples[NearestRankIndex(aSampleCount, 95)])));
+  Result.AddPair('p99Ms',
+    TJSONNumber.Create(MillisecondsFromTicks(aSamples[NearestRankIndex(aSampleCount, 99)])));
+  Result.AddPair('maximumMs', TJSONNumber.Create(MillisecondsFromTicks(aSamples[Pred(aSampleCount)])));
+end;
+
+function SupplementalEventCounterJson(const aBuildConfiguration: string; aWarmupCount: Integer;
+  aSampleCount: Integer; const aDisabledSamples: TArray<Int64>;
+  const aEnabledSamples: TArray<Int64>): string;
+var
+  lJson: TJSONObject;
+begin
+  lJson := TJSONObject.Create;
+  try
+    lJson.AddPair('scenario', 't118-supplemental-event-counter-burst');
+    lJson.AddPair('buildConfiguration', aBuildConfiguration);
+    lJson.AddPair('diagnosticsState', 'disabled');
+    lJson.AddPair('providerMetricsState', 'enabled');
+    lJson.AddPair('warmupCount', TJSONNumber.Create(aWarmupCount));
+    lJson.AddPair('sampleCount', TJSONNumber.Create(aSampleCount));
+    lJson.AddPair('uiaEventsPerBurst', TJSONNumber.Create(5));
+    lJson.AddPair('msaaEventsPerBurst', TJSONNumber.Create(3));
+    lJson.AddPair('stopwatchFrequency', TJSONNumber.Create(TStopwatch.Frequency));
+    lJson.AddPair('disabled', SupplementalEventCounterDistributionJson(aDisabledSamples, aSampleCount));
+    lJson.AddPair('enabled', SupplementalEventCounterDistributionJson(aEnabledSamples, aSampleCount));
+    Result := lJson.ToJSON;
+  finally
+    lJson.Free;
+  end;
+end;
+
+procedure TAccessibilityProviderHotspotPerformanceTests.SupplementalEventCounterLatencyDistribution;
+const
+{$IFDEF RELEASE}
+  cBuildConfiguration = 'Release';
+{$ELSE}
+  cBuildConfiguration = 'Debug';
+{$ENDIF}
+  cSampleCount = 2000;
+  cWarmupCount = 100;
+var
+  lDisabledSamples: TArray<Int64>;
+  lEnabledSamples: TArray<Int64>;
+  lJson: string;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+  lRunsDir: string;
+
+begin
+  TAccessibilityDiagnostics.Disable;
+  MeasureSupplementalEventCounterBursts(False, cWarmupCount, cSampleCount, lDisabledSamples);
+  MeasureSupplementalEventCounterBursts(True, cWarmupCount, cSampleCount, lEnabledSamples);
+  try
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+    Assert.AreEqual((cWarmupCount + cSampleCount) * 5, lMetrics.SupplementalUiaEventCount);
+    Assert.AreEqual((cWarmupCount + cSampleCount) * 3, lMetrics.SupplementalMsaaEventCount);
+
+    lJson := SupplementalEventCounterJson(cBuildConfiguration, cWarmupCount, cSampleCount,
+      lDisabledSamples, lEnabledSamples);
+    lRunsDir := TPath.Combine(TPath.Combine(GetCurrentDir, '.agents'), 'runs');
+    ForceDirectories(lRunsDir);
+    TFile.WriteAllText(TPath.Combine(lRunsDir, 't118-event-counter-latency-current.json'), lJson, TEncoding.UTF8);
+  finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
   end;
 end;
 

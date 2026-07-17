@@ -79,6 +79,9 @@ type
     procedure AutomationEventsAreRaisedOnlyWhenClientsListen;
     [Test]
     procedure EventHelpersAreGatedForPropertyStructureAndNotification;
+    [Test]
+    [Category('Diagnostics')]
+    procedure SupplementalUiaEventFanoutMetricsCountTypes;
   end;
 
 implementation
@@ -836,6 +839,56 @@ begin
   Assert.AreEqual(UIA_NamePropertyId, lApi.LastPropertyId);
   Assert.AreEqual(StructureChangeType_ChildAdded, lApi.LastStructureChangeType);
   Assert.AreEqual(NotificationKind_Other, lApi.LastNotificationKind);
+end;
+
+procedure TProviderCoreTests.SupplementalUiaEventFanoutMetricsCountTypes;
+var
+  lApi: ITestUiaApi;
+  lJson: string;
+  lProvider: IAccessibilityProviderNode;
+begin
+  lApi := TTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  lProvider := TAccessibilityProviderFactory.CreateRoot([10], 0, lApi);
+  TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+  TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+  try
+    Assert.IsTrue(TAccessibilityProviderEvents.RaiseAutomationEvent(lProvider.RawElementProvider,
+      UIA_AutomationFocusChangedEventId, lApi));
+    Assert.IsTrue(TAccessibilityProviderEvents.RaiseAutomationEvent(lProvider.RawElementProvider,
+      UIA_SelectionItem_ElementSelectedEventId, lApi));
+    Assert.IsTrue(TAccessibilityProviderEvents.RaiseAutomationEvent(lProvider.RawElementProvider,
+      UIA_Invoke_InvokedEventId, lApi));
+    Assert.IsTrue(TAccessibilityProviderEvents.RaiseAutomationPropertyChanged(lProvider.RawElementProvider,
+      UIA_ToggleToggleStatePropertyId, ToggleState_Off, ToggleState_On, lApi));
+    Assert.IsTrue(TAccessibilityProviderEvents.RaiseAutomationPropertyChanged(lProvider.RawElementProvider,
+      UIA_SelectionItemIsSelectedPropertyId, False, True, lApi));
+    Assert.IsTrue(TAccessibilityProviderEvents.RaiseAutomationPropertyChanged(lProvider.RawElementProvider,
+      UIA_NamePropertyId, 'old', 'new', lApi));
+    Assert.IsTrue(TAccessibilityProviderEvents.RaiseNotification(lProvider.RawElementProvider,
+      NotificationKind_Other, NotificationProcessing_All, 'Visible text', 'activity', lApi));
+    Assert.IsTrue(TAccessibilityProviderEvents.RaiseStructureChanged(lProvider.RawElementProvider,
+      StructureChangeType_ChildAdded, [10, 11], lApi));
+
+    lApi.SetClientsAreListening(False);
+    Assert.IsFalse(TAccessibilityProviderEvents.RaiseAutomationEvent(lProvider.RawElementProvider,
+      UIA_Invoke_InvokedEventId, lApi));
+
+    lJson := TAccessibilityDiagnostics.ProviderHotspotMetrics.ToJson('event-fanout', 'ProviderCore test');
+    Assert.IsTrue(Pos('"supplementalUiaEventCount":8', lJson) > 0, lJson);
+    Assert.IsTrue(Pos('"supplementalUiaAutomationEventCount":3', lJson) > 0, lJson);
+    Assert.IsTrue(Pos('"supplementalUiaFocusEventCount":1', lJson) > 0, lJson);
+    Assert.IsTrue(Pos('"supplementalUiaSelectionEventCount":1', lJson) > 0, lJson);
+    Assert.IsTrue(Pos('"supplementalUiaOtherAutomationEventCount":1', lJson) > 0, lJson);
+    Assert.IsTrue(Pos('"supplementalUiaPropertyChangedEventCount":3', lJson) > 0, lJson);
+    Assert.IsTrue(Pos('"supplementalUiaTogglePropertyChangedEventCount":1', lJson) > 0, lJson);
+    Assert.IsTrue(Pos('"supplementalUiaSelectionPropertyChangedEventCount":1', lJson) > 0, lJson);
+    Assert.IsTrue(Pos('"supplementalUiaOtherPropertyChangedEventCount":1', lJson) > 0, lJson);
+    Assert.IsTrue(Pos('"supplementalUiaNotificationEventCount":1', lJson) > 0, lJson);
+    Assert.IsTrue(Pos('"supplementalUiaStructureChangedEventCount":1', lJson) > 0, lJson);
+  finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+  end;
 end;
 
 procedure TProviderCoreTests.PublishedHostProviderLookupDoesNotReenterWmGetObject;

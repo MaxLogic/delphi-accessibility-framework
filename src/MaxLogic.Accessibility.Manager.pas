@@ -246,6 +246,7 @@ var
 
 procedure NotifyAccessibilityWinEvent(aEvent: DWORD; aHwnd: HWND; aObjectId: Cardinal; aChildId: Cardinal);
 begin
+  TAccessibilityDiagnostics.RecordSupplementalMsaaEvent(aEvent);
   if gWinEventSink <> nil then
   begin
     gWinEventSink.NotifyEvent(aEvent, aHwnd, aObjectId, aChildId);

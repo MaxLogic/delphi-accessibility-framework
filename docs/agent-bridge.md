@@ -143,6 +143,15 @@ Provider-hotspot diagnostics can be enabled while an external UIA or Win32 probe
 
 `diagnostics.providerHotspots` returns the current metrics as JSON, including provider boundary call counts such as `providerNavigateCount`, `providerGetPropertyValueCount`, `providerGetRuntimeIdCount`, `providerGetBoundingRectangleCount`, and `providerGetHostRawElementProviderCount`, plus matching `...TotalElapsedTicks` fields. It also exposes focused provider hotspots such as `stringGridCellProbeCount`, `stringGridRowProbeCount`, `tmsAdvStringGridCellProbeCount`, `memoLineProbeCount`, `listBoxSelectionItemProbeCount`, `agentBridgeChildClientOriginProbeCount`, `agentBridgeFocusProbeCount`, `providerFocusAnnouncementTextLastElapsedTicks`, `providerNotificationLastElapsedTicks`, `managerRetainedHookPassivateCount`, `managerRetainedHookLinearScanCount`, `providerRuntimeIdBlockCopyCount`, `providerRuntimeIdBlockCopyElementCount`, and `providerRuntimeIdElementCopyCount`. Use this to separate expensive UIA client/provider round trips from cheap process-local VCL reads, and to distinguish speech text construction from UIA notification dispatch when focus or hover speech feels delayed.
 
+Supplemental event fanout is available through these counters:
+
+- `supplementalUiaEventCount`, split into automation, property-changed, notification, and structure-changed totals
+- UIA automation splits for focus, selection, and other events
+- UIA property splits for toggle state, selection state, and other properties
+- `supplementalMsaaEventCount`, split into focus, state-change, selection, and other WinEvents
+
+UIA counters record successful calls made through the framework event helpers. MSAA counters record framework attempts made through the central `NotifyWinEvent` wrapper because Win32 does not report delivery success. Native events emitted directly by VCL or Windows are outside these supplemental counters. Enable the metrics only for a measurement run, reset immediately before each interaction, read the snapshot after the interaction, and disable the metrics when finished. The disabled path performs no synchronous I/O; enabled collection uses the existing in-memory diagnostics lock.
+
 ## Mutations
 
 Mutations are disabled by default:

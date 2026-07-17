@@ -149,8 +149,10 @@ type
     [Test]
     procedure FormInstallRaisesGroupBoxHoverAndRadioGroupItemHoverProviders;
     [Test]
+    [Category('T118Performance')]
     procedure DemoFormInstallRaisesViewModeGroupHoverFromGroupWindow;
     [Test]
+    [Category('T118Performance')]
     procedure DemoFormInstallRaisesDensityGroupHoverFromGroupWindow;
     [Test]
     procedure DemoFormInstallReturnsGroupProvidersFromGroupWindows;
@@ -159,18 +161,26 @@ type
     [Test]
     procedure FormInstallIgnoresFormNonClientHoverWithoutRangeCheck;
     [Test]
+    [Category('T118Performance')]
     procedure FormInstallRaisesRadioGroupItemHoverFromButtonWindow;
     [Test]
+    [Category('T118Performance')]
     procedure FormInstallRaisesRadioGroupItemFocusNotificationFromButtonWindow;
     [Test]
+    [Category('T118Performance')]
     procedure FormInstallRaisesGroupedRadioButtonFocusNotificationWithFrameworkProvider;
     [Test]
     procedure FormInstallRaisesGroupedRadioButtonSelectionNotificationWithFrameworkProvider;
     [Test]
+    [Category('T118Performance')]
+    procedure SupplementalInteractionFanoutMetricsCountGroupedRadioSelection;
+    [Test]
+    [Category('T118Performance')]
     procedure FormInstallRaisesGroupedRadioButtonArrowNavigationNotificationWithFrameworkProvider;
     [Test]
     procedure FormInstallSkipsGroupedRadioSelectionScanWhenNoUiaClients;
     [Test]
+    [Category('T118Performance')]
     procedure FormInstallRaisesRadioGroupItemArrowNavigationNotificationFromButtonWindow;
     [Test]
     procedure FormInstallReturnsGroupedRadioButtonProviderFromGroupBoxRadioWindow;
@@ -191,6 +201,13 @@ type
     [Test]
     procedure FormInstallRaisesCheckBoxHoverNativeWinEventsWithoutProviderReplacement;
     [Test]
+    [Category('T118Performance')]
+    procedure SupplementalInteractionFanoutMetricsCountCheckBoxHover;
+    [Test]
+    [Category('T118Performance')]
+    procedure SupplementalInteractionFanoutMetricsCountFocusedCheckBoxToggle;
+    [Test]
+    [Category('T118Performance')]
     procedure FormInstallRaisesCheckBoxFocusNativeWinEventsWithoutProviderReplacement;
     [Test]
     procedure FormInstallRaisesRadioButtonHoverAndFocusNativeWinEventsWithoutProviderReplacement;
@@ -880,6 +897,84 @@ begin
   TAccessibilityManagerInternals.SetFormInstaller(nil);
   TAccessibilityManagerInternals.SetUiaApi(nil);
   TAccessibilityManagerInternals.SetWinEventSink(nil);
+end;
+
+type
+  TFanoutExpectation = record
+    UiaFocusCount: Integer;
+    UiaSelectionCount: Integer;
+    UiaTogglePropertyCount: Integer;
+    UiaSelectionPropertyCount: Integer;
+    UiaNotificationCount: Integer;
+    MsaaFocusCount: Integer;
+    MsaaStateChangeCount: Integer;
+  end;
+
+function Fanout(aUiaFocusCount: Integer; aUiaSelectionCount: Integer; aUiaTogglePropertyCount: Integer;
+  aUiaSelectionPropertyCount: Integer; aUiaNotificationCount: Integer; aMsaaFocusCount: Integer;
+  aMsaaStateChangeCount: Integer): TFanoutExpectation;
+begin
+  Result.UiaFocusCount := aUiaFocusCount;
+  Result.UiaSelectionCount := aUiaSelectionCount;
+  Result.UiaTogglePropertyCount := aUiaTogglePropertyCount;
+  Result.UiaSelectionPropertyCount := aUiaSelectionPropertyCount;
+  Result.UiaNotificationCount := aUiaNotificationCount;
+  Result.MsaaFocusCount := aMsaaFocusCount;
+  Result.MsaaStateChangeCount := aMsaaStateChangeCount;
+end;
+
+procedure AssertInteractionFanout(const aMetrics: TAccessibilityProviderHotspotMetrics; const aScenario: string;
+  const aExpected: TFanoutExpectation);
+var
+  lAutomationCount: Integer;
+  lDetails: string;
+  lPropertyCount: Integer;
+  lUiaCount: Integer;
+begin
+  lAutomationCount := aExpected.UiaFocusCount + aExpected.UiaSelectionCount;
+  lDetails := aMetrics.ToJson(aScenario, 'Manager test');
+  lPropertyCount := aExpected.UiaTogglePropertyCount + aExpected.UiaSelectionPropertyCount;
+  lUiaCount := lAutomationCount + lPropertyCount + aExpected.UiaNotificationCount;
+  Assert.AreEqual(lUiaCount, aMetrics.SupplementalUiaEventCount,
+    aScenario + ': total UIA events. ' + lDetails);
+  Assert.AreEqual(lAutomationCount, aMetrics.SupplementalUiaAutomationEventCount,
+    aScenario + ': automation events');
+  Assert.AreEqual(aExpected.UiaFocusCount, aMetrics.SupplementalUiaFocusEventCount,
+    aScenario + ': UIA focus events');
+  Assert.AreEqual(aExpected.UiaSelectionCount, aMetrics.SupplementalUiaSelectionEventCount,
+    aScenario + ': UIA selection events');
+  Assert.AreEqual(0, aMetrics.SupplementalUiaOtherAutomationEventCount,
+    aScenario + ': other UIA automation events');
+  Assert.AreEqual(lPropertyCount, aMetrics.SupplementalUiaPropertyChangedEventCount,
+    aScenario + ': UIA property events');
+  Assert.AreEqual(aExpected.UiaTogglePropertyCount, aMetrics.SupplementalUiaTogglePropertyChangedEventCount,
+    aScenario + ': UIA toggle property events');
+  Assert.AreEqual(aExpected.UiaSelectionPropertyCount,
+    aMetrics.SupplementalUiaSelectionPropertyChangedEventCount,
+    aScenario + ': UIA selection property events');
+  Assert.AreEqual(0, aMetrics.SupplementalUiaOtherPropertyChangedEventCount,
+    aScenario + ': other UIA property events');
+  Assert.AreEqual(aExpected.UiaNotificationCount, aMetrics.SupplementalUiaNotificationEventCount,
+    aScenario + ': UIA notification events');
+  Assert.AreEqual(0, aMetrics.SupplementalUiaStructureChangedEventCount,
+    aScenario + ': UIA structure events');
+  Assert.AreEqual(aExpected.MsaaFocusCount + aExpected.MsaaStateChangeCount,
+    aMetrics.SupplementalMsaaEventCount,
+    aScenario + ': total MSAA events. ' + lDetails);
+  Assert.AreEqual(aExpected.MsaaFocusCount, aMetrics.SupplementalMsaaFocusEventCount,
+    aScenario + ': MSAA focus events');
+  Assert.AreEqual(aExpected.MsaaStateChangeCount, aMetrics.SupplementalMsaaStateChangeEventCount,
+    aScenario + ': MSAA state events');
+  Assert.AreEqual(0, aMetrics.SupplementalMsaaSelectionEventCount, aScenario + ': MSAA selection events');
+  Assert.AreEqual(0, aMetrics.SupplementalMsaaOtherEventCount, aScenario + ': other MSAA events');
+end;
+
+procedure AssertCheckedInteractionFanout(aRadioButton: TRadioButton;
+  const aMetrics: TAccessibilityProviderHotspotMetrics; const aScenario: string;
+  const aExpected: TFanoutExpectation);
+begin
+  Assert.IsTrue(aRadioButton.Checked);
+  AssertInteractionFanout(aMetrics, aScenario, aExpected);
 end;
 
 procedure AssertBlankHoverReResolved(aPanel: TCustomPanel; const aApi: IManagerTestUiaApi;
@@ -4834,6 +4929,7 @@ procedure TAccessibilityManagerTests.DemoFormInstallRaisesViewModeGroupHoverFrom
 var
   lApi: IManagerTestUiaApi;
   lForm: TAccessibilityDemoMainForm;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
 begin
   ResetManager;
   lApi := TManagerTestUiaApi.Create;
@@ -4845,9 +4941,13 @@ begin
     lForm.grpViewMode.HandleNeeded;
 
     TAccessibilityManager.Install(lForm);
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
 
     lForm.grpViewMode.Perform(WM_MOUSEMOVE, 0, PointToLParam(Point(8, 8)));
 
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+    AssertInteractionFanout(lMetrics, 'view mode group hover', Fanout(1, 0, 0, 0, 1, 0, 0));
     Assert.AreEqual(1, lApi.NotificationCalls);
     Assert.AreEqual('View mode. Choose how the demo presents detail density', lApi.LastNotificationText);
     Assert.AreEqual('View mode', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
@@ -4857,6 +4957,7 @@ begin
     Assert.AreEqual('View mode', ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider),
       UIA_NamePropertyId));
   finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
     lForm.Free;
     ResetManager;
   end;
@@ -4866,6 +4967,7 @@ procedure TAccessibilityManagerTests.DemoFormInstallRaisesDensityGroupHoverFromG
 var
   lApi: IManagerTestUiaApi;
   lForm: TAccessibilityDemoMainForm;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
 begin
   ResetManager;
   lApi := TManagerTestUiaApi.Create;
@@ -4877,9 +4979,13 @@ begin
     lForm.radioGroupDensity.HandleNeeded;
 
     TAccessibilityManager.Install(lForm);
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
 
     lForm.radioGroupDensity.Perform(WM_MOUSEMOVE, 0, PointToLParam(Point(8, 8)));
 
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+    AssertInteractionFanout(lMetrics, 'density group hover', Fanout(1, 0, 0, 0, 1, 0, 0));
     Assert.AreEqual(1, lApi.NotificationCalls);
     Assert.AreEqual('Density. TRadioGroup sample for role comparison', lApi.LastNotificationText);
     Assert.AreEqual('Density', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
@@ -4889,6 +4995,7 @@ begin
     Assert.AreEqual('Density', ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider),
       UIA_NamePropertyId));
   finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
     lForm.Free;
     ResetManager;
   end;
@@ -5018,6 +5125,7 @@ var
   lApi: IManagerTestUiaApi;
   lButton: TRadioButton;
   lForm: TForm;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
   lRadioGroup: TRadioGroup;
 begin
   ResetManager;
@@ -5041,9 +5149,13 @@ begin
     lButton := lRadioGroup.Buttons[0];
 
     TAccessibilityManager.Install(lForm);
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
 
     lButton.Perform(WM_MOUSEMOVE, 0, PointToLParam(Point(lButton.Width div 2, lButton.Height div 2)));
 
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+    AssertInteractionFanout(lMetrics, 'TRadioGroup item hover', Fanout(1, 0, 0, 0, 1, 1, 1));
     Assert.AreEqual(1, lApi.NotificationCalls);
     Assert.AreEqual('Comfortable', lApi.LastNotificationText);
     Assert.AreEqual('Comfortable', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
@@ -5053,6 +5165,7 @@ begin
     Assert.AreEqual('Comfortable', ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider),
       UIA_NamePropertyId));
   finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
     lForm.Free;
     ResetManager;
   end;
@@ -5063,6 +5176,7 @@ var
   lApi: IManagerTestUiaApi;
   lButton: TRadioButton;
   lForm: TForm;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
   lRadioGroup: TRadioGroup;
 begin
   ResetManager;
@@ -5086,9 +5200,13 @@ begin
     lButton := lRadioGroup.Buttons[0];
 
     TAccessibilityManager.Install(lForm);
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
 
     lButton.Perform(CM_ENTER, 0, 0);
 
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+    AssertInteractionFanout(lMetrics, 'TRadioGroup item focus', Fanout(1, 0, 0, 0, 1, 1, 1));
     Assert.AreEqual(1, lApi.NotificationCalls);
     Assert.AreEqual('Comfortable', lApi.LastNotificationText);
     Assert.AreEqual('Comfortable', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
@@ -5098,6 +5216,7 @@ begin
     Assert.AreEqual('Comfortable', ProviderStringProperty(FragmentFromSimple(lApi.LastEventProvider),
       UIA_NamePropertyId));
   finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
     lForm.Free;
     ResetManager;
   end;
@@ -5108,6 +5227,7 @@ var
   lApi: IManagerTestUiaApi;
   lForm: TForm;
   lGroupBox: TGroupBox;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
   lRadioButton: TRadioButton;
   lWinEvents: TWinEventRecorder;
 begin
@@ -5136,9 +5256,13 @@ begin
     lRadioButton.HandleNeeded;
 
     TAccessibilityManager.Install(lForm);
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
 
     lRadioButton.Perform(CM_ENTER, 0, 0);
 
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+    AssertInteractionFanout(lMetrics, 'grouped radio focus', Fanout(1, 0, 0, 0, 1, 1, 1));
     Assert.AreEqual(1, lApi.NotificationCalls);
     Assert.AreEqual('Compact. Use the compact view mode', lApi.LastNotificationText);
     Assert.AreEqual('Compact', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
@@ -5151,6 +5275,7 @@ begin
     Assert.AreEqual(EVENT_OBJECT_STATECHANGE, lWinEvents.LastEvent);
     Assert.AreEqual(lRadioButton.Handle, lWinEvents.LastHwnd);
   finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
     lForm.Free;
     ResetManager;
   end;
@@ -5221,6 +5346,64 @@ begin
   end;
 end;
 
+procedure TAccessibilityManagerTests.SupplementalInteractionFanoutMetricsCountGroupedRadioSelection;
+var
+  lApi: IManagerTestUiaApi;
+  lFirstRadio: TRadioButton;
+  lForm: TForm;
+  lGroupBox: TGroupBox;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+  lSecondRadio: TRadioButton;
+  lWinEventSink: IAccessibilityWinEventSink;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  lWinEventSink := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEventSink);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 180);
+
+    lGroupBox := TGroupBox.Create(lForm);
+    lGroupBox.Parent := lForm;
+    lGroupBox.Caption := 'View mode';
+    lGroupBox.SetBounds(24, 24, 220, 86);
+
+    lFirstRadio := TRadioButton.Create(lForm);
+    lFirstRadio.Parent := lGroupBox;
+    lFirstRadio.Caption := 'Compact';
+    lFirstRadio.Checked := True;
+    lFirstRadio.SetBounds(12, 28, 120, 22);
+
+    lSecondRadio := TRadioButton.Create(lForm);
+    lSecondRadio.Parent := lGroupBox;
+    lSecondRadio.Caption := 'Detailed';
+    lSecondRadio.Hint := 'Use the detailed view mode';
+    lSecondRadio.SetBounds(12, 54, 120, 22);
+
+    lForm.Show;
+    lFirstRadio.HandleNeeded;
+    lSecondRadio.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    lFirstRadio.SetFocus;
+    Application.ProcessMessages;
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+
+    lSecondRadio.Perform(BM_CLICK, 0, 0);
+
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+    Assert.IsTrue(lSecondRadio.Checked);
+    AssertInteractionFanout(lMetrics, 'grouped radio selection', Fanout(2, 1, 0, 1, 1, 2, 3));
+  finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
 procedure TAccessibilityManagerTests.FormInstallRaisesGroupedRadioButtonArrowNavigationNotificationWithFrameworkProvider;
 var
   lApi: IManagerTestUiaApi;
@@ -5276,7 +5459,7 @@ begin
     lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
     Application.ProcessMessages;
 
-    Assert.IsTrue(lSecondRadio.Checked);
+    AssertCheckedInteractionFanout(lSecondRadio, lMetrics, 'grouped radio arrow navigation', Fanout(1, 1, 0, 2, 1, 1, 2));
     Assert.AreEqual(1, lApi.ClientsAreListeningCalls,
       'Grouped radio arrow speech should probe UIA client-listening state once for the event burst.');
     Assert.AreEqual(0, lMetrics.ProviderGetPatternProviderCount,
@@ -5361,6 +5544,7 @@ var
   lButton: TRadioButton;
   lForm: TForm;
   lHandler: TRadioNavigationTestHandler;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
   lRadioGroup: TRadioGroup;
 begin
   ResetManager;
@@ -5393,15 +5577,20 @@ begin
     TAccessibilityManager.Install(lForm);
     lButton.SetFocus;
     Application.ProcessMessages;
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
 
     lButton.Perform(WM_KEYDOWN, VK_DOWN, 0);
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
     Application.ProcessMessages;
 
     Assert.AreEqual(1, lRadioGroup.ItemIndex);
+    AssertInteractionFanout(lMetrics, 'TRadioGroup arrow navigation', Fanout(1, 1, 0, 2, 1, 1, 2));
     Assert.AreEqual('Compact density', lApi.LastNotificationText);
     Assert.AreEqual('Compact density', ProviderStringProperty(FragmentFromSimple(lApi.LastNotificationProvider),
       UIA_NamePropertyId));
   finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
     lForm.Free;
     lHandler.Free;
     ResetManager;
@@ -5731,6 +5920,87 @@ begin
   end;
 end;
 
+procedure TAccessibilityManagerTests.SupplementalInteractionFanoutMetricsCountCheckBoxHover;
+var
+  lApi: IManagerTestUiaApi;
+  lCheckBox: TCheckBox;
+  lForm: TForm;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+  lWinEventSink: IAccessibilityWinEventSink;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  lWinEventSink := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEventSink);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 140);
+
+    lCheckBox := TCheckBox.Create(lForm);
+    lCheckBox.Parent := lForm;
+    lCheckBox.Caption := 'Include archived rows';
+    lCheckBox.Checked := True;
+    lCheckBox.SetBounds(24, 24, 220, 24);
+    lCheckBox.HandleNeeded;
+
+    TAccessibilityManager.Install(lForm);
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+
+    lCheckBox.Perform(WM_MOUSEMOVE, 0, PointToLParam(Point(lCheckBox.Width div 2, lCheckBox.Height div 2)));
+
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+    AssertInteractionFanout(lMetrics, 'checkbox hover', Fanout(1, 0, 0, 0, 0, 1, 1));
+  finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.SupplementalInteractionFanoutMetricsCountFocusedCheckBoxToggle;
+var
+  lApi: IManagerTestUiaApi;
+  lCheckBox: TCheckBox;
+  lForm: TForm;
+  lMetrics: TAccessibilityProviderHotspotMetrics;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 360, 140);
+
+    lCheckBox := TCheckBox.Create(lForm);
+    lCheckBox.Parent := lForm;
+    lCheckBox.Caption := 'Include archived rows';
+    lCheckBox.Checked := False;
+    lCheckBox.SetBounds(24, 24, 220, 24);
+    lCheckBox.HandleNeeded;
+
+    lForm.Show;
+    TAccessibilityManager.Install(lForm);
+    lCheckBox.SetFocus;
+    Application.ProcessMessages;
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+
+    lCheckBox.Perform(BM_CLICK, 0, 0);
+
+    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+    Assert.IsTrue(lCheckBox.Checked);
+    AssertInteractionFanout(lMetrics, 'focused checkbox toggle', Fanout(0, 0, 0, 0, 0, 0, 0));
+  finally
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
 procedure TAccessibilityManagerTests.FormInstallCheckBoxHoverSkipsUnusedAnnouncementTextBuild;
 var
   lApi: IManagerTestUiaApi;
@@ -5856,6 +6126,7 @@ begin
     lCheckBox.Perform(CM_ENTER, 0, 0);
     lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
 
+    AssertInteractionFanout(lMetrics, 'checkbox focus', Fanout(0, 0, 0, 0, 0, 1, 1));
     Assert.AreEqual(0, lApi.NotificationCalls);
     Assert.AreEqual(0, lApi.EventCalls);
     Assert.AreEqual(0, lMetrics.ProviderEventBatchCount,

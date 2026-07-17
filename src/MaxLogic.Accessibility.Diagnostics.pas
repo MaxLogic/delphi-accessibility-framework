@@ -114,6 +114,22 @@ type
     ProviderNotificationLastElapsedTicks: Int64;
     ProviderNotificationTotalElapsedTicks: Int64;
     ProviderEventBatchCount: Integer;
+    SupplementalUiaEventCount: Integer;
+    SupplementalUiaAutomationEventCount: Integer;
+    SupplementalUiaFocusEventCount: Integer;
+    SupplementalUiaSelectionEventCount: Integer;
+    SupplementalUiaOtherAutomationEventCount: Integer;
+    SupplementalUiaPropertyChangedEventCount: Integer;
+    SupplementalUiaTogglePropertyChangedEventCount: Integer;
+    SupplementalUiaSelectionPropertyChangedEventCount: Integer;
+    SupplementalUiaOtherPropertyChangedEventCount: Integer;
+    SupplementalUiaNotificationEventCount: Integer;
+    SupplementalUiaStructureChangedEventCount: Integer;
+    SupplementalMsaaEventCount: Integer;
+    SupplementalMsaaFocusEventCount: Integer;
+    SupplementalMsaaStateChangeEventCount: Integer;
+    SupplementalMsaaSelectionEventCount: Integer;
+    SupplementalMsaaOtherEventCount: Integer;
     ManagerHookLookupCount: Integer;
     ManagerHookLookupProbeCount: Integer;
     ManagerRetainedHookPassivateCount: Integer;
@@ -201,6 +217,11 @@ type
       static;
     class procedure RecordProviderNotification(aElapsedTicks: Int64); static;
     class procedure RecordProviderEventBatch; static;
+    class procedure RecordSupplementalMsaaEvent(aEvent: Cardinal); static;
+    class procedure RecordSupplementalUiaAutomationEvent(aEventId: Integer); static;
+    class procedure RecordSupplementalUiaNotificationEvent; static;
+    class procedure RecordSupplementalUiaPropertyChangedEvent(aPropertyId: Integer); static;
+    class procedure RecordSupplementalUiaStructureChangedEvent; static;
     class procedure RecordProviderBoundaryCall(aCall: TAccessibilityProviderBoundaryCall); overload; static;
     class procedure RecordProviderBoundaryCall(aCall: TAccessibilityProviderBoundaryCall; aElapsedTicks: Int64);
       overload; static;
@@ -826,6 +847,33 @@ begin
     IntToStr(TotalElapsedTicks) + '}';
 end;
 
+function SupplementalEventFanoutToJson(const aMetrics: TAccessibilityProviderHotspotMetrics): string;
+begin
+  Result := ',"supplementalUiaEventCount":' + IntToStr(aMetrics.SupplementalUiaEventCount) +
+    ',"supplementalUiaAutomationEventCount":' + IntToStr(aMetrics.SupplementalUiaAutomationEventCount) +
+    ',"supplementalUiaFocusEventCount":' + IntToStr(aMetrics.SupplementalUiaFocusEventCount) +
+    ',"supplementalUiaSelectionEventCount":' + IntToStr(aMetrics.SupplementalUiaSelectionEventCount) +
+    ',"supplementalUiaOtherAutomationEventCount":' +
+    IntToStr(aMetrics.SupplementalUiaOtherAutomationEventCount) +
+    ',"supplementalUiaPropertyChangedEventCount":' +
+    IntToStr(aMetrics.SupplementalUiaPropertyChangedEventCount) +
+    ',"supplementalUiaTogglePropertyChangedEventCount":' +
+    IntToStr(aMetrics.SupplementalUiaTogglePropertyChangedEventCount) +
+    ',"supplementalUiaSelectionPropertyChangedEventCount":' +
+    IntToStr(aMetrics.SupplementalUiaSelectionPropertyChangedEventCount) +
+    ',"supplementalUiaOtherPropertyChangedEventCount":' +
+    IntToStr(aMetrics.SupplementalUiaOtherPropertyChangedEventCount) +
+    ',"supplementalUiaNotificationEventCount":' +
+    IntToStr(aMetrics.SupplementalUiaNotificationEventCount) +
+    ',"supplementalUiaStructureChangedEventCount":' +
+    IntToStr(aMetrics.SupplementalUiaStructureChangedEventCount) +
+    ',"supplementalMsaaEventCount":' + IntToStr(aMetrics.SupplementalMsaaEventCount) +
+    ',"supplementalMsaaFocusEventCount":' + IntToStr(aMetrics.SupplementalMsaaFocusEventCount) +
+    ',"supplementalMsaaStateChangeEventCount":' + IntToStr(aMetrics.SupplementalMsaaStateChangeEventCount) +
+    ',"supplementalMsaaSelectionEventCount":' + IntToStr(aMetrics.SupplementalMsaaSelectionEventCount) +
+    ',"supplementalMsaaOtherEventCount":' + IntToStr(aMetrics.SupplementalMsaaOtherEventCount);
+end;
+
 function TAccessibilityProviderHotspotMetrics.ToJson(const aScenario: string; const aSource: string): string;
 begin
   Result := '{"scenario":"' + JsonEscape(aScenario) + '","source":"' + JsonEscape(aSource) + '","enabled":' +
@@ -889,7 +937,8 @@ begin
     IntToStr(ProviderNotificationCount) + ',"providerNotificationLastElapsedTicks":' +
     IntToStr(ProviderNotificationLastElapsedTicks) + ',"providerNotificationTotalElapsedTicks":' +
     IntToStr(ProviderNotificationTotalElapsedTicks) + ',"providerEventBatchCount":' +
-    IntToStr(ProviderEventBatchCount) + ',"managerHookLookupCount":' + IntToStr(ManagerHookLookupCount) +
+    IntToStr(ProviderEventBatchCount) + SupplementalEventFanoutToJson(Self) +
+    ',"managerHookLookupCount":' + IntToStr(ManagerHookLookupCount) +
     ',"managerHookLookupProbeCount":' + IntToStr(ManagerHookLookupProbeCount) +
     ',"managerRetainedHookPassivateCount":' + IntToStr(ManagerRetainedHookPassivateCount) +
     ',"managerRetainedHookLinearScanCount":' + IntToStr(ManagerRetainedHookLinearScanCount) +
@@ -1451,6 +1500,126 @@ begin
     if gProviderHotspotMetricsEnabled then
     begin
       Inc(gProviderHotspotMetrics.ProviderEventBatchCount);
+    end;
+  finally
+    TMonitor.Exit(gDiagnosticsLock);
+  end;
+end;
+
+class procedure TAccessibilityDiagnostics.RecordSupplementalMsaaEvent(aEvent: Cardinal);
+begin
+  if not gProviderHotspotMetricsEnabled then
+  begin
+    Exit;
+  end;
+
+  TMonitor.Enter(gDiagnosticsLock);
+  try
+    if gProviderHotspotMetricsEnabled then
+    begin
+      Inc(gProviderHotspotMetrics.SupplementalMsaaEventCount);
+      case aEvent of
+        EVENT_OBJECT_FOCUS:
+          Inc(gProviderHotspotMetrics.SupplementalMsaaFocusEventCount);
+        EVENT_OBJECT_STATECHANGE:
+          Inc(gProviderHotspotMetrics.SupplementalMsaaStateChangeEventCount);
+        EVENT_OBJECT_SELECTION, EVENT_OBJECT_SELECTIONADD, EVENT_OBJECT_SELECTIONREMOVE, EVENT_OBJECT_SELECTIONWITHIN:
+          Inc(gProviderHotspotMetrics.SupplementalMsaaSelectionEventCount);
+      else
+        Inc(gProviderHotspotMetrics.SupplementalMsaaOtherEventCount);
+      end;
+    end;
+  finally
+    TMonitor.Exit(gDiagnosticsLock);
+  end;
+end;
+
+class procedure TAccessibilityDiagnostics.RecordSupplementalUiaAutomationEvent(aEventId: Integer);
+begin
+  if not gProviderHotspotMetricsEnabled then
+  begin
+    Exit;
+  end;
+
+  TMonitor.Enter(gDiagnosticsLock);
+  try
+    if gProviderHotspotMetricsEnabled then
+    begin
+      Inc(gProviderHotspotMetrics.SupplementalUiaEventCount);
+      Inc(gProviderHotspotMetrics.SupplementalUiaAutomationEventCount);
+      case aEventId of
+        UIA_AutomationFocusChangedEventId:
+          Inc(gProviderHotspotMetrics.SupplementalUiaFocusEventCount);
+        UIA_SelectionItem_ElementSelectedEventId:
+          Inc(gProviderHotspotMetrics.SupplementalUiaSelectionEventCount);
+      else
+        Inc(gProviderHotspotMetrics.SupplementalUiaOtherAutomationEventCount);
+      end;
+    end;
+  finally
+    TMonitor.Exit(gDiagnosticsLock);
+  end;
+end;
+
+class procedure TAccessibilityDiagnostics.RecordSupplementalUiaNotificationEvent;
+begin
+  if not gProviderHotspotMetricsEnabled then
+  begin
+    Exit;
+  end;
+
+  TMonitor.Enter(gDiagnosticsLock);
+  try
+    if gProviderHotspotMetricsEnabled then
+    begin
+      Inc(gProviderHotspotMetrics.SupplementalUiaEventCount);
+      Inc(gProviderHotspotMetrics.SupplementalUiaNotificationEventCount);
+    end;
+  finally
+    TMonitor.Exit(gDiagnosticsLock);
+  end;
+end;
+
+class procedure TAccessibilityDiagnostics.RecordSupplementalUiaPropertyChangedEvent(aPropertyId: Integer);
+begin
+  if not gProviderHotspotMetricsEnabled then
+  begin
+    Exit;
+  end;
+
+  TMonitor.Enter(gDiagnosticsLock);
+  try
+    if gProviderHotspotMetricsEnabled then
+    begin
+      Inc(gProviderHotspotMetrics.SupplementalUiaEventCount);
+      Inc(gProviderHotspotMetrics.SupplementalUiaPropertyChangedEventCount);
+      case aPropertyId of
+        UIA_ToggleToggleStatePropertyId:
+          Inc(gProviderHotspotMetrics.SupplementalUiaTogglePropertyChangedEventCount);
+        UIA_SelectionItemIsSelectedPropertyId:
+          Inc(gProviderHotspotMetrics.SupplementalUiaSelectionPropertyChangedEventCount);
+      else
+        Inc(gProviderHotspotMetrics.SupplementalUiaOtherPropertyChangedEventCount);
+      end;
+    end;
+  finally
+    TMonitor.Exit(gDiagnosticsLock);
+  end;
+end;
+
+class procedure TAccessibilityDiagnostics.RecordSupplementalUiaStructureChangedEvent;
+begin
+  if not gProviderHotspotMetricsEnabled then
+  begin
+    Exit;
+  end;
+
+  TMonitor.Enter(gDiagnosticsLock);
+  try
+    if gProviderHotspotMetricsEnabled then
+    begin
+      Inc(gProviderHotspotMetrics.SupplementalUiaEventCount);
+      Inc(gProviderHotspotMetrics.SupplementalUiaStructureChangedEventCount);
     end;
   finally
     TMonitor.Exit(gDiagnosticsLock);

@@ -947,6 +947,181 @@ object AccessibilityDemoMainForm: TAccessibilityDemoMainForm
           end
         end
       end
+      object tabDynamicContent: TTabSheet
+        Caption = 'Dynamic content'
+        ImageIndex = 5
+        object pnlDynamicContent: TPanel
+          Left = 0
+          Top = 0
+          Width = 546
+          Height = 572
+          Align = alClient
+          BevelOuter = bvNone
+          Caption = ''
+          Padding.Left = 20
+          Padding.Top = 20
+          Padding.Right = 20
+          Padding.Bottom = 20
+          TabOrder = 0
+          object lblDynamicInstructions: TLabel
+            AlignWithMargins = True
+            Left = 20
+            Top = 20
+            Width = 506
+            Height = 48
+            Margins.Left = 0
+            Margins.Top = 0
+            Margins.Right = 0
+            Margins.Bottom = 12
+            Align = alTop
+            AutoSize = False
+            Caption = 'These controls update their text and hints every 10 seconds. Revisit them with NVDA to verify that the current content is exposed.'
+            WordWrap = True
+          end
+          object pnlDynamicStaticTextRow: TPanel
+            AlignWithMargins = True
+            Left = 20
+            Top = 80
+            Width = 506
+            Height = 44
+            Margins.Left = 0
+            Margins.Top = 0
+            Margins.Right = 0
+            Margins.Bottom = 10
+            Align = alTop
+            BevelOuter = bvNone
+            Caption = ''
+            TabOrder = 0
+            object staticDynamicCaption: TStaticText
+              Left = 0
+              Top = 0
+              Width = 506
+              Height = 44
+              Align = alClient
+              AutoSize = False
+              Caption = 'TStaticText caption 0'
+              Hint = 'TStaticText hint updated for cycle 0'
+              ShowHint = True
+              TabStop = False
+            end
+          end
+          object pnlDynamicLabelRow: TPanel
+            AlignWithMargins = True
+            Left = 20
+            Top = 134
+            Width = 506
+            Height = 44
+            Margins.Left = 0
+            Margins.Top = 0
+            Margins.Right = 0
+            Margins.Bottom = 10
+            Align = alTop
+            BevelOuter = bvNone
+            Caption = ''
+            TabOrder = 1
+            object lblDynamicCaption: TLabel
+              Left = 0
+              Top = 0
+              Width = 506
+              Height = 44
+              Align = alClient
+              AutoSize = False
+              Caption = 'TLabel caption 0'
+              Hint = 'TLabel hint updated for cycle 0'
+              Layout = tlCenter
+              ShowHint = True
+            end
+          end
+          object pnlDynamicEditRow: TPanel
+            AlignWithMargins = True
+            Left = 20
+            Top = 188
+            Width = 506
+            Height = 64
+            Margins.Left = 0
+            Margins.Top = 0
+            Margins.Right = 0
+            Margins.Bottom = 10
+            Align = alTop
+            BevelOuter = bvNone
+            Caption = ''
+            TabOrder = 2
+            object edtDynamicText: TEdit
+              Left = 0
+              Top = 35
+              Width = 506
+              Height = 29
+              Align = alBottom
+              Hint = 'TEdit hint updated for cycle 0'
+              ShowHint = True
+              TabOrder = 0
+              Text = 'TEdit text 0'
+            end
+            object staticDynamicEditLabel: TStaticText
+              Left = 0
+              Top = 0
+              Width = 506
+              Height = 28
+              Align = alTop
+              AutoSize = False
+              Caption = 'Dynamic edit value'
+              TabStop = False
+            end
+          end
+          object pnlDynamicButtonRow: TPanel
+            AlignWithMargins = True
+            Left = 20
+            Top = 262
+            Width = 506
+            Height = 44
+            Margins.Left = 0
+            Margins.Top = 0
+            Margins.Right = 0
+            Margins.Bottom = 10
+            Align = alTop
+            BevelOuter = bvNone
+            Caption = ''
+            TabOrder = 3
+            object btnDynamicCaption: TButton
+              Left = 0
+              Top = 0
+              Width = 240
+              Height = 44
+              Align = alLeft
+              Caption = 'TButton caption 0'
+              Hint = 'TButton hint updated for cycle 0'
+              ShowHint = True
+              TabOrder = 0
+            end
+          end
+          object pnlDynamicBitButtonRow: TPanel
+            AlignWithMargins = True
+            Left = 20
+            Top = 316
+            Width = 506
+            Height = 44
+            Margins.Left = 0
+            Margins.Top = 0
+            Margins.Right = 0
+            Margins.Bottom = 0
+            Align = alTop
+            BevelOuter = bvNone
+            Caption = ''
+            TabOrder = 4
+            object bitBtnDynamicCaption: TBitBtn
+              Left = 0
+              Top = 0
+              Width = 240
+              Height = 44
+              Align = alLeft
+              Caption = 'TBitBtn caption 0'
+              Hint = 'TBitBtn hint updated for cycle 0'
+              ShowHint = True
+              TabOrder = 0
+            end
+          end
+        end
+      end
     end
   end
   object BalloonHint: TBalloonHint
@@ -958,6 +1133,12 @@ object AccessibilityDemoMainForm: TAccessibilityDemoMainForm
     Interval = 6000
     OnTimer = BalloonHideTimerTimer
     Left = 680
+    Top = 24
+  end
+  object DynamicContentTimer: TTimer
+    Interval = 10000
+    OnTimer = DynamicContentTimerTimer
+    Left = 776
     Top = 24
   end
 end

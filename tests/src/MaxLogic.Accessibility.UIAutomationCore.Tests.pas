@@ -13,8 +13,6 @@ type
     procedure AssertInterfaceGuid(const aExpected: string; const aTypeInfo: Pointer);
   public
     [Test]
-    procedure CachedWrapperLatencyArtifactIsWritten;
-    [Test]
     procedure ConcurrentFirstWrapperUseResolvesExportOnce;
     [Test]
     procedure ConstantsMatchWindowsSdk;
@@ -35,30 +33,9 @@ type
 implementation
 
 uses
-  System.Classes, System.Diagnostics, System.Generics.Collections, System.IOUtils, System.SyncObjs, System.SysUtils,
+  System.Classes, System.SyncObjs, System.SysUtils,
   System.TypInfo, System.Variants, Winapi.Windows,
   MaxLogic.Accessibility.UIAutomationCore;
-
-function CachedWrapperArtifactFileName: string;
-var
-  lAgentsDir: string;
-  lRunsDir: string;
-begin
-  lAgentsDir := TPath.Combine(GetCurrentDir, '.agents');
-  lRunsDir := TPath.Combine(lAgentsDir, 'runs');
-  ForceDirectories(lRunsDir);
-  Result := TPath.Combine(lRunsDir, 't111-uia-export-current.json');
-end;
-
-function MillisecondsFromTicks(aTicks: Int64): Double;
-begin
-  Result := (aTicks * 1000.0) / TStopwatch.Frequency;
-end;
-
-function NearestRankIndex(aSampleCount: Integer; aPercentile: Integer): Integer;
-begin
-  Result := (((aSampleCount * aPercentile) + 99) div 100) - 1;
-end;
 
 procedure ExerciseAllWrappers(aCount: Integer);
 var
@@ -105,54 +82,6 @@ var
 begin
   lGuid := GetTypeData(aTypeInfo)^.Guid;
   Assert.AreEqual(aExpected, GUIDToString(lGuid));
-end;
-
-procedure TUIAutomationCoreTests.CachedWrapperLatencyArtifactIsWritten;
-const
-  cSampleCount = 200;
-{$IFDEF RELEASE}
-  cBuildConfiguration = 'Release';
-{$ELSE}
-  cBuildConfiguration = 'Debug';
-{$ENDIF}
-var
-  i: Integer;
-  lArtifactFile: string;
-  lJson: string;
-  lListening: BOOL;
-  lSamples: TArray<Int64>;
-  lStopwatch: TStopwatch;
-  lWarmupListening: BOOL;
-begin
-  TUIAutomationCoreInternals.ResetExportCache;
-  lWarmupListening := UiaClientsAreListening;
-  SetLength(lSamples, cSampleCount);
-  for i := 0 to Pred(cSampleCount) do
-  begin
-    lStopwatch := TStopwatch.StartNew;
-    lListening := UiaClientsAreListening;
-    lSamples[i] := lStopwatch.ElapsedTicks;
-  end;
-  Assert.AreEqual(1, TUIAutomationCoreInternals.ExportResolveCount(uiceClientsAreListening),
-    Format('The cached wrapper resolved more than once (warmup=%s, final=%s).',
-      [BoolToStr(lWarmupListening, True), BoolToStr(lListening, True)]));
-  TArray.Sort<Int64>(lSamples);
-
-  lJson := Format('{"scenario":"t111-uia-export-wrapper","buildConfiguration":"%s",' +
-    '"diagnosticsState":"disabled","sampleCount":%d,"stopwatchFrequency":%d,"medianTicks":%d,"p95Ticks":%d,' +
-    '"p99Ticks":%d,"maximumTicks":%d,"medianMs":%.6f,"p95Ms":%.6f,"p99Ms":%.6f,' +
-    '"maximumMs":%.6f,"resolveCount":%d}', [cBuildConfiguration, cSampleCount, TStopwatch.Frequency,
-    lSamples[NearestRankIndex(cSampleCount, 50)], lSamples[NearestRankIndex(cSampleCount, 95)],
-    lSamples[NearestRankIndex(cSampleCount, 99)], lSamples[Pred(cSampleCount)],
-    MillisecondsFromTicks(lSamples[NearestRankIndex(cSampleCount, 50)]),
-    MillisecondsFromTicks(lSamples[NearestRankIndex(cSampleCount, 95)]),
-    MillisecondsFromTicks(lSamples[NearestRankIndex(cSampleCount, 99)]),
-    MillisecondsFromTicks(lSamples[Pred(cSampleCount)]),
-    TUIAutomationCoreInternals.ExportResolveCount(uiceClientsAreListening)], TFormatSettings.Invariant);
-  lArtifactFile := CachedWrapperArtifactFileName;
-  TFile.WriteAllText(lArtifactFile, lJson, TEncoding.UTF8);
-
-  Assert.Contains(TFile.ReadAllText(lArtifactFile, TEncoding.UTF8), '"sampleCount":200');
 end;
 
 procedure TUIAutomationCoreTests.ConcurrentFirstWrapperUseResolvesExportOnce;

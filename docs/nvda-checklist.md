@@ -25,6 +25,11 @@ Use this checklist on a real VCL application or on a manual sample built from th
 - `TPanel`: decorative empty panels should not be spoken. A panel with accessible child controls may appear as a pane/group and should let NVDA reach the child text.
 - Generic graphic controls: text-like custom `TGraphicControl` descendants with caption or hint text should expose readable text; empty decorative graphics should be omitted.
 
+## Dynamic content
+
+- Open the complex demo's `Dynamic content` tab and note the current cycle number for its `TStaticText`, `TLabel`, `TEdit`, `TButton`, and `TBitBtn` samples.
+- Wait at least 10 seconds, then revisit the samples with mouse review, object navigation, and Tab where applicable. NVDA and the UIA properties should expose the new cycle number in every caption/edit value and hint; none should retain a value from the earlier cycle.
+
 ## Hints
 
 - `visible hint`: when the control's VCL hint appears, NVDA should receive the shown hint text once, not repeated on every duplicate notification. If speech is inconclusive, verify with Speech Viewer or a UIA event inspection tool because NVDA notification settings can affect spoken output.

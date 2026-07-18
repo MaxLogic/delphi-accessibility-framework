@@ -19,6 +19,10 @@ type
     [Test]
     procedure ProviderTreeExposesVclControlProperties;
     [Test]
+    procedure DynamicCaptionHintAndEditValueStayCurrent;
+    [Test]
+    procedure DemoDynamicContentTimerUpdatesAllSamples;
+    [Test]
     procedure FormRootProviderUsesWindowControlType;
     [Test]
     procedure FormRootProviderOverridesNativeWindowTree;
@@ -122,6 +126,8 @@ uses
   MaxLogic.Accessibility.UIAutomationCore, MaxLogic.Accessibility.VclAdapters, AccessibilityDemoMainForm;
 
 type
+  TDynamicTextControlAccess = class(TControl);
+
   TCaptionGraphicControl = class(TGraphicControl)
   private
     fCaption: string;
@@ -904,6 +910,110 @@ begin
     Assert.AreEqual('Graphic help', ProviderStringProperty(lGraphicFragment, UIA_HelpTextPropertyId));
     Assert.AreEqual(UIA_TextControlTypeId, ProviderIntProperty(lGraphicFragment, UIA_ControlTypePropertyId));
     Assert.IsNull(NextSiblingFragmentOrNil(lGraphicFragment));
+  finally
+    lForm.Free;
+  end;
+end;
+
+function DynamicControlText(aControl: TControl): string;
+begin
+  if aControl is TCustomEdit then
+  begin
+    Exit(TDynamicTextControlAccess(aControl).Text);
+  end;
+  Result := TDynamicTextControlAccess(aControl).Caption;
+end;
+
+procedure SetDynamicControlText(aControl: TControl; const aText: string);
+begin
+  if aControl is TCustomEdit then
+  begin
+    TDynamicTextControlAccess(aControl).Text := aText;
+  end else begin
+    TDynamicTextControlAccess(aControl).Caption := aText;
+  end;
+end;
+
+procedure AssertDynamicControlTextStaysCurrent(aControlClass: TControlClass; const aInitialText: string;
+  const aInitialHint: string; const aUpdatedText: string; const aUpdatedHint: string; aSupportsValue: Boolean);
+var
+  lControl: TControl;
+  lFragment: IRawElementProviderFragment;
+  lForm: TForm;
+  lProvider: IAccessibilityProviderNode;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lControl := aControlClass.Create(lForm);
+    SetDynamicControlText(lControl, aInitialText);
+    lControl.Hint := aInitialHint;
+    lControl.Parent := lForm;
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lFragment := FirstChildFragment(lProvider);
+
+    SetDynamicControlText(lControl, aUpdatedText);
+    lControl.Hint := aUpdatedHint;
+
+    Assert.AreEqual(aUpdatedText, ProviderStringProperty(lFragment, UIA_NamePropertyId));
+    Assert.AreEqual(aUpdatedHint, ProviderStringProperty(lFragment, UIA_HelpTextPropertyId));
+    if aSupportsValue then
+    begin
+      Assert.AreEqual(aUpdatedText, ValuePatternText(lFragment));
+    end;
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure AssertDemoDynamicControlUpdates(aForm: TAccessibilityDemoMainForm; const aComponentName: string;
+  aControlClass: TControlClass);
+var
+  lControl: TControl;
+  lInitialText: string;
+  lTimer: TTimer;
+begin
+  Assert.IsTrue(aForm.FindComponent(aComponentName) is aControlClass,
+    aComponentName + ' is missing from the demo.');
+  lControl := TControl(aForm.FindComponent(aComponentName));
+  lInitialText := DynamicControlText(lControl);
+  lTimer := TTimer(aForm.FindComponent('DynamicContentTimer'));
+  lTimer.OnTimer(lTimer);
+  Assert.AreNotEqual(lInitialText, DynamicControlText(lControl));
+  Assert.Contains(lControl.Hint, 'updated');
+end;
+
+procedure TAccessibilityVclAdaptersTests.DynamicCaptionHintAndEditValueStayCurrent;
+begin
+  AssertDynamicControlTextStaysCurrent(TStaticText, 'Static text initial', 'Static text initial hint',
+    'Static text updated', 'Static text updated hint', False);
+  AssertDynamicControlTextStaysCurrent(TLabel, 'Label initial', 'Label initial hint', 'Label updated',
+    'Label updated hint', False);
+  AssertDynamicControlTextStaysCurrent(TEdit, 'Edit initial', 'Edit initial hint', 'Edit updated',
+    'Edit updated hint', True);
+  AssertDynamicControlTextStaysCurrent(TButton, 'Button initial', 'Button initial hint', 'Button updated',
+    'Button updated hint', False);
+  AssertDynamicControlTextStaysCurrent(TBitBtn, 'Bit button initial', 'Bit button initial hint',
+    'Bit button updated', 'Bit button updated hint', False);
+end;
+
+procedure TAccessibilityVclAdaptersTests.DemoDynamicContentTimerUpdatesAllSamples;
+var
+  lForm: TAccessibilityDemoMainForm;
+  lTimer: TTimer;
+begin
+  lForm := TAccessibilityDemoMainForm.Create(nil);
+  try
+    Assert.IsTrue(lForm.FindComponent('DynamicContentTimer') is TTimer,
+      'DynamicContentTimer is missing from the demo.');
+    lTimer := TTimer(lForm.FindComponent('DynamicContentTimer'));
+    lTimer.Enabled := False;
+    Assert.AreEqual(10000, lTimer.Interval);
+    Assert.IsTrue(Assigned(lTimer.OnTimer), 'DynamicContentTimer has no update handler.');
+    AssertDemoDynamicControlUpdates(lForm, 'staticDynamicCaption', TStaticText);
+    AssertDemoDynamicControlUpdates(lForm, 'lblDynamicCaption', TLabel);
+    AssertDemoDynamicControlUpdates(lForm, 'edtDynamicText', TEdit);
+    AssertDemoDynamicControlUpdates(lForm, 'btnDynamicCaption', TButton);
+    AssertDemoDynamicControlUpdates(lForm, 'bitBtnDynamicCaption', TBitBtn);
   finally
     lForm.Free;
   end;

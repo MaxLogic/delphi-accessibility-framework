@@ -35,11 +35,7 @@ type
     [Test]
     procedure ProviderRuntimeIdsAreCopiedByBlock;
     [Test]
-    procedure CommonStaticPropertiesAvoidDictionaryAllocation;
-    [Test]
-    procedure AdditionalStaticPropertiesAvoidDictionaryAllocation;
-    [Test]
-    procedure CommonStaticPropertiesUseTypedStorage;
+    procedure StaticPropertiesUseTypedStorageAndPreserveValues;
     [Test]
     procedure CommonTypedStoragePreservesFallbackVariants;
     [Test]
@@ -318,52 +314,6 @@ begin
   Result := TFile.ReadAllText(lPath, TEncoding.UTF8);
 end;
 
-function MeasureCommonProviderCreationTicks(aIterations: Integer): Int64;
-var
-  i: Integer;
-  lProvider: IAccessibilityProviderNode;
-  lStopwatch: TStopwatch;
-begin
-  lStopwatch := TStopwatch.StartNew;
-  for i := 1 to aIterations do
-  begin
-    lProvider := TAccessibilityProviderFactory.CreateFragment([i]);
-    lProvider.SetProperty(UIA_NamePropertyId, 'Save');
-    lProvider.SetProperty(UIA_ControlTypePropertyId, UIA_ButtonControlTypeId);
-    lProvider.SetProperty(UIA_ClassNamePropertyId, 'TButton');
-    lProvider.SetProperty(UIA_HelpTextPropertyId, 'Run the action');
-  end;
-  lStopwatch.Stop;
-  Result := lStopwatch.ElapsedTicks;
-  if Result < 1 then
-  begin
-    Result := 1;
-  end;
-end;
-
-function MeasureAdditionalStaticProviderCreationTicks(aIterations: Integer): Int64;
-var
-  i: Integer;
-  lProvider: IAccessibilityProviderNode;
-  lStopwatch: TStopwatch;
-begin
-  lStopwatch := TStopwatch.StartNew;
-  for i := 1 to aIterations do
-  begin
-    lProvider := TAccessibilityProviderFactory.CreateFragment([i]);
-    lProvider.SetProperty(UIA_AutomationIdPropertyId, 'SaveButton');
-    lProvider.SetProperty(UIA_FrameworkIdPropertyId, 'MaxLogic');
-    lProvider.SetProperty(UIA_ItemStatusPropertyId, 'Ready');
-    lProvider.SetProperty(UIA_ItemTypePropertyId, 'Action');
-  end;
-  lStopwatch.Stop;
-  Result := lStopwatch.ElapsedTicks;
-  if Result < 1 then
-  begin
-    Result := 1;
-  end;
-end;
-
 function BuildRuntimeId(aLength: Integer; aBase: Integer): TArray<Integer>;
 var
   i: Integer;
@@ -429,29 +379,6 @@ begin
   end;
   lStopwatch.Stop;
 
-  Result := lStopwatch.ElapsedTicks;
-  if Result < 1 then
-  begin
-    Result := 1;
-  end;
-end;
-
-function MeasureUncommonProviderCreationTicks(aIterations: Integer): Int64;
-var
-  i: Integer;
-  lProvider: IAccessibilityProviderNode;
-  lStopwatch: TStopwatch;
-begin
-  lStopwatch := TStopwatch.StartNew;
-  for i := 1 to aIterations do
-  begin
-    lProvider := TAccessibilityProviderFactory.CreateFragment([i]);
-    lProvider.SetProperty(UIA_LocalizedControlTypePropertyId, 'button');
-    lProvider.SetProperty(UIA_ProviderDescriptionPropertyId, 'provider');
-    lProvider.SetProperty(UIA_IsEnabledPropertyId, True);
-    lProvider.SetProperty(UIA_IsControlElementPropertyId, True);
-  end;
-  lStopwatch.Stop;
   Result := lStopwatch.ElapsedTicks;
   if Result < 1 then
   begin
@@ -1246,58 +1173,11 @@ begin
   end;
 end;
 
-procedure TProviderCoreTests.CommonStaticPropertiesAvoidDictionaryAllocation;
-const
-  cIterations = 20000;
-  cMaxCommonPercent = 75;
+procedure TProviderCoreTests.StaticPropertiesUseTypedStorageAndPreserveValues;
 var
-  lCommonTicks: Int64;
-  lUncommonTicks: Int64;
-begin
-  lCommonTicks := MeasureCommonProviderCreationTicks(cIterations);
-  lUncommonTicks := MeasureUncommonProviderCreationTicks(cIterations);
-
-  Assert.IsTrue(lCommonTicks * 100 <= lUncommonTicks * cMaxCommonPercent,
-    Format('Common static UIA properties should avoid per-provider dictionary allocation; common=%d uncommon=%d ticks.',
-    [lCommonTicks, lUncommonTicks]));
-end;
-
-procedure TProviderCoreTests.AdditionalStaticPropertiesAvoidDictionaryAllocation;
-const
-  cIterations = 20000;
-  cMaxAdditionalPercent = 75;
-var
-  lAdditionalTicks: Int64;
   lProvider: IAccessibilityProviderNode;
-  lUncommonTicks: Int64;
-  lValue: OleVariant;
-begin
-  lProvider := TAccessibilityProviderFactory.CreateFragment([1]);
-  lProvider.SetProperty(UIA_AutomationIdPropertyId, 'SaveButton');
-  lProvider.SetProperty(UIA_FrameworkIdPropertyId, 'MaxLogic');
-  lProvider.SetProperty(UIA_ItemStatusPropertyId, 'Ready');
-  lProvider.SetProperty(UIA_ItemTypePropertyId, 'Action');
-
-  Assert.AreEqual(S_OK, lProvider.RawElementProvider.GetPropertyValue(UIA_AutomationIdPropertyId, lValue));
-  Assert.AreEqual('SaveButton', string(lValue));
-  Assert.AreEqual(S_OK, lProvider.RawElementProvider.GetPropertyValue(UIA_FrameworkIdPropertyId, lValue));
-  Assert.AreEqual('MaxLogic', string(lValue));
-  Assert.AreEqual(S_OK, lProvider.RawElementProvider.GetPropertyValue(UIA_ItemStatusPropertyId, lValue));
-  Assert.AreEqual('Ready', string(lValue));
-  Assert.AreEqual(S_OK, lProvider.RawElementProvider.GetPropertyValue(UIA_ItemTypePropertyId, lValue));
-  Assert.AreEqual('Action', string(lValue));
-
-  lAdditionalTicks := MeasureAdditionalStaticProviderCreationTicks(cIterations);
-  lUncommonTicks := MeasureUncommonProviderCreationTicks(cIterations);
-
-  Assert.IsTrue(lAdditionalTicks * 100 <= lUncommonTicks * cMaxAdditionalPercent,
-    Format('Additional static UIA properties should avoid per-provider dictionary allocation; additional=%d uncommon=%d ticks.',
-    [lAdditionalTicks, lUncommonTicks]));
-end;
-
-procedure TProviderCoreTests.CommonStaticPropertiesUseTypedStorage;
-var
   lSourceText: string;
+  lValue: OleVariant;
 begin
   lSourceText := ReadRepoText('src\MaxLogic.Accessibility.ProviderCore.pas');
 
@@ -1317,6 +1197,41 @@ begin
     'Common string provider properties should use typed storage, not OleVariant fields.');
   Assert.IsFalse(Pos('fNameProperty: OleVariant', lSourceText) > 0,
     'Common string provider properties should use typed storage, not OleVariant fields.');
+  Assert.Contains(lSourceText,
+    'SetTypedStringProperty(aPropertyId, aValue, fAutomationIdProperty, fHasAutomationIdProperty)',
+    'AutomationId must bypass the fallback property dictionary.');
+  Assert.Contains(lSourceText, 'SetTypedStringProperty(aPropertyId, aValue, fClassNameProperty, fHasClassNameProperty)',
+    'ClassName must bypass the fallback property dictionary.');
+  Assert.Contains(lSourceText,
+    'SetTypedIntegerProperty(aPropertyId, aValue, fControlTypeProperty, fHasControlTypeProperty)',
+    'ControlType must bypass the fallback property dictionary.');
+  Assert.Contains(lSourceText,
+    'SetTypedStringProperty(aPropertyId, aValue, fFrameworkIdProperty, fHasFrameworkIdProperty)',
+    'FrameworkId must bypass the fallback property dictionary.');
+  Assert.Contains(lSourceText, 'SetTypedStringProperty(aPropertyId, aValue, fHelpTextProperty, fHasHelpTextProperty)',
+    'HelpText must bypass the fallback property dictionary.');
+  Assert.Contains(lSourceText,
+    'SetTypedStringProperty(aPropertyId, aValue, fItemStatusProperty, fHasItemStatusProperty)',
+    'ItemStatus must bypass the fallback property dictionary.');
+  Assert.Contains(lSourceText, 'SetTypedStringProperty(aPropertyId, aValue, fItemTypeProperty, fHasItemTypeProperty)',
+    'ItemType must bypass the fallback property dictionary.');
+  Assert.Contains(lSourceText, 'SetTypedStringProperty(aPropertyId, aValue, fNameProperty, fHasNameProperty)',
+    'Name must bypass the fallback property dictionary.');
+
+  lProvider := TAccessibilityProviderFactory.CreateFragment([1]);
+  lProvider.SetProperty(UIA_AutomationIdPropertyId, 'SaveButton');
+  lProvider.SetProperty(UIA_FrameworkIdPropertyId, 'MaxLogic');
+  lProvider.SetProperty(UIA_ItemStatusPropertyId, 'Ready');
+  lProvider.SetProperty(UIA_ItemTypePropertyId, 'Action');
+
+  Assert.AreEqual(S_OK, lProvider.RawElementProvider.GetPropertyValue(UIA_AutomationIdPropertyId, lValue));
+  Assert.AreEqual('SaveButton', string(lValue));
+  Assert.AreEqual(S_OK, lProvider.RawElementProvider.GetPropertyValue(UIA_FrameworkIdPropertyId, lValue));
+  Assert.AreEqual('MaxLogic', string(lValue));
+  Assert.AreEqual(S_OK, lProvider.RawElementProvider.GetPropertyValue(UIA_ItemStatusPropertyId, lValue));
+  Assert.AreEqual('Ready', string(lValue));
+  Assert.AreEqual(S_OK, lProvider.RawElementProvider.GetPropertyValue(UIA_ItemTypePropertyId, lValue));
+  Assert.AreEqual('Action', string(lValue));
 end;
 
 procedure TProviderCoreTests.CommonTypedStoragePreservesFallbackVariants;

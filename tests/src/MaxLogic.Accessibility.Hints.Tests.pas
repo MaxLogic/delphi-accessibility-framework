@@ -41,11 +41,7 @@ type
     [Test]
     procedure ManagerBalloonHintMouseEnterIgnoresEmptyControlHint;
     [Test]
-    procedure ManagerBalloonHintTitleOnlyFollowUpIsSuppressed;
-    [Test]
-    procedure ManagerBalloonHintImageIndexFollowUpIsSuppressed;
-    [Test]
-    procedure ManagerBalloonHintImageIndexOnlyFollowUpIsSuppressed;
+    procedure ManagerBalloonHintFollowUpVariantsAreSuppressed;
     [Test]
     procedure PreviousApplicationHintHandlerCanUninstallManager;
     [Test]
@@ -961,7 +957,8 @@ begin
   end;
 end;
 
-procedure TAccessibilityHintTests.ManagerBalloonHintTitleOnlyFollowUpIsSuppressed;
+procedure AssertManagerBalloonHintFollowUpIsSuppressed(const aControlHint: string;
+  const aFollowUpHint: string; const aExpectedDisplay: string);
 var
   lApi: IHintTestUiaApi;
   lBalloonHint: TBalloonHint;
@@ -980,7 +977,7 @@ begin
   lBalloonHint := TBalloonHint.Create(nil);
   try
     lLabel := TLabel.Create(lForm);
-    lLabel.Hint := 'Title only';
+    lLabel.Hint := aControlHint;
     lLabel.CustomHint := lBalloonHint;
     lLabel.ShowHint := True;
     lLabel.Parent := lForm;
@@ -990,10 +987,10 @@ begin
     TAccessibilityManager.Install(Application);
 
     lLabel.Perform(CM_MOUSEENTER, 0, 0);
-    Application.Hint := 'Title only';
+    Application.Hint := aFollowUpHint;
 
-    Assert.AreEqual(1, lApi.NotificationCalls);
-    Assert.AreEqual('Title only', lApi.LastDisplayString);
+    Assert.AreEqual(1, lApi.NotificationCalls, aControlHint);
+    Assert.AreEqual(aExpectedDisplay, lApi.LastDisplayString, aControlHint);
   finally
     TAccessibilityManager.Uninstall;
     TAccessibilityManagerInternals.SetUiaApi(nil);
@@ -1006,94 +1003,12 @@ begin
   end;
 end;
 
-procedure TAccessibilityHintTests.ManagerBalloonHintImageIndexFollowUpIsSuppressed;
-var
-  lApi: IHintTestUiaApi;
-  lBalloonHint: TBalloonHint;
-  lForm: TForm;
-  lLabel: TLabel;
-  lOriginalHint: TNotifyEvent;
-  lOriginalHintText: string;
-  lOriginalShowHint: TShowHintEvent;
+procedure TAccessibilityHintTests.ManagerBalloonHintFollowUpVariantsAreSuppressed;
 begin
-  TAccessibilityManager.Uninstall;
-  lOriginalHint := Application.OnHint;
-  lOriginalShowHint := Application.OnShowHint;
-  lOriginalHintText := Application.Hint;
-  lApi := THintTestUiaApi.Create;
-  lForm := TForm.Create(nil);
-  lBalloonHint := TBalloonHint.Create(nil);
-  try
-    lLabel := TLabel.Create(lForm);
-    lLabel.Hint := 'Upload complete|5 files were processed|3';
-    lLabel.CustomHint := lBalloonHint;
-    lLabel.ShowHint := True;
-    lLabel.Parent := lForm;
-
-    TAccessibilityManagerInternals.SetUiaApi(lApi);
-    lApi.SetClientsAreListening(True);
-    TAccessibilityManager.Install(Application);
-
-    lLabel.Perform(CM_MOUSEENTER, 0, 0);
-    Application.Hint := '5 files were processed|3';
-
-    Assert.AreEqual(1, lApi.NotificationCalls);
-    Assert.AreEqual('Upload complete: 5 files were processed', lApi.LastDisplayString);
-  finally
-    TAccessibilityManager.Uninstall;
-    TAccessibilityManagerInternals.SetUiaApi(nil);
-    Application.OnHint := nil;
-    Application.Hint := lOriginalHintText;
-    Application.OnHint := lOriginalHint;
-    Application.OnShowHint := lOriginalShowHint;
-    lBalloonHint.Free;
-    lForm.Free;
-  end;
-end;
-
-procedure TAccessibilityHintTests.ManagerBalloonHintImageIndexOnlyFollowUpIsSuppressed;
-var
-  lApi: IHintTestUiaApi;
-  lBalloonHint: TBalloonHint;
-  lForm: TForm;
-  lLabel: TLabel;
-  lOriginalHint: TNotifyEvent;
-  lOriginalHintText: string;
-  lOriginalShowHint: TShowHintEvent;
-begin
-  TAccessibilityManager.Uninstall;
-  lOriginalHint := Application.OnHint;
-  lOriginalShowHint := Application.OnShowHint;
-  lOriginalHintText := Application.Hint;
-  lApi := THintTestUiaApi.Create;
-  lForm := TForm.Create(nil);
-  lBalloonHint := TBalloonHint.Create(nil);
-  try
-    lLabel := TLabel.Create(lForm);
-    lLabel.Hint := 'Title only||3';
-    lLabel.CustomHint := lBalloonHint;
-    lLabel.ShowHint := True;
-    lLabel.Parent := lForm;
-
-    TAccessibilityManagerInternals.SetUiaApi(lApi);
-    lApi.SetClientsAreListening(True);
-    TAccessibilityManager.Install(Application);
-
-    lLabel.Perform(CM_MOUSEENTER, 0, 0);
-    Application.Hint := '|3';
-
-    Assert.AreEqual(1, lApi.NotificationCalls);
-    Assert.AreEqual('Title only', lApi.LastDisplayString);
-  finally
-    TAccessibilityManager.Uninstall;
-    TAccessibilityManagerInternals.SetUiaApi(nil);
-    Application.OnHint := nil;
-    Application.Hint := lOriginalHintText;
-    Application.OnHint := lOriginalHint;
-    Application.OnShowHint := lOriginalShowHint;
-    lBalloonHint.Free;
-    lForm.Free;
-  end;
+  AssertManagerBalloonHintFollowUpIsSuppressed('Title only', 'Title only', 'Title only');
+  AssertManagerBalloonHintFollowUpIsSuppressed('Upload complete|5 files were processed|3',
+    '5 files were processed|3', 'Upload complete: 5 files were processed');
+  AssertManagerBalloonHintFollowUpIsSuppressed('Title only||3', '|3', 'Title only');
 end;
 
 procedure TAccessibilityHintTests.PreviousApplicationHintHandlerCanUninstallManager;

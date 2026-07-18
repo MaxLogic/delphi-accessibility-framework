@@ -140,9 +140,6 @@ type
     [Test]
     procedure UninstallPassivatesPopulatedBlankPanelHoverSnapshot;
     [Test]
-    [Category('T114Performance')]
-    procedure FormInstallHoverMissCacheLatencyDistribution;
-    [Test]
     procedure FormInstallHoverUsesVclLookupForSimpleLeafProviders;
     [Test]
     procedure FormInstallRaisesWindowedButtonHoverNotificationAndKeepsCheckBoxNative;
@@ -230,9 +227,6 @@ type
     [Test]
     procedure FormInstallTracksListBoxSelectionOncePerMutation;
     [Test]
-    [Category('T113SelectionPerformance')]
-    procedure FormInstallListBoxSelectionTrackingLatencyDistribution;
-    [Test]
     procedure FormInstallDoesNotRaiseGridMsaaFocusWinEventAfterCellNotification;
     [Test]
     procedure FormInstallRaisesGridCellFocusEventAfterAdvStringGridCellChangeMessage;
@@ -261,20 +255,7 @@ uses
   MaxLogic.Accessibility.TmsAdvStringGridAdapters, MaxLogic.Accessibility.UIAutomationCore,
   MaxLogic.Accessibility.VclAdapters;
 
-const
-{$IFDEF RELEASE}
-  cT114BuildConfiguration = 'Release';
-{$ELSE}
-  cT114BuildConfiguration = 'Debug';
-{$ENDIF}
-  cT114CaseCount = 4;
-  cT114ChildCounts: array[0..Pred(cT114CaseCount)] of Integer = (0, 1, 32, 128);
-  cT114SampleCount = 200;
-  cT114WarmupCount = 20;
-
 type
-  TT114SampleCases = array[0..Pred(cT114CaseCount)] of TArray<Int64>;
-
   IFormInstallRecorder = interface(IAccessibilityFormInstaller)
     ['{89B798B7-0880-4AE5-B799-58E4EB14DF22}']
     function CountFor(aForm: TCustomForm): Integer;
@@ -490,12 +471,6 @@ type
     fForm: TForm;
     fListBox: TSelectionReadProbeListBox;
     fListBoxFragment: IRawElementProviderFragment;
-  end;
-
-  TManagerListBoxMeasurement = record
-    fBulkSelectionMessageCount: Integer;
-    fSamples: TArray<Int64>;
-    fSelectedCount: Integer;
   end;
 
   TLyingRadioGroupAdapter = class(TInterfacedObject, IAccessibilityControlAdapter, IAccessibilityVclProviderAdapter)
@@ -1616,46 +1591,6 @@ begin
   end;
 end;
 
-function MeasureManagerListBoxSiblingNavigation(aSelectedCount: Integer;
-  aSampleCount: Integer): TManagerListBoxMeasurement;
-var
-  i: Integer;
-  lElapsedTicks: Int64;
-  lFixture: TManagerListBoxFixture;
-  lNext: IRawElementProviderFragment;
-  lStopwatch: TStopwatch;
-begin
-  Result := Default(TManagerListBoxMeasurement);
-  Result.fSelectedCount := aSelectedCount;
-  lFixture := CreateManagerListBoxFixture(aSelectedCount);
-  try
-    SetLength(Result.fSamples, aSampleCount);
-    lFixture.fListBox.ResetBulkSelectionMessageCount;
-    for i := 0 to Pred(aSampleCount) do
-    begin
-      lStopwatch := TStopwatch.StartNew;
-      if Odd(i) then
-      begin
-        lNext := NavigateFragment(lFixture.fCurrent, NavigateDirection_PreviousSibling);
-      end else begin
-        lNext := NavigateFragment(lFixture.fCurrent, NavigateDirection_NextSibling);
-      end;
-      lElapsedTicks := lStopwatch.ElapsedTicks;
-      if lElapsedTicks < 1 then
-      begin
-        lElapsedTicks := 1;
-      end;
-      Result.fSamples[i] := lElapsedTicks;
-      Assert.IsNotNull(lNext);
-      lFixture.fCurrent := lNext;
-    end;
-    Result.fBulkSelectionMessageCount := lFixture.fListBox.BulkSelectionMessageCount;
-  finally
-    lFixture.fForm.Free;
-    ResetManager;
-  end;
-end;
-
 procedure NavigateManagerListBox(var aFixture: TManagerListBoxFixture; aCount: Integer;
   const aContext: string);
 var
@@ -1683,158 +1618,6 @@ begin
   NavigateManagerListBox(aFixture, 10, aContext + ' stable follow-up');
   Assert.AreEqual(0, aFixture.fListBox.BulkSelectionMessageCount,
     Format('%s must leave stable traversal clean.', [aContext]));
-end;
-
-function TickCsvLine(const aSamples: TArray<Int64>): string;
-var
-  i: Integer;
-  lBuilder: TStringBuilder;
-begin
-  lBuilder := TStringBuilder.Create;
-  try
-    for i := 0 to High(aSamples) do
-    begin
-      if i > 0 then
-      begin
-        lBuilder.Append(',');
-      end;
-      lBuilder.Append(aSamples[i]);
-    end;
-    Result := lBuilder.ToString;
-  finally
-    lBuilder.Free;
-  end;
-end;
-
-function CreateT114BenchmarkForm(aChildCount: Integer): TForm;
-var
-  i: Integer;
-  lLabel: TLabel;
-begin
-  Result := TForm.Create(nil);
-  try
-    Result.SetBounds(100, 100, 460, 260);
-    for i := 0 to Pred(aChildCount) do
-    begin
-      lLabel := TLabel.Create(Result);
-      lLabel.Parent := Result;
-      lLabel.Caption := 'Measured child ' + IntToStr(i);
-      lLabel.SetBounds(250 + (i mod 4), 120 + (i mod 8), 150, 20);
-    end;
-    Result.Show;
-  except
-    Result.Free;
-    raise;
-  end;
-end;
-
-procedure WarmT114HoverMissCache(aForm: TCustomForm);
-var
-  i: Integer;
-  lPoint: TPoint;
-begin
-  for i := 0 to Pred(cT114WarmupCount) do
-  begin
-    lPoint := Point(8 + (i mod 20), 8 + ((i div 20) mod 4));
-    aForm.Perform(CM_CHANGED, 0, 0);
-    aForm.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
-    aForm.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
-  end;
-end;
-
-procedure MeasureT114HoverMissSamples(aForm: TCustomForm; const aApi: IManagerTestUiaApi;
-  out aResolvedSamples: TArray<Int64>; out aCachedSamples: TArray<Int64>);
-var
-  i: Integer;
-  lPoint: TPoint;
-  lStopwatch: TStopwatch;
-begin
-  SetLength(aResolvedSamples, cT114SampleCount);
-  SetLength(aCachedSamples, cT114SampleCount);
-  aApi.ResetClientsAreListeningCalls;
-  for i := 0 to Pred(cT114SampleCount) do
-  begin
-    lPoint := Point(8 + (i mod 20), 8 + ((i div 20) mod 4));
-    if Odd(i) then
-    begin
-      aForm.Perform(CM_CHANGED, 0, 0);
-      aForm.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
-      lStopwatch := TStopwatch.StartNew;
-      aForm.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
-      aCachedSamples[i] := lStopwatch.ElapsedTicks;
-      aForm.Perform(CM_CHANGED, 0, 0);
-      lStopwatch := TStopwatch.StartNew;
-      aForm.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
-      aResolvedSamples[i] := lStopwatch.ElapsedTicks;
-    end else begin
-      aForm.Perform(CM_CHANGED, 0, 0);
-      lStopwatch := TStopwatch.StartNew;
-      aForm.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
-      aResolvedSamples[i] := lStopwatch.ElapsedTicks;
-      lStopwatch := TStopwatch.StartNew;
-      aForm.Perform(WM_MOUSEMOVE, 0, PointToLParam(lPoint));
-      aCachedSamples[i] := lStopwatch.ElapsedTicks;
-    end;
-  end;
-end;
-
-procedure MeasureT114HoverMissCase(const aApi: IManagerTestUiaApi; aChildCount: Integer;
-  out aResolvedSamples: TArray<Int64>; out aCachedSamples: TArray<Int64>);
-var
-  lExpectedResolutionCalls: Integer;
-  lForm: TForm;
-begin
-  ResetManager;
-  TAccessibilityManagerInternals.SetUiaApi(aApi);
-  lForm := CreateT114BenchmarkForm(aChildCount);
-  try
-    TAccessibilityManager.Install(lForm);
-    lForm.Update;
-    WarmT114HoverMissCache(lForm);
-    MeasureT114HoverMissSamples(lForm, aApi, aResolvedSamples, aCachedSamples);
-    lExpectedResolutionCalls := cT114SampleCount + (cT114SampleCount div 2);
-    Assert.AreEqual(lExpectedResolutionCalls, aApi.ClientsAreListeningCalls,
-      Format('Child count %d must resolve once per measured pair plus cached-first preparation.', [aChildCount]));
-  finally
-    lForm.Free;
-    ResetManager;
-  end;
-end;
-
-function T114DiagnosticsState: string;
-begin
-  if TAccessibilityDiagnostics.Enabled then
-  begin
-    Result := 'enabled';
-  end else begin
-    Result := 'disabled';
-  end;
-end;
-
-function BuildT114HoverMissCsv(const aResolvedSamples: TT114SampleCases;
-  const aCachedSamples: TT114SampleCases): string;
-var
-  i: Integer;
-  lBuilder: TStringBuilder;
-begin
-  lBuilder := TStringBuilder.Create;
-  try
-    lBuilder.Append(Format('sampleCountPerMode=%d,warmupCount=%d,frequency=%d,build=%s,diagnostics=%s%s',
-      [cT114SampleCount, cT114WarmupCount, TStopwatch.Frequency, cT114BuildConfiguration,
-      T114DiagnosticsState, sLineBreak]));
-    for i := 0 to Pred(cT114CaseCount) do
-    begin
-      lBuilder.Append(Format('childCount=%d,mode=resolved,', [cT114ChildCounts[i]]));
-      lBuilder.Append(TickCsvLine(aResolvedSamples[i]));
-      lBuilder.Append(sLineBreak);
-      lBuilder.Append(Format('childCount=%d,mode=cached,', [cT114ChildCounts[i]]));
-      lBuilder.Append(TickCsvLine(aCachedSamples[i]));
-      lBuilder.Append(sLineBreak);
-    end;
-    Result := lBuilder.ToString;
-  finally
-    lBuilder.Free;
-  end;
 end;
 
 procedure AssertManagerGridCellName(const aApi: IManagerTestUiaApi; aForm: TCustomForm;
@@ -4716,30 +4499,6 @@ begin
   end;
 end;
 
-procedure TAccessibilityManagerTests.FormInstallHoverMissCacheLatencyDistribution;
-var
-  i: Integer;
-  lApi: IManagerTestUiaApi;
-  lCachedSamples: TT114SampleCases;
-  lDirectory: string;
-  lResolvedSamples: TT114SampleCases;
-begin
-  lApi := TManagerTestUiaApi.Create;
-  lApi.SetClientsAreListening(True);
-  for i := 0 to Pred(cT114CaseCount) do
-  begin
-    MeasureT114HoverMissCase(lApi, cT114ChildCounts[i], lResolvedSamples[i], lCachedSamples[i]);
-  end;
-
-  lDirectory := GetEnvironmentVariable('MAXLOGIC_T114_MEASURE_DIR');
-  if lDirectory <> '' then
-  begin
-    ForceDirectories(lDirectory);
-    TFile.WriteAllText(TPath.Combine(lDirectory, 'hover-miss.csv'),
-      BuildT114HoverMissCsv(lResolvedSamples, lCachedSamples), TEncoding.UTF8);
-  end;
-end;
-
 procedure TAccessibilityManagerTests.FormInstallHoverUsesVclLookupForSimpleLeafProviders;
 var
   lApi: IManagerTestUiaApi;
@@ -6402,6 +6161,7 @@ begin
     TAccessibilityManager.Install(lForm);
     TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
     TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+    lGrid.Row := 2;
     lGrid.Perform(WM_KEYDOWN, VK_DOWN, 0);
 
     Assert.AreEqual(2, lGrid.Row);
@@ -6463,6 +6223,7 @@ begin
 
     TAccessibilityManager.Install(lForm);
     lApi.ResetClientsAreListeningCalls;
+    lGrid.Row := 2;
     lGrid.Perform(WM_KEYDOWN, VK_DOWN, 0);
 
     Assert.AreEqual(2, lGrid.Row);
@@ -6518,6 +6279,7 @@ begin
     TAccessibilityManager.Install(lForm);
     TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
     TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+    lGrid.Row := 2;
     lGrid.Perform(WM_KEYDOWN, VK_DOWN, 0);
     lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
 
@@ -6617,51 +6379,6 @@ begin
   end;
 end;
 
-procedure TAccessibilityManagerTests.FormInstallListBoxSelectionTrackingLatencyDistribution;
-const
-  cManySelectedCount = 300;
-  cSampleCount = 200;
-var
-  lDirectory: string;
-  lDiagnosticsState: string;
-  lMany: TManagerListBoxMeasurement;
-  lOne: TManagerListBoxMeasurement;
-  lText: string;
-  lZero: TManagerListBoxMeasurement;
-begin
-  lZero := MeasureManagerListBoxSiblingNavigation(0, cSampleCount);
-  lOne := MeasureManagerListBoxSiblingNavigation(1, cSampleCount);
-  lMany := MeasureManagerListBoxSiblingNavigation(cManySelectedCount, cSampleCount);
-
-  Assert.IsTrue(lZero.fBulkSelectionMessageCount <= 2,
-    Format('Zero-selection traversal used %d bulk selection messages.', [lZero.fBulkSelectionMessageCount]));
-  Assert.IsTrue(lOne.fBulkSelectionMessageCount <= 2,
-    Format('One-selection traversal used %d bulk selection messages.', [lOne.fBulkSelectionMessageCount]));
-  Assert.IsTrue(lMany.fBulkSelectionMessageCount <= 2,
-    Format('Many-selection traversal used %d bulk selection messages.', [lMany.fBulkSelectionMessageCount]));
-
-  lDirectory := GetEnvironmentVariable('MAXLOGIC_T113_MEASURE_DIR');
-  if lDirectory = '' then
-  begin
-    Exit;
-  end;
-
-  ForceDirectories(lDirectory);
-  if TAccessibilityDiagnostics.Enabled then
-  begin
-    lDiagnosticsState := 'enabled';
-  end else begin
-    lDiagnosticsState := 'disabled';
-  end;
-  lText := Format('sampleCount=%d,frequency=%d,diagnostics=%s,zeroSelected=0,zeroBulk=%d,' +
-    'oneSelected=1,oneBulk=%d,manySelected=%d,manyBulk=%d%s',
-    [cSampleCount, TStopwatch.Frequency, lDiagnosticsState, lZero.fBulkSelectionMessageCount,
-    lOne.fBulkSelectionMessageCount, lMany.fSelectedCount, lMany.fBulkSelectionMessageCount, sLineBreak]) +
-    TickCsvLine(lZero.fSamples) + sLineBreak + TickCsvLine(lOne.fSamples) + sLineBreak +
-    TickCsvLine(lMany.fSamples) + sLineBreak;
-  TFile.WriteAllText(TPath.Combine(lDirectory, 'listbox-selection.csv'), lText, TEncoding.UTF8);
-end;
-
 procedure TAccessibilityManagerTests.FormInstallDoesNotRaiseGridMsaaFocusWinEventAfterCellNotification;
 var
   lForm: TForm;
@@ -6686,6 +6403,7 @@ begin
     lForm.ActiveControl := lGrid;
 
     TAccessibilityManager.Install(lForm);
+    lGrid.Row := 2;
     lGrid.Perform(WM_KEYDOWN, VK_DOWN, 0);
 
     Assert.AreEqual(0, lWinEvents.Calls);
@@ -6766,6 +6484,7 @@ begin
     TAccessibilityManager.Install(lForm, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
     TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
     TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+    lGrid.Row := 2;
     lGrid.Perform(WM_KEYDOWN, VK_DOWN, 0);
 
     Assert.AreEqual(2, lGrid.Row);

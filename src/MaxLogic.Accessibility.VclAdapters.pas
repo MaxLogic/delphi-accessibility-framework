@@ -150,8 +150,14 @@ type
     ISelectionItemProvider)
   private
     fControl: TControl;
+    fHelpText: string;
+    fLiveHelpText: Boolean;
+    fLiveName: Boolean;
+    fName: string;
     class function CheckBoxToggleState(aControl: TControl): ToggleState; static;
     class function ControlSupportsToggle(aControl: TControl): Boolean; static;
+    function CurrentHelpText: string;
+    function CurrentName: string;
     class function SpeedButtonSupportsToggle(aButton: TSpeedButton): Boolean; static;
     class function SupportsValue(aControl: TControl): Boolean; static;
     class function ToggleCheckBox(aControl: TControl): Boolean; static;
@@ -1063,6 +1069,11 @@ begin
     (aControl is TCustomButton) or (aControl is TCustomCheckBox) or (aControl is TRadioButton) or
     (aControl is TCustomGroupBox) or (aControl is TCustomPanel) or (aControl is TTabSheet) or
     (aControl is TSpeedButton) or (aControl is TToolButton);
+end;
+
+function ControlHasDirectText(aControl: TControl): Boolean;
+begin
+  Result := (aControl is TCustomEdit) or (aControl is TCustomMemo) or (aControl is TCustomComboBox);
 end;
 
 function TryReadDirectObjectProperty(aObject: TObject; const aPropertyName: string; out aValue: TObject): Boolean;
@@ -2279,13 +2290,18 @@ constructor TAccessibilityVclControlProvider.Create(aControl: TControl; const aR
   aControlTypeId: Integer; const aName: string; const aHelpText: string; const aApi: IAccessibilityUiaApi);
 var
   lPublishNativeWindowHandle: Boolean;
+  lTextInfo: TAccessibilityTextInfo;
 begin
   inherited CreateNode(aRuntimeId, NativeWindowHandleForControl(aControl), aApi, aControl);
   fControl := aControl;
-  SetProperty(UIA_NamePropertyId, aName);
+  fName := aName;
+  fHelpText := aHelpText;
+  lTextInfo := TAccessibilityTextExtractor.Extract(aControl);
+  fLiveName := (ControlHasDirectCaption(aControl) or ControlHasDirectText(aControl)) and
+    SameText(fName, lTextInfo.Name);
+  fLiveHelpText := SameText(fHelpText, lTextInfo.HelpText);
   SetProperty(UIA_ControlTypePropertyId, aControlTypeId);
   SetProperty(UIA_ClassNamePropertyId, aControl.ClassName);
-  SetProperty(UIA_HelpTextPropertyId, aHelpText);
   lPublishNativeWindowHandle := ShouldPublishNativeWindowHandle(aControl);
   SetOverrideNativeProvider(lPublishNativeWindowHandle);
   if lPublishNativeWindowHandle then
@@ -2297,6 +2313,24 @@ end;
 function TAccessibilityVclControlProvider.Control: TControl;
 begin
   Result := fControl;
+end;
+
+function TAccessibilityVclControlProvider.CurrentHelpText: string;
+begin
+  if fLiveHelpText then
+  begin
+    Exit(TAccessibilityTextExtractor.Extract(fControl).HelpText);
+  end;
+  Result := fHelpText;
+end;
+
+function TAccessibilityVclControlProvider.CurrentName: string;
+begin
+  if fLiveName then
+  begin
+    Exit(TAccessibilityTextExtractor.Extract(fControl).Name);
+  end;
+  Result := fName;
 end;
 
 function TAccessibilityVclControlProvider.VclGeometryPartitionsHoverTargets: Boolean;
@@ -2368,6 +2402,8 @@ begin
       end else begin
         aValue := not ControlIsInActiveVisibleTree(fControl);
       end;
+    UIA_HelpTextPropertyId: aValue := CurrentHelpText;
+    UIA_NamePropertyId: aValue := CurrentName;
     UIA_SelectionItemIsSelectedPropertyId:
       if fControl is TRadioButton then
       begin

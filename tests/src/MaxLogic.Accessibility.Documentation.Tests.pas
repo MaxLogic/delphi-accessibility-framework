@@ -79,8 +79,9 @@ begin
   RequireText(lDprText, 'SetDemoAccessibilityFrameworkEnabled(False);', 'demo DPR shutdown');
   RequireText(lDfmText, 'OnDestroy = FormDestroy', 'demo DFM shutdown');
   RequireText(lPasText, 'procedure TAccessibilityDemoMainForm.FormDestroy(aSender: TObject);' + sLineBreak +
-    'begin' + sLineBreak + '  BalloonHideTimer.Enabled := False;' + sLineBreak + '  BalloonHint.HideHint;' +
-    sLineBreak + 'end;', 'demo form shutdown');
+    'begin' + sLineBreak + '  BalloonHideTimer.Enabled := False;' + sLineBreak +
+    '  DynamicContentTimer.Enabled := False;' + sLineBreak + '  BalloonHint.HideHint;' + sLineBreak + 'end;',
+    'demo form shutdown');
 end;
 
 procedure TAccessibilityDocumentationTests.TmsAdvStringGridSelectionArrayAvoidsPerElementSafeArrayPutElement;

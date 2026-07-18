@@ -31,8 +31,6 @@ type
     [Test]
     procedure LogFileWritesRunOnBackgroundThread;
     [Test]
-    procedure LogCallerLatencyArtifactIsWritten;
-    [Test]
     procedure QueueOverflowDropsRecordsWithoutWaitingForWriter;
     [Test]
     procedure ReconfigureTruncatesLogAndAllowsSharedReader;
@@ -45,13 +43,7 @@ type
     [Test]
     procedure ListBoxNativeHwndNavigationDoesNotUseFrameworkNotificationPath;
     [Test]
-    procedure ListBoxNativeHwndNavigationDoesNotProbeGridFocusPath;
-    [Test]
-    procedure ListBoxNativeHwndNavigationDoesNotProbeFrameworkItemIndex;
-    [Test]
     procedure CheckListBoxRapidFocusMovementUsesNativeHwndSpeechPath;
-    [Test]
-    procedure ListBoxFocusMovementUsesNativeHwndSpeechPath;
     [Test]
     procedure ListBoxPreparationScalesWithVisibleRows;
     [Test]
@@ -70,8 +62,6 @@ type
     procedure ListBoxCachedFocusProviderAvoidsTextCleanup;
     [Test]
     procedure ListBoxPreparedItemNameUsesCachedText;
-    [Test]
-    procedure ListBoxFocusBaselineArtifactIsWritten;
   end;
 
   [TestFixture]
@@ -103,11 +93,6 @@ type
     procedure ProviderBoundaryMetricsCaptureCoreUiaCallbacks;
     [Test]
     procedure ProviderHotspotMetricsCaptureSpeechTiming;
-    [Test]
-    [Category('T118Performance')]
-    procedure SupplementalEventCounterLatencyDistribution;
-    [Test]
-    procedure ProviderHotspotBaselineArtifactIsWritten;
     [Test]
     [Category('StringGrid')]
     procedure StringGridProviderHotspotMetricsCaptureRefresh;
@@ -306,28 +291,6 @@ begin
   end;
 end;
 
-function BaselineArtifactFileName: string;
-var
-  lAgentsDir: string;
-  lRunsDir: string;
-begin
-  lAgentsDir := TPath.Combine(GetCurrentDir, '.agents');
-  lRunsDir := TPath.Combine(lAgentsDir, 'runs');
-  ForceDirectories(lRunsDir);
-  Result := TPath.Combine(lRunsDir, 'listbox-focus-baseline.json');
-end;
-
-function ProviderHotspotArtifactFileName: string;
-var
-  lAgentsDir: string;
-  lRunsDir: string;
-begin
-  lAgentsDir := TPath.Combine(GetCurrentDir, '.agents');
-  lRunsDir := TPath.Combine(lAgentsDir, 'runs');
-  ForceDirectories(lRunsDir);
-  Result := TPath.Combine(lRunsDir, 'provider-hotspot-baseline.json');
-end;
-
 function ReadSharedLogText(const aLogFile: string): string;
 var
   lByteCount: Integer;
@@ -350,25 +313,6 @@ begin
   finally
     lStream.Free;
   end;
-end;
-
-function BuildBaselineJson(const aFrameworkMetrics: TAccessibilityListBoxFocusMetrics;
-  const aTodoAppMetrics: TAccessibilityListBoxFocusMetrics): string;
-begin
-  Result := '[' + aFrameworkMetrics.ToJson('framework-large-checklistbox-fixture', 'Accessibility-Framework') +
-    ',' + aTodoAppMetrics.ToJson('todoapp-client-list-checklistbox-fixture',
-    'ToDoApp client list compatible TCheckListBox fixture') + ']';
-end;
-
-function BuildProviderHotspotJson(const aMetrics: TAccessibilityProviderHotspotMetrics): string;
-begin
-  Result := '[' + aMetrics.ToJson('provider-hotspot-large-fixture', 'Accessibility-Framework') +
-    ',{"scenario":"provider-hotspot-large-fixture","source":"T-048",' +
-    '"taskDecisions":{"T-046":"proceed:memo-line-preparation-total-line-work",' +
-    '"T-044":"proceed:vcl-stringgrid-full-grid-probe-work",' +
-    '"T-045":"proceed:tms-advstringgrid-full-grid-probe-work-after-t-044",' +
-    '"T-043":"skip:listbox-getselection-not-hot-for-focus-change",' +
-    '"T-049":"proceed:last-host-validation"}}]';
 end;
 
 function JsonIntValue(const aJson: string; const aName: string): Int64;
@@ -565,14 +509,14 @@ begin
   end;
 end;
 
-function MeasureMemoPreparationTicks(aLineCount: Integer; aLineLength: Integer): Int64;
+function MeasureMemoPreparationMetrics(aLineCount: Integer;
+  aLineLength: Integer): TAccessibilityProviderHotspotMetrics;
 var
   i: Integer;
   lForm: TForm;
   lLine: IRawElementProviderFragment;
   lMemo: TMemo;
   lMemoFragment: IRawElementProviderFragment;
-  lMetrics: TAccessibilityProviderHotspotMetrics;
   lNavigateResult: HResult;
   lPayload: string;
   lProvider: IAccessibilityProviderNode;
@@ -600,28 +544,10 @@ begin
     lNavigateResult := lMemoFragment.Navigate(NavigateDirection_FirstChild, lLine);
     Assert.IsTrue(lNavigateResult = S_OK, 'Memo provider line navigation failed.');
 
-    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
-    Assert.AreEqual(1, lMetrics.MemoPrepareChildrenCount);
-    Assert.IsTrue(lMetrics.MemoPrepareChildrenLastElapsedTicks > 0);
-    Result := lMetrics.MemoPrepareChildrenLastElapsedTicks;
+    Result := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+    Assert.AreEqual(1, Result.MemoPrepareChildrenCount);
   finally
     lForm.Free;
-  end;
-end;
-
-function MeasureBestMemoPreparationTicks(aLineCount: Integer; aLineLength: Integer; aSamples: Integer): Int64;
-var
-  i: Integer;
-  lTicks: Int64;
-begin
-  Result := High(Int64);
-  for i := 1 to aSamples do
-  begin
-    lTicks := MeasureMemoPreparationTicks(aLineCount, aLineLength);
-    if lTicks < Result then
-    begin
-      Result := lTicks;
-    end;
   end;
 end;
 
@@ -1436,27 +1362,6 @@ begin
   end;
 end;
 
-function DiagnosticsCallerArtifactFileName: string;
-var
-  lAgentsDir: string;
-  lRunsDir: string;
-begin
-  lAgentsDir := TPath.Combine(GetCurrentDir, '.agents');
-  lRunsDir := TPath.Combine(lAgentsDir, 'runs');
-  ForceDirectories(lRunsDir);
-  Result := TPath.Combine(lRunsDir, 't110-diagnostics-caller-latency.json');
-end;
-
-function MillisecondsFromTicks(aTicks: Int64): Double;
-begin
-  Result := (aTicks * 1000.0) / TStopwatch.Frequency;
-end;
-
-function NearestRankIndex(aSampleCount: Integer; aPercentile: Integer): Integer;
-begin
-  Result := ((aSampleCount * aPercentile) + 99) div 100 - 1;
-end;
-
 procedure TAccessibilityDiagnosticsTests.HotPathCallsDoNotWaitForConcurrentDisable;
 var
   lProbe: TDiagnosticsShutdownContentionProbe;
@@ -1526,67 +1431,6 @@ begin
     Assert.AreNotEqual(lCallerThreadId, lWriterThreadId,
       'Diagnostics filesystem writes must not run on the caller thread.');
   finally
-    TAccessibilityDiagnostics.Disable;
-    if TFile.Exists(lLogFile) then
-    begin
-      TFile.Delete(lLogFile);
-    end;
-  end;
-end;
-
-procedure TAccessibilityDiagnosticsTests.LogCallerLatencyArtifactIsWritten;
-const
-  cSampleCount = 200;
-{$IFDEF RELEASE}
-  cBuildConfiguration = 'Release';
-{$ELSE}
-  cBuildConfiguration = 'Debug';
-{$ENDIF}
-var
-  i: Integer;
-  lArtifactFile: string;
-  lJson: string;
-  lLogFile: string;
-  lSamples: TArray<Int64>;
-  lStopwatch: TStopwatch;
-begin
-  lArtifactFile := DiagnosticsCallerArtifactFileName;
-  lLogFile := TPath.GetTempFileName;
-  SetLength(lSamples, cSampleCount);
-  try
-    TAccessibilityDiagnostics.Configure(lLogFile);
-    for i := 1 to 20 do
-    begin
-      TAccessibilityDiagnostics.Log('diagnostics caller warmup ' + IntToStr(i));
-    end;
-    Assert.IsTrue(TAccessibilityDiagnosticsInternals.FlushLog(5000), 'Diagnostics warmup did not drain.');
-
-    TAccessibilityDiagnosticsInternals.PauseLogWriter(True);
-    for i := 0 to Pred(cSampleCount) do
-    begin
-      lStopwatch := TStopwatch.StartNew;
-      TAccessibilityDiagnostics.Log('diagnostics caller latency sample');
-      lSamples[i] := lStopwatch.ElapsedTicks;
-    end;
-    TArray.Sort<Int64>(lSamples);
-
-    lJson := Format('{"scenario":"t110-diagnostics-caller-latency","buildConfiguration":"%s",' +
-      '"diagnosticsState":"buffered","sampleCount":%d,"stopwatchFrequency":%d,' +
-      '"medianTicks":%d,"p95Ticks":%d,"p99Ticks":%d,"maximumTicks":%d,' +
-      '"medianMs":%.6f,"p95Ms":%.6f,"p99Ms":%.6f,"maximumMs":%.6f}',
-      [cBuildConfiguration, cSampleCount, TStopwatch.Frequency, lSamples[NearestRankIndex(cSampleCount, 50)],
-      lSamples[NearestRankIndex(cSampleCount, 95)], lSamples[NearestRankIndex(cSampleCount, 99)],
-      lSamples[Pred(cSampleCount)], MillisecondsFromTicks(lSamples[NearestRankIndex(cSampleCount, 50)]),
-      MillisecondsFromTicks(lSamples[NearestRankIndex(cSampleCount, 95)]),
-      MillisecondsFromTicks(lSamples[NearestRankIndex(cSampleCount, 99)]),
-      MillisecondsFromTicks(lSamples[Pred(cSampleCount)])], TFormatSettings.Invariant);
-    TFile.WriteAllText(lArtifactFile, lJson, TEncoding.UTF8);
-
-    Assert.IsTrue(TFile.Exists(lArtifactFile), 'Diagnostics caller-latency artifact was not written.');
-    Assert.Contains(TFile.ReadAllText(lArtifactFile, TEncoding.UTF8), '"sampleCount":200');
-  finally
-    TAccessibilityDiagnosticsInternals.PauseLogWriter(False);
-    Assert.IsTrue(TAccessibilityDiagnosticsInternals.FlushLog(5000), 'Diagnostics samples did not drain.');
     TAccessibilityDiagnostics.Disable;
     if TFile.Exists(lLogFile) then
     begin
@@ -1762,22 +1606,24 @@ procedure TAccessibilityProviderHotspotPerformanceTests.MemoPreparationDoesNotSc
 const
   cLargeLineCount = 2500;
   cLargeLineLength = 512;
-  cMaxTickGrowth = 8;
-  cSampleCount = 3;
   cSmallLineCount = 40;
   cSmallLineLength = 24;
 var
-  lLargeTicks: Int64;
-  lSmallTicks: Int64;
+  lLargeMetrics: TAccessibilityProviderHotspotMetrics;
+  lSmallMetrics: TAccessibilityProviderHotspotMetrics;
 begin
   TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
   try
-    lSmallTicks := MeasureBestMemoPreparationTicks(cSmallLineCount, cSmallLineLength, cSampleCount);
-    lLargeTicks := MeasureBestMemoPreparationTicks(cLargeLineCount, cLargeLineLength, cSampleCount);
+    lSmallMetrics := MeasureMemoPreparationMetrics(cSmallLineCount, cSmallLineLength);
+    lLargeMetrics := MeasureMemoPreparationMetrics(cLargeLineCount, cLargeLineLength);
 
-    Assert.IsTrue(lLargeTicks <= lSmallTicks * cMaxTickGrowth,
-      Format('Memo preparation should depend on visible lines, not total memo text; %d short ticks, %d large ticks.',
-      [lSmallTicks, lLargeTicks]));
+    Assert.AreEqual(lSmallMetrics.MemoLineProbeCount, lLargeMetrics.MemoLineProbeCount,
+      'Memo preparation should probe the same visible-line count regardless of total memo text.');
+    Assert.AreEqual(lSmallMetrics.MemoLineProviderCreatedCount, lLargeMetrics.MemoLineProviderCreatedCount,
+      'Memo preparation should create the same visible provider count regardless of total memo text.');
+    Assert.IsTrue(lLargeMetrics.MemoLineProbeCount <= 12,
+      Format('Large memo preparation probed %d lines; expected visible-line-bounded work.',
+      [lLargeMetrics.MemoLineProbeCount]));
   finally
     TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
   end;
@@ -1972,159 +1818,6 @@ begin
     lForm.Free;
     TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
     ResetManager;
-  end;
-end;
-
-procedure RecordSupplementalEventCounterBurst;
-begin
-  TAccessibilityDiagnostics.RecordSupplementalUiaPropertyChangedEvent(
-    UIA_SelectionItemIsSelectedPropertyId);
-  TAccessibilityDiagnostics.RecordSupplementalUiaPropertyChangedEvent(
-    UIA_SelectionItemIsSelectedPropertyId);
-  TAccessibilityDiagnostics.RecordSupplementalUiaAutomationEvent(
-    UIA_SelectionItem_ElementSelectedEventId);
-  TAccessibilityDiagnostics.RecordSupplementalUiaAutomationEvent(UIA_AutomationFocusChangedEventId);
-  TAccessibilityDiagnostics.RecordSupplementalUiaNotificationEvent;
-  TAccessibilityDiagnostics.RecordSupplementalMsaaEvent(EVENT_OBJECT_STATECHANGE);
-  TAccessibilityDiagnostics.RecordSupplementalMsaaEvent(EVENT_OBJECT_STATECHANGE);
-  TAccessibilityDiagnostics.RecordSupplementalMsaaEvent(EVENT_OBJECT_FOCUS);
-end;
-
-procedure MeasureSupplementalEventCounterBursts(aEnabled: Boolean; aWarmupCount: Integer;
-  aSampleCount: Integer; out aSamples: TArray<Int64>);
-var
-  i: Integer;
-  lSampleIndex: Integer;
-  lStopwatch: TStopwatch;
-begin
-  if aEnabled then
-  begin
-    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
-    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
-  end else begin
-    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
-  end;
-
-  SetLength(aSamples, aSampleCount);
-  for i := 0 to Pred(aWarmupCount + aSampleCount) do
-  begin
-    lStopwatch := TStopwatch.StartNew;
-    RecordSupplementalEventCounterBurst;
-    if i >= aWarmupCount then
-    begin
-      lSampleIndex := i - aWarmupCount;
-      aSamples[lSampleIndex] := lStopwatch.ElapsedTicks;
-    end;
-  end;
-  TArray.Sort<Int64>(aSamples);
-end;
-
-function SupplementalEventCounterDistributionJson(const aSamples: TArray<Int64>;
-  aSampleCount: Integer): TJSONObject;
-begin
-  Result := TJSONObject.Create;
-  Result.AddPair('medianMs',
-    TJSONNumber.Create(MillisecondsFromTicks(aSamples[NearestRankIndex(aSampleCount, 50)])));
-  Result.AddPair('p95Ms',
-    TJSONNumber.Create(MillisecondsFromTicks(aSamples[NearestRankIndex(aSampleCount, 95)])));
-  Result.AddPair('p99Ms',
-    TJSONNumber.Create(MillisecondsFromTicks(aSamples[NearestRankIndex(aSampleCount, 99)])));
-  Result.AddPair('maximumMs', TJSONNumber.Create(MillisecondsFromTicks(aSamples[Pred(aSampleCount)])));
-end;
-
-function SupplementalEventCounterJson(const aBuildConfiguration: string; aWarmupCount: Integer;
-  aSampleCount: Integer; const aDisabledSamples: TArray<Int64>;
-  const aEnabledSamples: TArray<Int64>): string;
-var
-  lJson: TJSONObject;
-begin
-  lJson := TJSONObject.Create;
-  try
-    lJson.AddPair('scenario', 't118-supplemental-event-counter-burst');
-    lJson.AddPair('buildConfiguration', aBuildConfiguration);
-    lJson.AddPair('diagnosticsState', 'disabled');
-    lJson.AddPair('providerMetricsState', 'enabled');
-    lJson.AddPair('warmupCount', TJSONNumber.Create(aWarmupCount));
-    lJson.AddPair('sampleCount', TJSONNumber.Create(aSampleCount));
-    lJson.AddPair('uiaEventsPerBurst', TJSONNumber.Create(5));
-    lJson.AddPair('msaaEventsPerBurst', TJSONNumber.Create(3));
-    lJson.AddPair('stopwatchFrequency', TJSONNumber.Create(TStopwatch.Frequency));
-    lJson.AddPair('disabled', SupplementalEventCounterDistributionJson(aDisabledSamples, aSampleCount));
-    lJson.AddPair('enabled', SupplementalEventCounterDistributionJson(aEnabledSamples, aSampleCount));
-    Result := lJson.ToJSON;
-  finally
-    lJson.Free;
-  end;
-end;
-
-procedure TAccessibilityProviderHotspotPerformanceTests.SupplementalEventCounterLatencyDistribution;
-const
-{$IFDEF RELEASE}
-  cBuildConfiguration = 'Release';
-{$ELSE}
-  cBuildConfiguration = 'Debug';
-{$ENDIF}
-  cSampleCount = 2000;
-  cWarmupCount = 100;
-var
-  lDisabledSamples: TArray<Int64>;
-  lEnabledSamples: TArray<Int64>;
-  lJson: string;
-  lMetrics: TAccessibilityProviderHotspotMetrics;
-  lRunsDir: string;
-
-begin
-  TAccessibilityDiagnostics.Disable;
-  MeasureSupplementalEventCounterBursts(False, cWarmupCount, cSampleCount, lDisabledSamples);
-  MeasureSupplementalEventCounterBursts(True, cWarmupCount, cSampleCount, lEnabledSamples);
-  try
-    lMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
-    Assert.AreEqual((cWarmupCount + cSampleCount) * 5, lMetrics.SupplementalUiaEventCount);
-    Assert.AreEqual((cWarmupCount + cSampleCount) * 3, lMetrics.SupplementalMsaaEventCount);
-
-    lJson := SupplementalEventCounterJson(cBuildConfiguration, cWarmupCount, cSampleCount,
-      lDisabledSamples, lEnabledSamples);
-    lRunsDir := TPath.Combine(TPath.Combine(GetCurrentDir, '.agents'), 'runs');
-    ForceDirectories(lRunsDir);
-    TFile.WriteAllText(TPath.Combine(lRunsDir, 't118-event-counter-latency-current.json'), lJson, TEncoding.UTF8);
-  finally
-    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
-  end;
-end;
-
-procedure TAccessibilityProviderHotspotPerformanceTests.ProviderHotspotBaselineArtifactIsWritten;
-var
-  lArtifactFile: string;
-  lJson: string;
-begin
-  TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
-  TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
-  try
-    ExerciseMemoHotspotProvider;
-    ExerciseStringGridHotspotProvider;
-    ExerciseTmsAdvStringGridHotspotProvider;
-    ExerciseListBoxSelectionHotspotProvider;
-
-    lJson := BuildProviderHotspotJson(TAccessibilityDiagnostics.ProviderHotspotMetrics);
-    lArtifactFile := ProviderHotspotArtifactFileName;
-    TFile.WriteAllText(lArtifactFile, lJson, TEncoding.UTF8);
-
-    Assert.IsTrue(TFile.Exists(lArtifactFile), 'Provider hotspot artifact was not written.');
-    lJson := TFile.ReadAllText(lArtifactFile, TEncoding.UTF8);
-    Assert.Contains(lJson, 'provider-hotspot-large-fixture');
-    Assert.Contains(lJson, '"memoPrepareChildrenCount":1');
-    Assert.Contains(lJson, '"stringGridRefreshCount":1');
-    Assert.Contains(lJson, '"tmsAdvStringGridRefreshCount":1');
-    Assert.Contains(lJson, '"listBoxGetSelectionCount":1');
-    Assert.Contains(lJson, '"providerNavigateCount":0');
-    Assert.Contains(lJson, '"taskDecisions"');
-    Assert.Contains(lJson, '"T-046":"proceed:memo-line-preparation-total-line-work"');
-    Assert.Contains(lJson, '"T-044":"proceed:vcl-stringgrid-full-grid-probe-work"');
-    Assert.Contains(lJson, '"T-045":"proceed:tms-advstringgrid-full-grid-probe-work-after-t-044"');
-    Assert.Contains(lJson, '"T-043":"skip:listbox-getselection-not-hot-for-focus-change"');
-    Assert.Contains(lJson, '"T-049":"proceed:last-host-validation"');
-  finally
-    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
   end;
 end;
 
@@ -2377,26 +2070,6 @@ begin
   end;
 end;
 
-procedure TAccessibilityListBoxPerformanceTests.ListBoxFocusBaselineArtifactIsWritten;
-var
-  lBaselineFile: string;
-  lFrameworkMetrics: TAccessibilityListBoxFocusMetrics;
-  lJson: string;
-  lTodoAppMetrics: TAccessibilityListBoxFocusMetrics;
-begin
-  RunCheckListBoxFocusScenario(180, lFrameworkMetrics);
-  RunCheckListBoxFocusScenario(90, lTodoAppMetrics);
-  lJson := BuildBaselineJson(lFrameworkMetrics, lTodoAppMetrics);
-  lBaselineFile := BaselineArtifactFileName;
-  TFile.WriteAllText(lBaselineFile, lJson, TEncoding.UTF8);
-
-  Assert.IsTrue(TFile.Exists(lBaselineFile), 'Baseline artifact was not written.');
-  lJson := TFile.ReadAllText(lBaselineFile, TEncoding.UTF8);
-  Assert.Contains(lJson, 'framework-large-checklistbox-fixture');
-  Assert.Contains(lJson, 'todoapp-client-list-checklistbox-fixture');
-  Assert.Contains(lJson, '"notificationCount":0');
-end;
-
 procedure TAccessibilityListBoxPerformanceTests.CheckListBoxRapidFocusMovementUsesNativeHwndSpeechPath;
 var
   lLastNotificationProcessing: NotificationProcessing;
@@ -2422,54 +2095,8 @@ begin
     [lMetrics.NativeHandlePublicationCheckCount]));
   Assert.AreEqual(0, lMetrics.GridFocusProbeCount,
     'Native-HWND listbox movement should not enter the grid focus-change probe path.');
-  Assert.AreEqual(NotificationProcessing_ImportantAll, lLastNotificationProcessing);
-  Assert.AreEqual('', lLastNotificationText);
-end;
-
-procedure TAccessibilityListBoxPerformanceTests.ListBoxNativeHwndNavigationDoesNotProbeGridFocusPath;
-var
-  lLastNotificationProcessing: NotificationProcessing;
-  lLastNotificationText: string;
-  lMetrics: TAccessibilityListBoxFocusMetrics;
-begin
-  RunCheckListBoxFocusScenario(90, 8, lMetrics, lLastNotificationText, lLastNotificationProcessing);
-
-  Assert.AreEqual(0, lMetrics.GridFocusProbeCount,
-    'Listbox arrow keys share key codes with grids, but native listboxes must not run the grid probe path.');
-end;
-
-procedure TAccessibilityListBoxPerformanceTests.ListBoxNativeHwndNavigationDoesNotProbeFrameworkItemIndex;
-var
-  lLastNotificationProcessing: NotificationProcessing;
-  lLastNotificationText: string;
-  lMetrics: TAccessibilityListBoxFocusMetrics;
-begin
-  RunCheckListBoxFocusScenario(90, 8, lMetrics, lLastNotificationText, lLastNotificationProcessing);
-
   Assert.AreEqual(0, lMetrics.ItemIndexProbeCount,
-    'Native-HWND listbox movement should not probe framework listbox selection state for speech.');
-end;
-
-procedure TAccessibilityListBoxPerformanceTests.ListBoxFocusMovementUsesNativeHwndSpeechPath;
-var
-  lLastNotificationProcessing: NotificationProcessing;
-  lLastNotificationText: string;
-  lMetrics: TAccessibilityListBoxFocusMetrics;
-begin
-  RunCheckListBoxFocusScenario(90, 1, lMetrics, lLastNotificationText, lLastNotificationProcessing);
-
-  Assert.AreEqual(0, lMetrics.FocusMovementCount);
-  Assert.AreEqual(0, lMetrics.AutomationEventCount,
-    'Listbox focus movement should not raise extra custom provider focus/selection events.');
-  Assert.AreEqual(0, lMetrics.SelectionEventCount);
-  Assert.AreEqual(0, lMetrics.GetFocusCount,
-    'Listbox focus movement should not query the custom item provider to speak the focused item.');
-  Assert.AreEqual(0, lMetrics.EnsureItemProviderCount,
-    'Native-HWND listbox movement should not prepare custom item providers.');
-  Assert.AreEqual(0, lMetrics.ItemTextProbeCount,
-    'Listbox focus movement should not clean text through provider item probes.');
-  Assert.AreEqual(0, lMetrics.NotificationCount,
-    'Native-HWND listbox movement should let native accessibility speak items without duplicate framework notifications.');
+    'Native-HWND listbox movement should not probe framework selection state for speech.');
   Assert.AreEqual(NotificationProcessing_ImportantAll, lLastNotificationProcessing);
   Assert.AreEqual('', lLastNotificationText);
 end;

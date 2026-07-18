@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-18
+### Added
+- The complex demo now has a `Dynamic content` tab whose `TStaticText`, `TLabel`, `TEdit`, `TButton`, and `TBitBtn` text and hints update every 10 seconds for live screen-reader verification.
+
+### Fixed
+- UIA and MSAA now return current VCL captions, editable text names, and help text after those properties change at runtime instead of retaining the values captured when the provider was created.
+
 ## 2026-07-10
 ### Added
 - The complex demo now enables file diagnostics only when launched with `--a11y-diagnostics`.

@@ -13,8 +13,10 @@ type
     AdvStringGridAudit: TAdvStringGrid;
     BalloonHideTimer: TTimer;
     BalloonHint: TBalloonHint;
+    bitBtnDynamicCaption: TBitBtn;
     btnApplyFilters: TButton;
     btnClose: TButton;
+    btnDynamicCaption: TButton;
     btnNewWindow: TSpeedButton;
     btnRefresh: TSpeedButton;
     btnSave: TSpeedButton;
@@ -26,12 +28,16 @@ type
     chkAccessibilityEnabled: TCheckBox;
     chkIncludeArchived: TCheckBox;
     cmbQueue: TComboBox;
+    DynamicContentTimer: TTimer;
+    edtDynamicText: TEdit;
     edtSearch: TEdit;
     grpViewMode: TGroupBox;
     lblAuditMetric: TLabel;
     lblCellsSummary: TLabel;
     lblCommandTitle: TLabel;
     lblDetailsHeading: TLabel;
+    lblDynamicCaption: TLabel;
+    lblDynamicInstructions: TLabel;
     lblInspectorTitle: TLabel;
     lblMetricsHeading: TLabel;
     lblOrdersSummary: TLabel;
@@ -49,6 +55,12 @@ type
     pnlCellsHeader: TPanel;
     pnlCommandBar: TPanel;
     pnlDetailsMemoRow: TPanel;
+    pnlDynamicBitButtonRow: TPanel;
+    pnlDynamicButtonRow: TPanel;
+    pnlDynamicContent: TPanel;
+    pnlDynamicEditRow: TPanel;
+    pnlDynamicLabelRow: TPanel;
+    pnlDynamicStaticTextRow: TPanel;
     pnlFilters: TPanel;
     pnlFilterLabeledEditRow: TPanel;
     pnlFilterSearchRow: TPanel;
@@ -68,6 +80,8 @@ type
     SplitterFilters: TSplitter;
     StaticTextDetails: TStaticText;
     StaticTextDetailsWrapped: TStaticText;
+    staticDynamicCaption: TStaticText;
+    staticDynamicEditLabel: TStaticText;
     StaticTextEvents: TStaticText;
     StaticTextQueue: TLabel;
     StaticTextSearch: TStaticText;
@@ -77,6 +91,7 @@ type
     tabOrderCells: TTabSheet;
     tabMemoNoWrap: TTabSheet;
     tabMemoWrap: TTabSheet;
+    tabDynamicContent: TTabSheet;
     tabOrders: TTabSheet;
     tabTms: TTabSheet;
     ToolBar: TToolBar;
@@ -94,10 +109,12 @@ type
     procedure btnShowRegularHintClick(aSender: TObject);
     procedure btnToggleDetailsClick(aSender: TObject);
     procedure chkAccessibilityEnabledClick(aSender: TObject);
+    procedure DynamicContentTimerTimer(aSender: TObject);
     procedure FormCreate(aSender: TObject);
     procedure FormDestroy(aSender: TObject);
     procedure ToolButtonClick(aSender: TObject);
   private
+    fDynamicContentRevision: Integer;
     procedure FillAdvStringGrid;
     procedure FillEventList;
     procedure FillMemo;
@@ -105,6 +122,7 @@ type
     procedure FillStringGrid;
     procedure RefreshStatus(const aAction: string);
     procedure SyncAccessibilityToggle;
+    procedure UpdateDynamicContent;
   end;
 
 var
@@ -132,6 +150,16 @@ resourcestring
   rsBalloonTitle = 'Balloon hint raised';
   rsDetailsHidden = 'Details panel hidden';
   rsDetailsVisible = 'Details panel visible';
+  rsDynamicBitButtonCaptionFormat = 'TBitBtn caption %d';
+  rsDynamicBitButtonHintFormat = 'TBitBtn hint updated for cycle %d';
+  rsDynamicButtonCaptionFormat = 'TButton caption %d';
+  rsDynamicButtonHintFormat = 'TButton hint updated for cycle %d';
+  rsDynamicEditHintFormat = 'TEdit hint updated for cycle %d';
+  rsDynamicEditTextFormat = 'TEdit text %d';
+  rsDynamicLabelCaptionFormat = 'TLabel caption %d';
+  rsDynamicLabelHintFormat = 'TLabel hint updated for cycle %d';
+  rsDynamicStaticTextCaptionFormat = 'TStaticText caption %d';
+  rsDynamicStaticTextHintFormat = 'TStaticText hint updated for cycle %d';
   rsStatusFormat = '%s at %s';
   rsWindowCaptionFormat = 'Accessibility Framework Demo - Window %d';
 
@@ -264,6 +292,12 @@ begin
   end else begin
     RefreshStatus(rsAccessibilityDisabled);
   end;
+end;
+
+procedure TAccessibilityDemoMainForm.DynamicContentTimerTimer(aSender: TObject);
+begin
+  Inc(fDynamicContentRevision);
+  UpdateDynamicContent;
 end;
 
 procedure TAccessibilityDemoMainForm.FillAdvStringGrid;
@@ -405,6 +439,8 @@ procedure TAccessibilityDemoMainForm.FormCreate(aSender: TObject);
 begin
   Inc(gWindowCount);
   Caption := Format(rsWindowCaptionFormat, [gWindowCount]);
+  fDynamicContentRevision := 0;
+  UpdateDynamicContent;
   SyncAccessibilityToggle;
   cmbQueue.ItemIndex := 0;
   FillStringGrid;
@@ -417,6 +453,7 @@ end;
 procedure TAccessibilityDemoMainForm.FormDestroy(aSender: TObject);
 begin
   BalloonHideTimer.Enabled := False;
+  DynamicContentTimer.Enabled := False;
   BalloonHint.HideHint;
 end;
 
@@ -433,6 +470,20 @@ end;
 procedure TAccessibilityDemoMainForm.ToolButtonClick(aSender: TObject);
 begin
   RefreshStatus(rsActionOpened);
+end;
+
+procedure TAccessibilityDemoMainForm.UpdateDynamicContent;
+begin
+  staticDynamicCaption.Caption := Format(rsDynamicStaticTextCaptionFormat, [fDynamicContentRevision]);
+  staticDynamicCaption.Hint := Format(rsDynamicStaticTextHintFormat, [fDynamicContentRevision]);
+  lblDynamicCaption.Caption := Format(rsDynamicLabelCaptionFormat, [fDynamicContentRevision]);
+  lblDynamicCaption.Hint := Format(rsDynamicLabelHintFormat, [fDynamicContentRevision]);
+  edtDynamicText.Text := Format(rsDynamicEditTextFormat, [fDynamicContentRevision]);
+  edtDynamicText.Hint := Format(rsDynamicEditHintFormat, [fDynamicContentRevision]);
+  btnDynamicCaption.Caption := Format(rsDynamicButtonCaptionFormat, [fDynamicContentRevision]);
+  btnDynamicCaption.Hint := Format(rsDynamicButtonHintFormat, [fDynamicContentRevision]);
+  bitBtnDynamicCaption.Caption := Format(rsDynamicBitButtonCaptionFormat, [fDynamicContentRevision]);
+  bitBtnDynamicCaption.Hint := Format(rsDynamicBitButtonHintFormat, [fDynamicContentRevision]);
 end;
 
 end.

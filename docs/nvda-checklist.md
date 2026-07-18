@@ -43,6 +43,7 @@ Use this checklist on a real VCL application or on a manual sample built from th
 - `TStringGrid`: keyboard focus inside the grid should expose the current cell.
 - `TAdvStringGrid`: mouse over a visible TMS cell should expose a UIA provider whose name is the cell text only by default. NVDA may add role or position details from its own settings, but it should not read neighboring cells, whole rows, or row/column text added by this framework.
 - `TAdvStringGrid`: HTML text should be stripped before speech, wide text fallback should be preserved, and hidden row/column remapping should not expose hidden cells.
+- `TAdvStringGrid`: when a merged range still has visible cells after its base row or column is hidden, NVDA should announce the hidden base text once from the first visible representative. Keyboard focus, selection, mouse hit testing, GridItem coordinates, and visible row/column spans should all resolve to that representative; a fully hidden merge should not be exposed.
 - `TAdvStringGrid`: after scrolling, a newly visible cell should be announced and the old scrolled-out cell should no longer be exposed as visible.
 
 ## Event fanout diagnostics

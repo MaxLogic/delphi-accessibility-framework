@@ -16,7 +16,7 @@ Supported scenarios:
 - `Hints`: verifies UIA `HelpText`, visible hint notification text, duplicate throttling, direct balloon hint notifications, and manager-installed balloon hint observation.
 - `MemoListStatus`: verifies manager-installed `TMemo` line hit testing, `TListBox` item hover, native-HWND listbox focus speech routing, and `TStatusBar` visible status text hover.
 - `TStringGridCells`: verifies the VCL `TStringGrid` DataGrid provider, visible cell providers, `ElementProviderFromPoint` returning only the hovered cell, current-cell focus, hidden-cell omission, and cell-only names.
-- `TAdvStringGridCells`: verifies opt-in manager-installed TMS `TAdvStringGrid` DataGrid support, stripped HTML cell text, wide text fallback, hidden row/column remapping, per-cell hit testing, current-cell focus, hidden-cell omission, and scrolled-cell pruning.
+- `TAdvStringGridCells`: verifies opt-in manager-installed TMS `TAdvStringGrid` DataGrid support, stripped HTML cell text, wide text fallback, hidden-base merged-cell text and visible spans, GridItem coordinates, focus and hit testing, fully hidden merge omission, hidden row/column remapping, hidden-cell omission, and scrolled-cell pruning.
 
 Individual examples:
 

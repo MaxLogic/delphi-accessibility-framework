@@ -140,7 +140,7 @@ lProvider := TAccessibilityVclProviderBuilder.BuildForm(
   TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
 ```
 
-The opt-in TMS registry includes the default VCL adapters plus `TAdvStringGrid` DataGrid/DataItem support for stripped HTML text, wide text fallback, per-cell hit testing, current-cell focus, hidden column and hidden row remapping, merged-cell spans that count visible coordinates, and scrolled-cell pruning.
+The opt-in TMS registry includes the default VCL adapters plus `TAdvStringGrid` DataGrid/DataItem support for stripped HTML text, wide text fallback, per-cell hit testing, current-cell focus, hidden column and hidden row remapping, visible representatives for merged ranges whose base row or column is hidden, merged-cell spans that count visible coordinates, fully hidden merge omission, and scrolled-cell pruning.
 
 MaxLogicFoundation remains independent. The framework can be used without MaxLogicFoundation, and MaxLogicFoundation does not depend on this framework.
 
@@ -178,7 +178,7 @@ UIA probe scenarios:
 - `Hints`: help text, visible hint notifications, duplicate throttling, and balloon hint notifications.
 - `MemoListStatus`: manager-installed memo line hit testing, listbox item provider coverage through the framework tree, native-HWND listbox focus speech, and statusbar text hover.
 - `TStringGridCells`: VCL `TStringGrid` DataGrid provider, visible cell providers, per-cell hit testing, current-cell focus, hidden-cell omission, and cell-only names.
-- `TAdvStringGridCells`: opt-in TMS `TAdvStringGrid` DataGrid provider, stripped HTML text, wide text fallback, per-cell hit testing, focus, hidden row/column remapping, hidden-cell omission, and scrolled-cell pruning.
+- `TAdvStringGridCells`: opt-in TMS `TAdvStringGrid` DataGrid provider, stripped HTML text, wide text fallback, hidden-base merged-cell text and spans, GridItem coordinates, per-cell hit testing, focus, fully hidden merge omission, hidden row/column remapping, hidden-cell omission, and scrolled-cell pruning.
 
 The smoke app lives in `projects\MaxLogicAccessibilityFrameworkSmoke.dpr`. The probe script builds it before executing each scenario and expects `UIA_PROBE_OK` output for success.
 
@@ -189,10 +189,9 @@ See also:
 
 ## Known limits
 
-- Windows VCL and Microsoft UI Automation are the first supported target. The framework includes an MSAA bridge for supported provider fragments when screen readers enter through classic accessibility APIs. FMX and non-Windows platforms are deferred.
+- Windows VCL with Microsoft UI Automation is the supported target. The framework includes an MSAA bridge for supported provider fragments when screen readers enter through classic accessibility APIs. FMX and non-Windows platforms are out of scope.
 - `TAccessibilityManager.Install(Application)` discovers future forms when `Screen.OnActiveFormChange` fires. Forms that are created and never become active should call `TAccessibilityManager.Install(Form)` explicitly after their controls exist.
 - Changing the app-wide or form-scoped adapter registry after accessibility is installed requires `TAccessibilityManager.Uninstall` first. This avoids silently mixing default and custom provider trees.
 - Registry compatibility is instance-based. Repeated custom installs should reuse the same registry instance, or call `TAccessibilityManager.Uninstall` before switching to another registry.
 - Automatic label-to-input relationships such as `LabeledBy` inference are not implemented yet.
-- TMS merged cells whose base cell is hidden are omitted rather than promoted from a visible merged fragment, because TMS stores text and span metadata on the hidden base coordinate.
 - Screen-reader speech varies by reader and settings. The UIA probe is automated proof of provider behavior; the NVDA checklist remains the manual acceptance pass for spoken output.

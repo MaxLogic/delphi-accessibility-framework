@@ -302,8 +302,11 @@ end;
 
 procedure TAccessibilityDemoMainForm.FillAdvStringGrid;
 begin
-  AdvStringGridAudit.ColCount := 5;
-  AdvStringGridAudit.RowCount := 8;
+  AdvStringGridAudit.UnHideColumnsAll;
+  AdvStringGridAudit.UnHideRowsAll;
+  AdvStringGridAudit.SplitAllCells;
+  AdvStringGridAudit.ColCount := 8;
+  AdvStringGridAudit.RowCount := 14;
   AdvStringGridAudit.FixedCols := 1;
   AdvStringGridAudit.FixedRows := 1;
   AdvStringGridAudit.Cells[0, 0] := 'Area';
@@ -346,6 +349,16 @@ begin
   AdvStringGridAudit.Cells[2, 7] := 'App-wide install scans new windows';
   AdvStringGridAudit.Cells[3, 7] := 'High';
   AdvStringGridAudit.Cells[4, 7] := 'Press New Window';
+  AdvStringGridAudit.MergeCells(5, 1, 3, 1);
+  AdvStringGridAudit.Cells[5, 1] := 'Hidden column merge base';
+  AdvStringGridAudit.MergeCells(1, 8, 1, 3);
+  AdvStringGridAudit.WideCells[1, 8] := 'Hidden row merge base';
+  AdvStringGridAudit.MergeCells(2, 11, 1, 2);
+  AdvStringGridAudit.Cells[2, 11] := 'Fully hidden merge';
+  AdvStringGridAudit.HideColumn(5);
+  AdvStringGridAudit.HideRow(8);
+  AdvStringGridAudit.HideRow(11);
+  AdvStringGridAudit.HideRow(12);
 end;
 
 procedure TAccessibilityDemoMainForm.FillEventList;

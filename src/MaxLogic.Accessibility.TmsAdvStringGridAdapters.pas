@@ -16,8 +16,9 @@ implementation
 
 uses
   System.Diagnostics, System.Generics.Collections, System.Math, System.SysUtils, System.Types, System.Variants,
-  Winapi.ActiveX, Winapi.Windows, Vcl.ComCtrls, Vcl.Controls, Vcl.Forms, AdvGrid, MaxLogic.Accessibility.Diagnostics,
-  MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.UIAutomationCore, MaxLogic.Accessibility.VclAdapters;
+  Winapi.ActiveX, Winapi.Windows, Vcl.ComCtrls, Vcl.Controls, Vcl.Forms, AdvGrid, AdvHTML,
+  MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.UIAutomationCore,
+  MaxLogic.Accessibility.VclAdapters;
 
 type
   TAdvStringGridAdapter = class(TInterfacedObject, IAccessibilityControlAdapter, IAccessibilityVclProviderAdapter)
@@ -74,19 +75,31 @@ type
     fPreparedValid: Boolean;
     fPreparedVisibleColCount: Integer;
     fPreparedVisibleRowCount: Integer;
+    fResolvedCurrentCell: TPoint;
+    fResolvedCurrentColCount: Integer;
+    fResolvedCurrentGridCol: Integer;
+    fResolvedCurrentGridRow: Integer;
+    fResolvedCurrentRowCount: Integer;
+    fResolvedCurrentValid: Boolean;
     fRuntimeId: Integer;
     fUiaApi: IAccessibilityUiaApi;
+    function CellBelongsToMerge(aCol: Integer; aRow: Integer; const aBaseCell: TPoint): Boolean;
     function CellProvider(aCol: Integer; aRow: Integer): IAccessibilityProviderNode;
     function CellText(aCol: Integer; aRow: Integer): string;
     function ChildrenPreparationIsCurrent: Boolean;
+    function CurrentProviderCell: TPoint;
     function CreateSelectionArray(const aProvider: IRawElementProviderSimple): PSafeArray;
     function EnsureCellProvider(aCol: Integer; aRow: Integer): IAccessibilityProviderNode;
     function EnsureCellProviderDirect(aCol: Integer; aRow: Integer): IAccessibilityProviderNode;
     procedure EnsureVisibleCellProvider(aCol: Integer; aRow: Integer; aMetricsEnabled: Boolean;
       var aCellProbeCount: Integer; var aCreatedCount: Integer);
     function GridOwnsFocus: Boolean;
+    function HitCell(const aPoint: TPoint; aCol: Integer; aRow: Integer): TPoint;
     function IsAccessibleCell(aCol: Integer; aRow: Integer): Boolean;
     function IsVisibleCell(aCol: Integer; aRow: Integer): Boolean;
+    function MergeBaseCell(aCol: Integer; aRow: Integer): TPoint;
+    function MergeBaseIsVisible(const aBaseCell: TPoint): Boolean;
+    function MergeRepresentativeForMarker(aCol: Integer; aRow: Integer): TPoint;
     function NormalizedCell(aCol: Integer; aRow: Integer): TPoint;
     function PointHitsCell(const aPoint: TPoint; const aExpectedCell: TPoint): Boolean;
     function RealCell(aCol: Integer; aRow: Integer): TPoint;
@@ -282,6 +295,8 @@ end;
 
 function TAccessibilityAdvStringGridCellProvider.DoGetPropertyValue(aPropertyId: PROPERTYID;
   out aValue: OleVariant): Boolean;
+var
+  lCurrentCell: TPoint;
 begin
   Result := True;
   case aPropertyId of
@@ -290,8 +305,16 @@ begin
     UIA_IsOffscreenPropertyId:
       aValue := not IsVisibleCell;
     UIA_HasKeyboardFocusPropertyId:
-      aValue := (fGridProvider <> nil) and fGridProvider.GridOwnsFocus and
-        (fGrid.Col = fCol) and (fGrid.Row = fRow);
+      begin
+        if fGridProvider = nil then
+        begin
+          aValue := False;
+        end else begin
+          lCurrentCell := fGridProvider.CurrentProviderCell;
+          aValue := fGridProvider.GridOwnsFocus and
+            (lCurrentCell.X = fCol) and (lCurrentCell.Y = fRow);
+        end;
+      end;
   else
     Result := inherited DoGetPropertyValue(aPropertyId, aValue);
   end;
@@ -334,14 +357,17 @@ begin
 end;
 
 function TAccessibilityAdvStringGridCellProvider.Get_IsSelected(out aRetVal: BOOL): HResult;
+var
+  lCurrentCell: TPoint;
 begin
   aRetVal := False;
-  if IsDisconnected then
+  if IsDisconnected or (fGridProvider = nil) then
   begin
     Exit(UIA_E_ELEMENTNOTAVAILABLE);
   end;
 
-  if (fGrid.Col = fCol) and (fGrid.Row = fRow) then
+  lCurrentCell := fGridProvider.CurrentProviderCell;
+  if (lCurrentCell.X = fCol) and (lCurrentCell.Y = fRow) then
   begin
     aRetVal := True;
   end;
@@ -415,9 +441,35 @@ begin
   end;
 end;
 
+function TAccessibilityAdvStringGridProvider.CellBelongsToMerge(aCol: Integer; aRow: Integer;
+  const aBaseCell: TPoint): Boolean;
+var
+  lCandidateBase: TPoint;
+  lMarkerCell: TPoint;
+  lRealCell: TPoint;
+begin
+  Result := False;
+  if (fGrid = nil) or (aCol < 0) or (aCol >= fGrid.ColCount) or (aRow < 0) or (aRow >= fGrid.RowCount) then
+  begin
+    Exit;
+  end;
+
+  lRealCell := RealCell(aCol, aRow);
+  if fGrid.IsMergedNonBaseCell(lRealCell.X, lRealCell.Y) then
+  begin
+    lMarkerCell := fGrid.BaseCell(lRealCell.X, lRealCell.Y);
+    lCandidateBase := Point(lMarkerCell.X, fGrid.RealRowIndex(aRow) - (aRow - lMarkerCell.Y));
+  end else begin
+    lCandidateBase := Point(lRealCell.X, fGrid.RealRowIndex(aRow));
+  end;
+
+  Result := (lCandidateBase.X = aBaseCell.X) and (lCandidateBase.Y = aBaseCell.Y);
+end;
+
 function TAccessibilityAdvStringGridProvider.CellText(aCol: Integer; aRow: Integer): string;
 var
-  lCell: TPoint;
+  lBaseCell: TPoint;
+  lDisplayRow: Integer;
 begin
   Result := '';
   if (fGrid = nil) or (aCol < 0) or (aCol >= fGrid.ColCount) or (aRow < 0) or (aRow >= fGrid.RowCount) then
@@ -425,11 +477,18 @@ begin
     Exit;
   end;
 
-  lCell := RealCell(aCol, aRow);
-  Result := Trim(string(fGrid.StrippedCells[lCell.X, lCell.Y]));
+  lBaseCell := MergeBaseCell(aCol, aRow);
+  lDisplayRow := fGrid.DisplRowIndex(lBaseCell.Y);
+  if fGrid.IsHiddenColumn(lBaseCell.X) or fGrid.IsHiddenRow(lBaseCell.Y) then
+  begin
+    Result := Trim(AdvHTML.HTMLStrip(string(fGrid.AllCells[lBaseCell.X, lBaseCell.Y])));
+  end else begin
+    Result := Trim(string(fGrid.StrippedCells[lBaseCell.X, lDisplayRow]));
+  end;
+
   if Result = '' then
   begin
-    Result := Trim(string(fGrid.WideCells[lCell.X, lCell.Y]));
+    Result := Trim(string(fGrid.AllWideCells[lBaseCell.X, lBaseCell.Y]));
   end;
 end;
 
@@ -504,6 +563,43 @@ begin
   finally
     SafeArrayUnaccessData(Result);
   end;
+end;
+
+function TAccessibilityAdvStringGridProvider.CurrentProviderCell: TPoint;
+var
+  lRealCell: TPoint;
+  lRepresentative: TPoint;
+begin
+  Result := Point(-1, -1);
+  if fGrid = nil then
+  begin
+    Exit;
+  end;
+
+  if fResolvedCurrentValid and (fResolvedCurrentGridCol = fGrid.Col) and
+    (fResolvedCurrentGridRow = fGrid.Row) and (fResolvedCurrentColCount = fGrid.ColCount) and
+    (fResolvedCurrentRowCount = fGrid.RowCount) then
+  begin
+    Exit(fResolvedCurrentCell);
+  end;
+
+  Result := NormalizedCell(fGrid.Col, fGrid.Row);
+  lRealCell := RealCell(fGrid.Col, fGrid.Row);
+  if not fGrid.IsMergedNonBaseCell(lRealCell.X, lRealCell.Y) then
+  begin
+    lRepresentative := MergeRepresentativeForMarker(fGrid.Col, fGrid.Row);
+    if (lRepresentative.X >= 0) and (lRepresentative.Y >= 0) then
+    begin
+      Result := lRepresentative;
+    end;
+  end;
+
+  fResolvedCurrentCell := Result;
+  fResolvedCurrentColCount := fGrid.ColCount;
+  fResolvedCurrentGridCol := fGrid.Col;
+  fResolvedCurrentGridRow := fGrid.Row;
+  fResolvedCurrentRowCount := fGrid.RowCount;
+  fResolvedCurrentValid := True;
 end;
 
 destructor TAccessibilityAdvStringGridProvider.Destroy;
@@ -601,6 +697,9 @@ begin
   end;
 
   fGrid.ScreenToCell(lPoint, lCol, lRow);
+  lClientPoint := HitCell(lClientPoint, lCol, lRow);
+  lCol := lClientPoint.X;
+  lRow := lClientPoint.Y;
   lCell := EnsureCellProvider(lCol, lRow);
   if lCell <> nil then
   begin
@@ -680,6 +779,7 @@ end;
 function TAccessibilityAdvStringGridProvider.GetFocus(out aRetVal: IRawElementProviderFragment): HResult;
 var
   lCell: IAccessibilityProviderNode;
+  lCurrentCell: TPoint;
 begin
   aRetVal := nil;
   if IsDisconnected or (fGrid = nil) or not ControlIsInActiveVisibleTree(fGrid) then
@@ -692,7 +792,8 @@ begin
     Exit(S_OK);
   end;
 
-  lCell := EnsureCellProvider(fGrid.Col, fGrid.Row);
+  lCurrentCell := CurrentProviderCell;
+  lCell := EnsureCellProvider(lCurrentCell.X, lCurrentCell.Y);
   if lCell <> nil then
   begin
     aRetVal := lCell.FragmentProvider;
@@ -770,6 +871,7 @@ end;
 function TAccessibilityAdvStringGridProvider.GetSelection(out aRetVal: PSafeArray): HResult;
 var
   lCell: IAccessibilityProviderNode;
+  lCurrentCell: TPoint;
 begin
   aRetVal := nil;
   if IsDisconnected or (fGrid = nil) then
@@ -777,7 +879,8 @@ begin
     Exit(UIA_E_ELEMENTNOTAVAILABLE);
   end;
 
-  lCell := EnsureCellProvider(fGrid.Col, fGrid.Row);
+  lCurrentCell := CurrentProviderCell;
+  lCell := EnsureCellProvider(lCurrentCell.X, lCurrentCell.Y);
   if lCell = nil then
   begin
     aRetVal := CreateSelectionArray(nil);
@@ -796,6 +899,7 @@ end;
 function TAccessibilityAdvStringGridProvider.TryGetFocusedItem(out aProvider: IRawElementProviderSimple;
   out aName: string): Boolean;
 var
+  lCurrentCell: TPoint;
   lItem: IAccessibilityProviderNode;
 begin
   aProvider := nil;
@@ -806,13 +910,14 @@ begin
     Exit;
   end;
 
-  lItem := EnsureCellProviderDirect(fGrid.Col, fGrid.Row);
+  lCurrentCell := CurrentProviderCell;
+  lItem := EnsureCellProviderDirect(lCurrentCell.X, lCurrentCell.Y);
   if lItem = nil then
   begin
     Exit;
   end;
 
-  aName := CellText(fGrid.Col, fGrid.Row);
+  aName := CellText(lCurrentCell.X, lCurrentCell.Y);
   aProvider := lItem.RawElementProvider;
   Result := aProvider <> nil;
 end;
@@ -843,8 +948,28 @@ begin
   Result := (lActiveControl = fGrid) or ((lActiveControl <> nil) and fGrid.ContainsControl(lActiveControl));
 end;
 
+function TAccessibilityAdvStringGridProvider.HitCell(const aPoint: TPoint; aCol: Integer;
+  aRow: Integer): TPoint;
+var
+  lCellRect: TRect;
+  lRepresentative: TPoint;
+begin
+  Result := NormalizedCell(aCol, aRow);
+  lRepresentative := MergeRepresentativeForMarker(aCol, aRow);
+  if (lRepresentative.X >= 0) and (lRepresentative.Y >= 0) then
+  begin
+    lCellRect := fGrid.CellRect(lRepresentative.X, lRepresentative.Y);
+    if PtInRect(lCellRect, aPoint) then
+    begin
+      Result := lRepresentative;
+      Exit;
+    end;
+  end;
+end;
+
 function TAccessibilityAdvStringGridProvider.IsAccessibleCell(aCol: Integer; aRow: Integer): Boolean;
 var
+  lNormalizedCell: TPoint;
   lRealCell: TPoint;
 begin
   Result := False;
@@ -853,9 +978,14 @@ begin
     Exit;
   end;
 
+  lNormalizedCell := NormalizedCell(aCol, aRow);
+  if (lNormalizedCell.X <> aCol) or (lNormalizedCell.Y <> aRow) then
+  begin
+    Exit;
+  end;
+
   lRealCell := RealCell(aCol, aRow);
-  Result := not fGrid.IsHiddenColumn(lRealCell.X) and not fGrid.IsHiddenRow(fGrid.RealRowIndex(aRow)) and
-    not fGrid.IsMergedNonBaseCell(lRealCell.X, lRealCell.Y);
+  Result := not fGrid.IsHiddenColumn(lRealCell.X) and not fGrid.IsHiddenRow(fGrid.RealRowIndex(aRow));
 end;
 
 function TAccessibilityAdvStringGridProvider.IsVisibleCell(aCol: Integer; aRow: Integer): Boolean;
@@ -870,9 +1000,9 @@ begin
   Result := VisibleCellRect(aCol, aRow, lCellRect);
 end;
 
-function TAccessibilityAdvStringGridProvider.NormalizedCell(aCol: Integer; aRow: Integer): TPoint;
+function TAccessibilityAdvStringGridProvider.MergeBaseCell(aCol: Integer; aRow: Integer): TPoint;
 var
-  lBaseCell: TPoint;
+  lMarkerCell: TPoint;
   lRealCell: TPoint;
 begin
   Result := Point(aCol, aRow);
@@ -882,19 +1012,197 @@ begin
   end;
 
   lRealCell := RealCell(aCol, aRow);
+  lMarkerCell := fGrid.BaseCell(lRealCell.X, lRealCell.Y);
+  Result := Point(lMarkerCell.X, fGrid.RealRowIndex(lMarkerCell.Y));
   if fGrid.IsMergedNonBaseCell(lRealCell.X, lRealCell.Y) then
   begin
-    lBaseCell := fGrid.BaseCell(lRealCell.X, lRealCell.Y);
-    Result := Point(fGrid.DisplColIndex(lBaseCell.X), lBaseCell.Y);
+    Result.Y := fGrid.RealRowIndex(aRow) - (aRow - lMarkerCell.Y);
   end;
+end;
+
+function TAccessibilityAdvStringGridProvider.MergeBaseIsVisible(const aBaseCell: TPoint): Boolean;
+var
+  lDisplayRow: Integer;
+  lSpan: TPoint;
+begin
+  Result := False;
+  if (fGrid = nil) or (aBaseCell.X < 0) or (aBaseCell.X >= fGrid.AllColCount) or
+    (aBaseCell.Y < 0) or (aBaseCell.Y >= fGrid.AllRowCount) or fGrid.IsHiddenColumn(aBaseCell.X) or
+    fGrid.IsHiddenRow(aBaseCell.Y) then
+  begin
+    Exit;
+  end;
+
+  lDisplayRow := fGrid.DisplRowIndex(aBaseCell.Y);
+  if (lDisplayRow < 0) or (lDisplayRow >= fGrid.RowCount) then
+  begin
+    Exit;
+  end;
+
+  lSpan := fGrid.CellSpan(aBaseCell.X, lDisplayRow);
+  Result := (lSpan.X > 0) or (lSpan.Y > 0);
+end;
+
+function TAccessibilityAdvStringGridProvider.MergeRepresentativeForMarker(aCol: Integer;
+  aRow: Integer): TPoint;
+var
+  lBaseCell: TPoint;
+  lCandidateBase: TPoint;
+  lCol: Integer;
+  lFirstScrollableCol: Integer;
+  lFirstScrollableRow: Integer;
+  lFixedColCount: Integer;
+  lFixedRowCount: Integer;
+  lLastScrollableCol: Integer;
+  lLastScrollableRow: Integer;
+  lMarkerCell: TPoint;
+  lPair: TPair<Int64, IAccessibilityProviderNode>;
+  lRealCell: TPoint;
+  lRepresentative: TPoint;
+  lRow: Integer;
+  function FindInRange(aFirstCol: Integer; aLastCol: Integer; aFirstRow: Integer;
+    aLastRow: Integer; out aRepresentative: TPoint): Boolean;
+  var
+    lRangeBaseCell: TPoint;
+    lRangeCandidateBase: TPoint;
+    lRangeCol: Integer;
+    lRangeRealCell: TPoint;
+    lRangeRow: Integer;
+  begin
+    aRepresentative := Point(-1, -1);
+    Result := False;
+    if (aFirstCol > aLastCol) or (aFirstRow > aLastRow) then
+    begin
+      Exit;
+    end;
+
+    for lRangeRow := aFirstRow to aLastRow do
+    begin
+      for lRangeCol := aFirstCol to aLastCol do
+      begin
+        lRangeRealCell := RealCell(lRangeCol, lRangeRow);
+        if fGrid.IsMergedNonBaseCell(lRangeRealCell.X, lRangeRealCell.Y) then
+        begin
+          lRangeCandidateBase := fGrid.BaseCell(lRangeRealCell.X, lRangeRealCell.Y);
+          if (lRangeCandidateBase.X = lMarkerCell.X) and (lRangeCandidateBase.Y = lMarkerCell.Y) then
+          begin
+            lRangeBaseCell := MergeBaseCell(lRangeCol, lRangeRow);
+            if fGrid.IsHiddenColumn(lRangeBaseCell.X) or fGrid.IsHiddenRow(lRangeBaseCell.Y) then
+            begin
+              aRepresentative := NormalizedCell(lRangeCol, lRangeRow);
+              Exit(True);
+            end;
+          end;
+        end;
+      end;
+    end;
+  end;
+begin
+  Result := Point(-1, -1);
+  if (fGrid = nil) or (aCol < 0) or (aCol >= fGrid.ColCount) or (aRow < 0) or
+    (aRow >= fGrid.RowCount) then
+  begin
+    Exit;
+  end;
+
+  lRealCell := RealCell(aCol, aRow);
+  lMarkerCell := Point(lRealCell.X, aRow);
+  for lPair in fCells do
+  begin
+    lCol := CellKeyCol(lPair.Key);
+    lRow := CellKeyRow(lPair.Key);
+    lRealCell := RealCell(lCol, lRow);
+    if fGrid.IsMergedNonBaseCell(lRealCell.X, lRealCell.Y) then
+    begin
+      lCandidateBase := fGrid.BaseCell(lRealCell.X, lRealCell.Y);
+      if (lCandidateBase.X = lMarkerCell.X) and (lCandidateBase.Y = lMarkerCell.Y) then
+      begin
+        lBaseCell := MergeBaseCell(lCol, lRow);
+        if fGrid.IsHiddenColumn(lBaseCell.X) or fGrid.IsHiddenRow(lBaseCell.Y) then
+        begin
+          Exit(NormalizedCell(lCol, lRow));
+        end;
+      end;
+    end;
+  end;
+
+  lFixedColCount := Min(fGrid.FixedCols, fGrid.ColCount);
+  lFixedRowCount := Min(fGrid.FixedRows, fGrid.RowCount);
+  lFirstScrollableCol := EnsureRange(fGrid.LeftCol, 0, Pred(fGrid.ColCount));
+  if lFirstScrollableCol < lFixedColCount then
+  begin
+    lFirstScrollableCol := lFixedColCount;
+  end;
+  lLastScrollableCol := Min(Pred(fGrid.ColCount),
+    lFirstScrollableCol + Max(0, fGrid.VisibleColCount) + 1);
+  lFirstScrollableRow := EnsureRange(fGrid.TopRow, 0, Pred(fGrid.RowCount));
+  if lFirstScrollableRow < lFixedRowCount then
+  begin
+    lFirstScrollableRow := lFixedRowCount;
+  end;
+  lLastScrollableRow := Min(Pred(fGrid.RowCount),
+    lFirstScrollableRow + Max(0, fGrid.VisibleRowCount) + 1);
+  if FindInRange(0, Pred(lFixedColCount), 0, Pred(lFixedRowCount), lRepresentative) or
+    FindInRange(lFirstScrollableCol, lLastScrollableCol, 0, Pred(lFixedRowCount), lRepresentative) or
+    FindInRange(0, Pred(lFixedColCount), lFirstScrollableRow, lLastScrollableRow, lRepresentative) or
+    FindInRange(lFirstScrollableCol, lLastScrollableCol, lFirstScrollableRow, lLastScrollableRow,
+      lRepresentative) then
+  begin
+    Result := lRepresentative;
+  end;
+end;
+
+function TAccessibilityAdvStringGridProvider.NormalizedCell(aCol: Integer; aRow: Integer): TPoint;
+var
+  lBaseCell: TPoint;
+  lCol: Integer;
+  lRealCell: TPoint;
+  lRow: Integer;
+  lSpan: TPoint;
+begin
+  Result := Point(aCol, aRow);
+  if (fGrid = nil) or (aCol < 0) or (aCol >= fGrid.ColCount) or (aRow < 0) or (aRow >= fGrid.RowCount) then
+  begin
+    Exit;
+  end;
+
+  lRealCell := RealCell(aCol, aRow);
+  lSpan := fGrid.CellSpan(lRealCell.X, lRealCell.Y);
+  if not fGrid.IsMergedNonBaseCell(lRealCell.X, lRealCell.Y) and (lSpan.X <= 0) and (lSpan.Y <= 0) then
+  begin
+    Exit;
+  end;
+
+  lBaseCell := MergeBaseCell(aCol, aRow);
+  if MergeBaseIsVisible(lBaseCell) then
+  begin
+    Exit(Point(fGrid.DisplColIndex(lBaseCell.X), fGrid.DisplRowIndex(lBaseCell.Y)));
+  end;
+
+  for lRow := 0 to Pred(fGrid.RowCount) do
+  begin
+    for lCol := 0 to Pred(fGrid.ColCount) do
+    begin
+      if CellBelongsToMerge(lCol, lRow, lBaseCell) then
+      begin
+        Exit(Point(lCol, lRow));
+      end;
+    end;
+  end;
+
+  Result := Point(-1, -1);
 end;
 
 function TAccessibilityAdvStringGridProvider.PointHitsCell(const aPoint: TPoint;
   const aExpectedCell: TPoint): Boolean;
 var
+  lBaseCell: TPoint;
+  lCellRect: TRect;
+  lExpectedRealCell: TPoint;
   lHitCell: TPoint;
   lHitCol: Integer;
   lHitPoint: TPoint;
+  lHitRealCell: TPoint;
   lHitRow: Integer;
 begin
   Result := False;
@@ -907,6 +1215,22 @@ begin
   fGrid.ScreenToCell(lHitPoint, lHitCol, lHitRow);
   lHitCell := NormalizedCell(lHitCol, lHitRow);
   Result := (lHitCell.X = aExpectedCell.X) and (lHitCell.Y = aExpectedCell.Y);
+  if Result then
+  begin
+    Exit;
+  end;
+
+  lExpectedRealCell := RealCell(aExpectedCell.X, aExpectedCell.Y);
+  if not fGrid.IsMergedNonBaseCell(lExpectedRealCell.X, lExpectedRealCell.Y) then
+  begin
+    Exit;
+  end;
+
+  lBaseCell := fGrid.BaseCell(lExpectedRealCell.X, lExpectedRealCell.Y);
+  lHitRealCell := RealCell(lHitCol, lHitRow);
+  lCellRect := fGrid.CellRect(aExpectedCell.X, aExpectedCell.Y);
+  Result := (lBaseCell.X = lHitRealCell.X) and (lBaseCell.Y = lHitRow) and
+    PtInRect(lCellRect, aPoint);
 end;
 
 function TAccessibilityAdvStringGridProvider.RealCell(aCol: Integer; aRow: Integer): TPoint;
@@ -939,9 +1263,14 @@ begin
     Exit;
   end;
 
+  lExpectedCell := NormalizedCell(aCol, aRow);
+  if (lExpectedCell.X <> aCol) or (lExpectedCell.Y <> aRow) then
+  begin
+    Exit;
+  end;
+
   lRealCell := RealCell(aCol, aRow);
-  if fGrid.IsHiddenColumn(lRealCell.X) or fGrid.IsHiddenRow(fGrid.RealRowIndex(aRow)) or
-    fGrid.IsMergedNonBaseCell(lRealCell.X, lRealCell.Y) then
+  if fGrid.IsHiddenColumn(lRealCell.X) or fGrid.IsHiddenRow(fGrid.RealRowIndex(aRow)) then
   begin
     Exit;
   end;
@@ -956,7 +1285,6 @@ begin
 
   lHitPoint := Point((lVisibleRect.Left + lVisibleRect.Right) div 2,
     (lVisibleRect.Top + lVisibleRect.Bottom) div 2);
-  lExpectedCell := NormalizedCell(aCol, aRow);
   if not PointHitsCell(lHitPoint, lExpectedCell) then
   begin
     lLeft := lVisibleRect.Left;
@@ -990,9 +1318,9 @@ end;
 
 function TAccessibilityAdvStringGridProvider.VisibleColumnSpan(aCol: Integer; aRow: Integer): Integer;
 var
-  lCell: TPoint;
+  lBaseCell: TPoint;
   lCol: Integer;
-  lSpan: TPoint;
+  lRepresentative: TPoint;
 begin
   Result := 1;
   if (fGrid = nil) or (aCol < 0) or (aCol >= fGrid.ColCount) or (aRow < 0) or (aRow >= fGrid.RowCount) then
@@ -1000,17 +1328,17 @@ begin
     Exit;
   end;
 
-  lCell := RealCell(aCol, aRow);
-  lSpan := fGrid.CellSpan(lCell.X, lCell.Y);
-  if lSpan.X <= 0 then
+  lRepresentative := NormalizedCell(aCol, aRow);
+  lBaseCell := MergeBaseCell(aCol, aRow);
+  if not CellBelongsToMerge(lRepresentative.X, lRepresentative.Y, lBaseCell) then
   begin
     Exit;
   end;
 
   Result := 0;
-  for lCol := lCell.X to lCell.X + lSpan.X do
+  for lCol := 0 to Pred(fGrid.ColCount) do
   begin
-    if not fGrid.IsHiddenColumn(lCol) then
+    if CellBelongsToMerge(lCol, lRepresentative.Y, lBaseCell) then
     begin
       Inc(Result);
     end;
@@ -1024,10 +1352,9 @@ end;
 
 function TAccessibilityAdvStringGridProvider.VisibleRowSpan(aCol: Integer; aRow: Integer): Integer;
 var
-  lBaseRow: Integer;
-  lCell: TPoint;
+  lBaseCell: TPoint;
+  lRepresentative: TPoint;
   lRow: Integer;
-  lSpan: TPoint;
 begin
   Result := 1;
   if (fGrid = nil) or (aCol < 0) or (aCol >= fGrid.ColCount) or (aRow < 0) or (aRow >= fGrid.RowCount) then
@@ -1035,18 +1362,17 @@ begin
     Exit;
   end;
 
-  lCell := RealCell(aCol, aRow);
-  lSpan := fGrid.CellSpan(lCell.X, lCell.Y);
-  if lSpan.Y <= 0 then
+  lRepresentative := NormalizedCell(aCol, aRow);
+  lBaseCell := MergeBaseCell(aCol, aRow);
+  if not CellBelongsToMerge(lRepresentative.X, lRepresentative.Y, lBaseCell) then
   begin
     Exit;
   end;
 
   Result := 0;
-  lBaseRow := fGrid.RealRowIndex(lCell.Y);
-  for lRow := lBaseRow to lBaseRow + lSpan.Y do
+  for lRow := 0 to Pred(fGrid.RowCount) do
   begin
-    if not fGrid.IsHiddenRow(lRow) then
+    if CellBelongsToMerge(lRepresentative.X, lRow, lBaseCell) then
     begin
       Inc(Result);
     end;
@@ -1090,6 +1416,7 @@ var
   lRow: Integer;
   lStopwatch: TStopwatch;
 begin
+  fResolvedCurrentValid := False;
   if (fGrid = nil) or IsDisconnected or not ControlIsInActiveVisibleTree(fGrid) or (fGrid.ColCount <= 0) or
     (fGrid.RowCount <= 0) then
   begin

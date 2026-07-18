@@ -261,20 +261,12 @@ end;
 
 function AdvCellVisibleRect(aGrid: TAdvStringGrid; aCol: Integer; aRow: Integer; out aRect: TRect): Boolean;
 var
-  lBaseCell: TPoint;
   lCellRect: TRect;
-  lExpectedCell: TPoint;
-  lHitCell: TPoint;
-  lHitCol: Integer;
-  lHitPoint: TPoint;
-  lHitRow: Integer;
   lRealCell: TPoint;
-  lRealHitCell: TPoint;
 begin
   aRect := TRect.Empty;
   lRealCell := Point(aGrid.RealColIndex(aCol), aRow);
-  if aGrid.IsHiddenColumn(lRealCell.X) or aGrid.IsHiddenRow(aGrid.RealRowIndex(aRow)) or
-    aGrid.IsMergedNonBaseCell(lRealCell.X, lRealCell.Y) then
+  if aGrid.IsHiddenColumn(lRealCell.X) or aGrid.IsHiddenRow(aGrid.RealRowIndex(aRow)) then
   begin
     Exit(False);
   end;
@@ -287,22 +279,7 @@ begin
     Exit(False);
   end;
 
-  lHitPoint := Point((aRect.Left + aRect.Right) div 2, (aRect.Top + aRect.Bottom) div 2);
-  lHitPoint := aGrid.ClientToScreen(lHitPoint);
-  aGrid.ScreenToCell(lHitPoint, lHitCol, lHitRow);
-  lExpectedCell := Point(aCol, aRow);
-  lHitCell := Point(lHitCol, lHitRow);
-  if (lHitCol >= 0) and (lHitCol < aGrid.ColCount) and (lHitRow >= 0) and (lHitRow < aGrid.RowCount) then
-  begin
-    lRealHitCell := Point(aGrid.RealColIndex(lHitCol), lHitRow);
-    if aGrid.IsMergedNonBaseCell(lRealHitCell.X, lRealHitCell.Y) then
-    begin
-      lBaseCell := aGrid.BaseCell(lRealHitCell.X, lRealHitCell.Y);
-      lHitCell := Point(aGrid.DisplColIndex(lBaseCell.X), lBaseCell.Y);
-    end;
-  end;
-
-  Result := (lHitCell.X = lExpectedCell.X) and (lHitCell.Y = lExpectedCell.Y);
+  Result := True;
 end;
 
 function ScreenAdvCellCenter(aGrid: TAdvStringGrid; aCol: Integer; aRow: Integer): TPoint;
@@ -716,10 +693,14 @@ var
   lApi: IProbeUiaApi;
   lCellFragment: IRawElementProviderFragment;
   lCellProvider: IRawElementProviderSimple;
+  lColumn: Integer;
+  lColumnSpan: Integer;
   lFocus: IRawElementProviderFragment;
+  lFocusName: string;
   lForm: TForm;
   lGrid: TAdvStringGrid;
   lGridFragment: IRawElementProviderFragment;
+  lGridItem: IGridItemProvider;
   lGridPattern: IGridProvider;
   lHit: IRawElementProviderFragment;
   lMessage: TMessage;
@@ -727,6 +708,8 @@ var
   lPoint: TPoint;
   lRootFragment: IRawElementProviderFragment;
   lRoot: IRawElementProviderFragmentRoot;
+  lRow: Integer;
+  lRowSpan: Integer;
 begin
   lForm := TForm.Create(nil);
   try
@@ -736,8 +719,8 @@ begin
     lGrid.Name := 'AdvOrdersGrid';
     lGrid.Parent := lForm;
     lGrid.SetBounds(ScaleValue(8), ScaleValue(8), ScaleValue(280), ScaleValue(135));
-    lGrid.ColCount := 8;
-    lGrid.RowCount := 8;
+    lGrid.ColCount := 14;
+    lGrid.RowCount := 14;
     lGrid.FixedCols := 1;
     lGrid.FixedRows := 1;
     lGrid.DefaultColWidth := ScaleValue(50);
@@ -751,8 +734,18 @@ begin
     lGrid.Cells[1, 3] := 'Hidden TMS row';
     lGrid.Cells[1, 4] := 'After hidden TMS row';
     lGrid.Cells[7, 7] := 'Scrolled TMS cell';
+    lGrid.MergeCells(8, 2, 3, 1);
+    lGrid.Cells[8, 2] := '<b>Hidden column merge base</b>';
+    lGrid.MergeCells(2, 8, 1, 3);
+    lGrid.WideCells[2, 8] := 'Hidden row merge base';
+    lGrid.MergeCells(4, 11, 1, 2);
+    lGrid.Cells[4, 11] := 'Fully hidden merge';
     lGrid.HideColumn(3);
+    lGrid.HideColumn(8);
     lGrid.HideRow(3);
+    lGrid.HideRow(8);
+    lGrid.HideRow(11);
+    lGrid.HideRow(12);
     lGrid.Col := 2;
     lGrid.Row := 1;
     lForm.ActiveControl := lGrid;
@@ -798,6 +791,55 @@ begin
     Require(ProviderStringProperty(FragmentFromSimple(lCellProvider), UIA_NamePropertyId) = 'After hidden TMS row',
       'TMS grid visible row after hidden row was not exposed.');
 
+    Require(lGridPattern.GetItem(2, 7, lCellProvider) = S_OK,
+      'TMS hidden-base-column merge GetItem failed.');
+    lCellFragment := FragmentFromSimple(lCellProvider);
+    Require(ProviderStringProperty(lCellFragment, UIA_NamePropertyId) = 'Hidden column merge base',
+      'TMS hidden-base-column merge did not expose the base text.');
+    Require(Supports(lCellProvider, IGridItemProvider, lGridItem),
+      'TMS hidden-base-column merge did not expose GridItem.');
+    Require(lGridItem.Get_Column(lColumn) = S_OK, 'TMS hidden-base-column merge column query failed.');
+    Require(lGridItem.Get_Row(lRow) = S_OK, 'TMS hidden-base-column merge row query failed.');
+    Require(lGridItem.Get_ColumnSpan(lColumnSpan) = S_OK,
+      'TMS hidden-base-column merge column span query failed.');
+    Require(lGridItem.Get_RowSpan(lRowSpan) = S_OK, 'TMS hidden-base-column merge row span query failed.');
+    Require((lColumn = 7) and (lRow = 2) and (lColumnSpan = 2) and (lRowSpan = 1),
+      'TMS hidden-base-column merge coordinates or visible spans mismatch.');
+
+    Require(lGridPattern.GetItem(7, 2, lCellProvider) = S_OK,
+      'TMS hidden-base-row merge GetItem failed.');
+    lCellFragment := FragmentFromSimple(lCellProvider);
+    Require(ProviderStringProperty(lCellFragment, UIA_NamePropertyId) = 'Hidden row merge base',
+      'TMS hidden-base-row merge did not expose the base text.');
+    Require(Supports(lCellProvider, IGridItemProvider, lGridItem),
+      'TMS hidden-base-row merge did not expose GridItem.');
+    Require(lGridItem.Get_Column(lColumn) = S_OK, 'TMS hidden-base-row merge column query failed.');
+    Require(lGridItem.Get_Row(lRow) = S_OK, 'TMS hidden-base-row merge row query failed.');
+    Require(lGridItem.Get_ColumnSpan(lColumnSpan) = S_OK,
+      'TMS hidden-base-row merge column span query failed.');
+    Require(lGridItem.Get_RowSpan(lRowSpan) = S_OK, 'TMS hidden-base-row merge row span query failed.');
+    Require((lColumn = 2) and (lRow = 7) and (lColumnSpan = 1) and (lRowSpan = 2),
+      'TMS hidden-base-row merge coordinates or visible spans mismatch.');
+    Require(not ChildNameExists(lGridFragment, 'Fully hidden merge'),
+      'TMS fully hidden merge was exposed.');
+
+    lGrid.Col := 2;
+    lGrid.Row := 7;
+    Require(lRoot.GetFocus(lFocus) = S_OK, 'TMS hidden-base-row merge focus query failed.');
+    Require(lFocus <> nil, 'TMS hidden-base-row merge focus query returned no cell provider.');
+    lFocusName := ProviderStringProperty(lFocus, UIA_NamePropertyId);
+    Require(lFocusName = 'Hidden row merge base',
+      Format('TMS hidden-base-row merge focus did not resolve to the visible representative: current=(%d,%d), name="%s".',
+        [lGrid.Col, lGrid.Row, lFocusName]));
+    lGrid.ScrollInView(2, 7);
+    lPoint := ScreenAdvCellCenter(lGrid, 2, 7);
+    Require(lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit) = S_OK,
+      'TMS hidden-base-row merge hit testing failed.');
+    Require(lHit <> nil, 'TMS hidden-base-row merge hit testing returned no cell provider.');
+    Require(ProviderStringProperty(lHit, UIA_NamePropertyId) = 'Hidden row merge base',
+      'TMS hidden-base-row merge hit testing did not resolve to the visible representative.');
+
+    lGrid.ScrollInView(1, 1);
     lPoint := ScreenAdvCellCenter(lGrid, 1, 1);
     Require(lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit) = S_OK, 'TMS grid hit testing failed.');
     Require(lHit <> nil, 'TMS grid hit testing returned no cell provider.');
@@ -824,7 +866,7 @@ begin
     lGrid.ScrollInView(1, 1);
     Require(not ChildNameExists(lGridFragment, 'Scrolled TMS cell'), 'Scrolled-out TMS grid cell was exposed.');
 
-    Writeln('UIA_PROBE_OK TAdvStringGridCells: install-path=manager-custom-registry-wm-getobject; opt-in TMS DataGrid provider, stripped HTML text, wide-cell fallback, per-cell hit testing, current-cell focus, hidden-column and hidden-row remapping, hidden-cell omission, and scrolled-cell pruning confirmed.');
+    Writeln('UIA_PROBE_OK TAdvStringGridCells: install-path=manager-custom-registry-wm-getobject; opt-in TMS DataGrid provider, stripped HTML text, wide-cell fallback, hidden-base merged-cell text, visible spans, GridItem coordinates, focus, hit testing, fully hidden merge omission, hidden-column and hidden-row remapping, hidden-cell omission, and scrolled-cell pruning confirmed.');
   finally
     TAccessibilityManager.Uninstall;
     TAccessibilityManagerInternals.SetUiaApi(nil);

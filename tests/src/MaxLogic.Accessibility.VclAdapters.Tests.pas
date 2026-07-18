@@ -66,10 +66,7 @@ type
     procedure ListBoxSelectionCollapseScalesLinearly;
     [Test]
     [Category('ListBox')]
-    procedure ListBoxPartialSelectionPruneScalesLinearly;
-    [Test]
-    [Category('ListBox')]
-    procedure ListBoxPartialSelectionPruneReadsItemCountOnce;
+    procedure ListBoxPartialSelectionPruneUsesBoundedNativeQueries;
     [Test]
     [Category('ListBox')]
     procedure ListBoxHitTestingPrunesScrolledProviders;
@@ -1852,28 +1849,10 @@ begin
     [lSmallTicks, lLargeTicks, cGrowthFactor]));
 end;
 
-procedure TAccessibilityVclAdaptersTests.ListBoxPartialSelectionPruneScalesLinearly;
-const
-  cGrowthFactor = 4;
-  cMaximumTickGrowth = 6;
-  cSmallItemCount = 2048;
-var
-  lLargeTicks: Int64;
-  lSmallTicks: Int64;
-begin
-  lSmallTicks := MeasureListBoxSelectionCollapseTicks(128, True);
-  Assert.IsTrue(lSmallTicks > 0, 'Partial-prune warm-up must be positive.');
-  lSmallTicks := MeasureBestListBoxSelectionCollapseTicks(cSmallItemCount, True, 3);
-  lLargeTicks := MeasureBestListBoxSelectionCollapseTicks(cSmallItemCount * cGrowthFactor, True, 3);
-
-  Assert.IsTrue(lLargeTicks <= lSmallTicks * cMaximumTickGrowth,
-    Format('Partial selection pruning grew from %d to %d ticks for %dx items.',
-    [lSmallTicks, lLargeTicks, cGrowthFactor]));
-end;
-
-procedure TAccessibilityVclAdaptersTests.ListBoxPartialSelectionPruneReadsItemCountOnce;
+procedure TAccessibilityVclAdaptersTests.ListBoxPartialSelectionPruneUsesBoundedNativeQueries;
 const
   cItemCount = 256;
+  cMaximumBulkSelectionMessages = 2;
   cMaximumItemCountReads = 8;
 var
   i: Integer;
@@ -1909,8 +1888,14 @@ begin
     end;
 
     lListBox.ResetGetItemCountMessageCount;
+    lListBox.ResetGetSelectionMessageCount;
     Assert.AreEqual(S_OK, lAccess.DirectChildCount(lChildCount));
     Assert.IsTrue(lChildCount < cItemCount, 'Partial pruning must remove unretained providers.');
+    Assert.AreEqual(0, lListBox.GetSelectionMessageCount,
+      'Partial pruning must use a bulk selection snapshot instead of per-item LB_GETSEL queries.');
+    Assert.IsTrue(lListBox.BulkSelectionMessageCount <= cMaximumBulkSelectionMessages,
+      Format('Partial pruning used %d bulk selection messages; expected at most %d.',
+      [lListBox.BulkSelectionMessageCount, cMaximumBulkSelectionMessages]));
     Assert.IsTrue(lListBox.GetItemCountMessageCount <= cMaximumItemCountReads,
       Format('Partial pruning queried LB_GETCOUNT %d times; expected at most %d.',
       [lListBox.GetItemCountMessageCount, cMaximumItemCountReads]));

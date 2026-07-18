@@ -9,6 +9,7 @@
 ### Fixed
 - UIA and MSAA now return current VCL captions, editable text names, and help text after those properties change at runtime instead of retaining the values captured when the provider was created.
 - The opt-in `TAdvStringGrid` adapter now exposes a visible representative for a merged range whose base row or column is hidden, preserving the hidden base text, visible spans, GridItem coordinates, focus, selection, and hit testing while omitting fully hidden merges.
+- The complex demo now sizes its `TAdvStringGrid` for every configured hidden-base merge, keeping keyboard navigation inside valid grid coordinates.
 - Supported VCL text inputs now expose the exact associated label provider through UIA `LabeledBy`, preferring explicit `FocusControl` and `TLabeledEdit` relationships before bounded same-parent geometry while rejecting hidden, empty, icon-only, cross-container, distant, ambiguous, and unlabeled candidates.
 
 ## 2026-07-10

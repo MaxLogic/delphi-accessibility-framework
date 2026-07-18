@@ -878,11 +878,11 @@ object AccessibilityDemoMainForm: TAccessibilityDemoMainForm
           Width = 546
           Height = 516
           Align = alClient
-          ColCount = 5
+          ColCount = 8
           DefaultColWidth = 118
           DefaultRowHeight = 28
           FixedCols = 1
-          RowCount = 8
+          RowCount = 13
           TabOrder = 1
         end
       end

@@ -23,6 +23,8 @@ type
     [Test]
     procedure DemoDynamicContentTimerUpdatesAllSamples;
     [Test]
+    procedure DemoTmsHiddenBaseMergesStayWithinGridBounds;
+    [Test]
     procedure DemoLabeledBySamplesExposeExpectedRelationships;
     [Test]
     procedure FormRootProviderUsesWindowControlType;
@@ -1217,6 +1219,23 @@ begin
     AssertDemoDynamicControlUpdates(lForm, 'edtDynamicText', TEdit);
     AssertDemoDynamicControlUpdates(lForm, 'btnDynamicCaption', TButton);
     AssertDemoDynamicControlUpdates(lForm, 'bitBtnDynamicCaption', TBitBtn);
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityVclAdaptersTests.DemoTmsHiddenBaseMergesStayWithinGridBounds;
+var
+  lForm: TAccessibilityDemoMainForm;
+begin
+  lForm := TAccessibilityDemoMainForm.Create(nil);
+  try
+    Assert.IsTrue(lForm.AdvStringGridAudit.ColCount >= 7,
+      Format('The hidden-column merge must retain seven visible columns after hiding its base; ColCount=%d.',
+        [lForm.AdvStringGridAudit.ColCount]));
+    Assert.IsTrue(lForm.AdvStringGridAudit.RowCount >= 10,
+      Format('The configured merges must retain ten visible rows after hiding three bases; RowCount=%d.',
+        [lForm.AdvStringGridAudit.RowCount]));
   finally
     lForm.Free;
   end;

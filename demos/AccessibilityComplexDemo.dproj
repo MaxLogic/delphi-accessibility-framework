@@ -98,8 +98,8 @@
     <VerInfo_IncludeVerInfo>true</VerInfo_IncludeVerInfo>
     <VerInfo_AutoIncVersion>true</VerInfo_AutoIncVersion>
     <VerInfo_Locale>1045</VerInfo_Locale>
-    <VerInfo_Build>230</VerInfo_Build>
-    <VerInfo_Keys>CompanyName=MaxLogic;FileDescription=Accessibility Framework Complex Demo;FileVersion=0.1.0.230;InternalName=AccessibilityComplexDemo;LegalCopyright=;OriginalFilename=AccessibilityComplexDemo.exe;ProductName=MaxLogic Accessibility Framework Demo;ProductVersion=0.1.0.0</VerInfo_Keys>
+    <VerInfo_Build>231</VerInfo_Build>
+    <VerInfo_Keys>CompanyName=MaxLogic;FileDescription=Accessibility Framework Complex Demo;FileVersion=0.1.0.231;InternalName=AccessibilityComplexDemo;LegalCopyright=;OriginalFilename=AccessibilityComplexDemo.exe;ProductName=MaxLogic Accessibility Framework Demo;ProductVersion=0.1.0.0</VerInfo_Keys>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Cfg_2_Win64)'!=''">
     <BT_BuildType>Debug</BT_BuildType>

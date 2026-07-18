@@ -23,6 +23,8 @@ type
     [Test]
     procedure DemoDynamicContentTimerUpdatesAllSamples;
     [Test]
+    procedure DemoLabeledBySamplesExposeExpectedRelationships;
+    [Test]
     procedure FormRootProviderUsesWindowControlType;
     [Test]
     procedure FormRootProviderOverridesNativeWindowTree;
@@ -50,6 +52,10 @@ type
     procedure DemoRadioGroupItemHitTestingReturnsItemProvider;
     [Test]
     procedure TextInputsExposeAssociatedLabelsAndValues;
+    [Test]
+    procedure TextInputsExposeExactLabeledByProviders;
+    [Test]
+    procedure TextInputsRejectInvalidLabeledByRelationships;
     [Test]
     [Category('Memo')]
     procedure MemoProviderCacheRemainsBoundedAcrossScrollHistory;
@@ -570,6 +576,48 @@ begin
   Result := string(lValue);
 end;
 
+function ControlProvider(const aRoot: IAccessibilityProviderNode; aControl: TControl): IRawElementProviderSimple;
+var
+  lLookup: IAccessibilityVclProviderLookup;
+begin
+  Assert.IsTrue(Supports(aRoot, IAccessibilityVclProviderLookup, lLookup));
+  Assert.IsTrue(lLookup.TryFindProviderForControl(aControl, Result),
+    aControl.Name + ' must have a provider.');
+end;
+
+function ElementProviderProperty(const aProvider: IRawElementProviderSimple; aPropertyId: PROPERTYID):
+  IRawElementProviderSimple;
+var
+  lUnknown: IUnknown;
+  lValue: OleVariant;
+begin
+  Result := nil;
+  Assert.AreEqual(S_OK, aProvider.GetPropertyValue(aPropertyId, lValue));
+  if VarType(lValue) <> varUnknown then
+  begin
+    Exit;
+  end;
+
+  lUnknown := IUnknown(lValue);
+  Supports(lUnknown, IRawElementProviderSimple, Result);
+end;
+
+function ProvidersAreSame(const aLeft: IRawElementProviderSimple; const aRight: IRawElementProviderSimple):
+  Boolean;
+var
+  lLeft: IUnknown;
+  lRight: IUnknown;
+begin
+  if (aLeft = nil) or (aRight = nil) then
+  begin
+    Exit(aLeft = aRight);
+  end;
+
+  lLeft := aLeft as IUnknown;
+  lRight := aRight as IUnknown;
+  Result := lLeft = lRight;
+end;
+
 function FindDescendantByName(const aFragment: IRawElementProviderFragment; const aName: string):
   IRawElementProviderFragment;
 var
@@ -1016,6 +1064,45 @@ begin
   end;
 end;
 
+procedure TAccessibilityVclAdaptersTests.DemoLabeledBySamplesExposeExpectedRelationships;
+var
+  lForm: TAccessibilityDemoMainForm;
+  lInputProvider: IRawElementProviderSimple;
+  lLabelProvider: IRawElementProviderSimple;
+  lProvider: IAccessibilityProviderNode;
+begin
+  lForm := TAccessibilityDemoMainForm.Create(nil);
+  try
+    lForm.HandleNeeded;
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+
+    lInputProvider := ControlProvider(lProvider, lForm.edtSearch);
+    lLabelProvider := ControlProvider(lProvider, lForm.StaticTextSearch);
+    Assert.IsTrue(ProvidersAreSame(lLabelProvider,
+      ElementProviderProperty(lInputProvider, UIA_LabeledByPropertyId)),
+      'The search edit must use geometrically inferred LabeledBy.');
+
+    lInputProvider := ControlProvider(lProvider, lForm.cmbQueue);
+    lLabelProvider := ControlProvider(lProvider, lForm.StaticTextQueue);
+    Assert.IsTrue(ProvidersAreSame(lLabelProvider,
+      ElementProviderProperty(lInputProvider, UIA_LabeledByPropertyId)),
+      'The queue combo must use explicit FocusControl LabeledBy.');
+
+    lInputProvider := ControlProvider(lProvider, lForm.labeledEditReference);
+    lLabelProvider := ControlProvider(lProvider, lForm.labeledEditReference.EditLabel);
+    Assert.IsTrue(ProvidersAreSame(lLabelProvider,
+      ElementProviderProperty(lInputProvider, UIA_LabeledByPropertyId)),
+      'TLabeledEdit must use its bound label provider.');
+
+    Assert.IsNull(ElementProviderProperty(ControlProvider(lProvider, lForm.edtAmbiguousLabelDemo),
+      UIA_LabeledByPropertyId));
+    Assert.IsNull(ElementProviderProperty(ControlProvider(lProvider, lForm.edtUnlabeledDemo),
+      UIA_LabeledByPropertyId));
+  finally
+    lForm.Free;
+  end;
+end;
+
 procedure TAccessibilityVclAdaptersTests.RootHitTestingReturnsDeepestNonWindowedLabel;
 var
   lForm: TForm;
@@ -1125,6 +1212,213 @@ begin
 
     Assert.AreEqual('Reference number', ProviderStringProperty(lLabeledEditFragment, UIA_NamePropertyId));
     Assert.AreEqual('REF-1042', ValuePatternText(lLabeledEditFragment));
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityVclAdaptersTests.TextInputsExposeExactLabeledByProviders;
+var
+  lCombo: TComboBox;
+  lComboProvider: IRawElementProviderSimple;
+  lExplicitEdit: TEdit;
+  lExplicitEditProvider: IRawElementProviderSimple;
+  lExplicitLabel: TLabel;
+  lExplicitLabelProvider: IRawElementProviderSimple;
+  lForm: TForm;
+  lInferredLabel: TStaticText;
+  lInferredLabelProvider: IRawElementProviderSimple;
+  lLabeledEdit: TLabeledEdit;
+  lLabeledEditLabelProvider: IRawElementProviderSimple;
+  lLabeledEditProvider: IRawElementProviderSimple;
+  lProvider: IAccessibilityProviderNode;
+  lValue: OleVariant;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lExplicitLabel := TLabel.Create(lForm);
+    lExplicitLabel.Name := 'ExplicitAccountLabel';
+    lExplicitLabel.Caption := 'Account';
+    lExplicitLabel.Parent := lForm;
+    lExplicitLabel.SetBounds(12, 16, 90, 23);
+
+    lExplicitEdit := TEdit.Create(lForm);
+    lExplicitEdit.Name := 'ExplicitAccountEdit';
+    lExplicitEdit.Parent := lForm;
+    lExplicitEdit.SetBounds(112, 16, 160, 23);
+    lExplicitEdit.Text := 'Alice';
+    lExplicitLabel.FocusControl := lExplicitEdit;
+
+    lInferredLabel := TStaticText.Create(lForm);
+    lInferredLabel.Name := 'InferredQueueLabel';
+    lInferredLabel.Caption := 'Queue';
+    lInferredLabel.Parent := lForm;
+    lInferredLabel.SetBounds(12, 56, 160, 20);
+
+    lCombo := TComboBox.Create(lForm);
+    lCombo.Name := 'InferredQueueCombo';
+    lCombo.Parent := lForm;
+    lCombo.SetBounds(12, 80, 160, 23);
+    lCombo.Items.Add('Urgent');
+    lCombo.ItemIndex := 0;
+
+    lLabeledEdit := TLabeledEdit.Create(lForm);
+    lLabeledEdit.Name := 'ReferenceEdit';
+    lLabeledEdit.Parent := lForm;
+    lLabeledEdit.SetBounds(112, 136, 160, 23);
+    lLabeledEdit.EditLabel.Caption := 'Reference number';
+    lLabeledEdit.Text := 'REF-1042';
+
+    lForm.HandleNeeded;
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lExplicitEditProvider := ControlProvider(lProvider, lExplicitEdit);
+    lExplicitLabelProvider := ControlProvider(lProvider, lExplicitLabel);
+    lComboProvider := ControlProvider(lProvider, lCombo);
+    lInferredLabelProvider := ControlProvider(lProvider, lInferredLabel);
+    lLabeledEditProvider := ControlProvider(lProvider, lLabeledEdit);
+    lLabeledEditLabelProvider := ControlProvider(lProvider, lLabeledEdit.EditLabel);
+
+    Assert.IsTrue(ProvidersAreSame(lExplicitLabelProvider,
+      ElementProviderProperty(lExplicitEditProvider, UIA_LabeledByPropertyId)));
+    Assert.IsTrue(ProvidersAreSame(lInferredLabelProvider,
+      ElementProviderProperty(lComboProvider, UIA_LabeledByPropertyId)));
+    Assert.IsTrue(ProvidersAreSame(lLabeledEditLabelProvider,
+      ElementProviderProperty(lLabeledEditProvider, UIA_LabeledByPropertyId)));
+
+    Assert.AreEqual(S_OK, lExplicitEditProvider.GetPropertyValue(UIA_NamePropertyId, lValue));
+    Assert.AreEqual('Account', string(lValue), 'Existing accessible Name fallback must remain available.');
+    lExplicitLabel.Caption := 'Current account';
+    Assert.AreEqual(S_OK, ElementProviderProperty(lExplicitEditProvider,
+      UIA_LabeledByPropertyId).GetPropertyValue(UIA_NamePropertyId, lValue));
+    Assert.AreEqual('Current account', string(lValue), 'LabeledBy must expose the current label caption.');
+    Assert.AreEqual(S_OK, lExplicitEditProvider.GetPropertyValue(UIA_NamePropertyId, lValue));
+    Assert.AreEqual('Current account', string(lValue), 'Accessible Name fallback must stay current with LabeledBy.');
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityVclAdaptersTests.TextInputsRejectInvalidLabeledByRelationships;
+var
+  lAmbiguousEdit: TEdit;
+  lCrossContainerEdit: TEdit;
+  lCrossContainerLabel: TLabel;
+  lDistantEdit: TEdit;
+  lDistantLabel: TStaticText;
+  lDistantPanel: TPanel;
+  lEmptyEdit: TEdit;
+  lEmptyLabel: TLabel;
+  lFirstAmbiguousLabel: TStaticText;
+  lForm: TForm;
+  lHiddenEdit: TEdit;
+  lHiddenLabel: TLabel;
+  lIconEdit: TEdit;
+  lIconLabel: TLabel;
+  lLabelPanel: TPanel;
+  lProvider: IAccessibilityProviderNode;
+  lSecondAmbiguousLabel: TStaticText;
+  lTargetPanel: TPanel;
+  lUnlabeledEdit: TEdit;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lHiddenLabel := TLabel.Create(lForm);
+    lHiddenLabel.Caption := 'Hidden label';
+    lHiddenLabel.Parent := lForm;
+    lHiddenLabel.SetBounds(12, 12, 90, 23);
+    lHiddenLabel.Visible := False;
+    lHiddenEdit := TEdit.Create(lForm);
+    lHiddenEdit.Name := 'HiddenLabelEdit';
+    lHiddenEdit.Parent := lForm;
+    lHiddenEdit.SetBounds(112, 12, 160, 23);
+    lHiddenEdit.Text := 'Hidden value';
+    lHiddenLabel.FocusControl := lHiddenEdit;
+
+    lEmptyLabel := TLabel.Create(lForm);
+    lEmptyLabel.Parent := lForm;
+    lEmptyLabel.SetBounds(12, 52, 90, 23);
+    lEmptyEdit := TEdit.Create(lForm);
+    lEmptyEdit.Name := 'EmptyLabelEdit';
+    lEmptyEdit.Parent := lForm;
+    lEmptyEdit.SetBounds(112, 52, 160, 23);
+    lEmptyEdit.Text := 'Empty value';
+    lEmptyLabel.FocusControl := lEmptyEdit;
+
+    lIconLabel := TLabel.Create(lForm);
+    lIconLabel.Caption := WideChar($E001);
+    lIconLabel.Parent := lForm;
+    lIconLabel.SetBounds(12, 92, 90, 23);
+    lIconEdit := TEdit.Create(lForm);
+    lIconEdit.Name := 'IconLabelEdit';
+    lIconEdit.Parent := lForm;
+    lIconEdit.SetBounds(112, 92, 160, 23);
+    lIconEdit.Text := 'Icon value';
+    lIconLabel.FocusControl := lIconEdit;
+
+    lLabelPanel := TPanel.Create(lForm);
+    lLabelPanel.Caption := '';
+    lLabelPanel.Parent := lForm;
+    lLabelPanel.SetBounds(12, 132, 90, 40);
+    lCrossContainerLabel := TLabel.Create(lForm);
+    lCrossContainerLabel.Caption := 'Other panel';
+    lCrossContainerLabel.Parent := lLabelPanel;
+    lCrossContainerLabel.SetBounds(0, 0, 90, 23);
+    lTargetPanel := TPanel.Create(lForm);
+    lTargetPanel.Caption := '';
+    lTargetPanel.Parent := lForm;
+    lTargetPanel.SetBounds(112, 132, 160, 40);
+    lCrossContainerEdit := TEdit.Create(lForm);
+    lCrossContainerEdit.Name := 'CrossContainerEdit';
+    lCrossContainerEdit.Parent := lTargetPanel;
+    lCrossContainerEdit.SetBounds(0, 0, 160, 23);
+    lCrossContainerEdit.Text := 'Cross value';
+    lCrossContainerLabel.FocusControl := lCrossContainerEdit;
+
+    lFirstAmbiguousLabel := TStaticText.Create(lForm);
+    lFirstAmbiguousLabel.Caption := 'First candidate';
+    lFirstAmbiguousLabel.Parent := lForm;
+    lFirstAmbiguousLabel.SetBounds(12, 184, 90, 23);
+    lSecondAmbiguousLabel := TStaticText.Create(lForm);
+    lSecondAmbiguousLabel.Caption := 'Second candidate';
+    lSecondAmbiguousLabel.Parent := lForm;
+    lSecondAmbiguousLabel.SetBounds(12, 184, 90, 23);
+    lAmbiguousEdit := TEdit.Create(lForm);
+    lAmbiguousEdit.Name := 'AmbiguousEdit';
+    lAmbiguousEdit.Parent := lForm;
+    lAmbiguousEdit.SetBounds(112, 184, 160, 23);
+    lAmbiguousEdit.Text := 'Ambiguous value';
+
+    lUnlabeledEdit := TEdit.Create(lForm);
+    lUnlabeledEdit.Name := 'UnlabeledEdit';
+    lUnlabeledEdit.Parent := lForm;
+    lUnlabeledEdit.SetBounds(112, 224, 160, 23);
+    lUnlabeledEdit.Text := 'Unlabeled value';
+
+    lDistantPanel := TPanel.Create(lForm);
+    lDistantPanel.Caption := '';
+    lDistantPanel.Parent := lForm;
+    lDistantPanel.SetBounds(300, 12, 180, 140);
+    lDistantLabel := TStaticText.Create(lForm);
+    lDistantLabel.Caption := 'Distant label';
+    lDistantLabel.Parent := lDistantPanel;
+    lDistantLabel.SetBounds(0, 0, 160, 20);
+    lDistantEdit := TEdit.Create(lForm);
+    lDistantEdit.Name := 'DistantEdit';
+    lDistantEdit.Parent := lDistantPanel;
+    lDistantEdit.SetBounds(0, 80, 160, 23);
+    lDistantEdit.Text := 'Distant value';
+
+    lForm.HandleNeeded;
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+
+    Assert.IsNull(ElementProviderProperty(ControlProvider(lProvider, lHiddenEdit), UIA_LabeledByPropertyId));
+    Assert.IsNull(ElementProviderProperty(ControlProvider(lProvider, lEmptyEdit), UIA_LabeledByPropertyId));
+    Assert.IsNull(ElementProviderProperty(ControlProvider(lProvider, lIconEdit), UIA_LabeledByPropertyId));
+    Assert.IsNull(ElementProviderProperty(ControlProvider(lProvider, lCrossContainerEdit),
+      UIA_LabeledByPropertyId));
+    Assert.IsNull(ElementProviderProperty(ControlProvider(lProvider, lAmbiguousEdit), UIA_LabeledByPropertyId));
+    Assert.IsNull(ElementProviderProperty(ControlProvider(lProvider, lUnlabeledEdit), UIA_LabeledByPropertyId));
+    Assert.IsNull(ElementProviderProperty(ControlProvider(lProvider, lDistantEdit), UIA_LabeledByPropertyId));
   finally
     lForm.Free;
   end;

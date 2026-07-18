@@ -4,10 +4,12 @@
 ### Added
 - The complex demo now has a `Dynamic content` tab whose `TStaticText`, `TLabel`, `TEdit`, `TButton`, and `TBitBtn` text and hints update every 10 seconds for live screen-reader verification.
 - The complex demo's `TAdvStringGrid` page now includes merged ranges with hidden base columns or rows, plus a fully hidden merge, for live screen-reader verification.
+- The complex demo now includes ambiguous and intentionally unlabeled edit samples beside its explicit, inferred, and `TLabeledEdit` label examples for live relationship verification.
 
 ### Fixed
 - UIA and MSAA now return current VCL captions, editable text names, and help text after those properties change at runtime instead of retaining the values captured when the provider was created.
 - The opt-in `TAdvStringGrid` adapter now exposes a visible representative for a merged range whose base row or column is hidden, preserving the hidden base text, visible spans, GridItem coordinates, focus, selection, and hit testing while omitting fully hidden merges.
+- Supported VCL text inputs now expose the exact associated label provider through UIA `LabeledBy`, preferring explicit `FocusControl` and `TLabeledEdit` relationships before bounded same-parent geometry while rejecting hidden, empty, icon-only, cross-container, distant, ambiguous, and unlabeled candidates.
 
 ## 2026-07-10
 ### Added

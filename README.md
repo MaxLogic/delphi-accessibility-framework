@@ -80,7 +80,7 @@ The default VCL adapter registry covers:
 - `TLabel`: UIA text fragment with caption-derived name and hint-derived help text.
 - `TButton`: UIA button fragment with caption-derived name, hint-derived help text, native window handle, and Invoke support.
 - `TSpeedButton`: UIA button fragment with Invoke and toggle support when the button has toggle semantics.
-- `TComboBox`: UIA combo-box fragment with associated label/name, value text, help text, and native window handle.
+- `TEdit`, `TLabeledEdit`, and `TComboBox`: UIA input fragments with associated label/name, value text, help text, and native window handles where applicable. `UIA_LabeledByPropertyId` returns the exact visible label provider for explicit `TCustomLabel.FocusControl` and `TLabeledEdit.EditLabel` relationships, or for one unambiguous adjacent same-parent label above or beside the input. The existing accessible Name fallback remains available.
 - `TCheckBox`: UIA checkbox fragment with caption-derived name, hint-derived help text, native window handle, Toggle support, and MSAA checkbutton state when reached through the framework tree. The manager preserves the real checkbox HWND accessibility path. On hover it also raises a UIA focus event from the framework provider and emits native HWND focus/state WinEvents, so screen readers can query state without framework-injected English state text.
 - `TRadioButton`: UIA radio-button fragment with caption-derived name, hint-derived help text, native window handle, SelectionItem support, and MSAA radio-button selected state when reached through the framework tree. The manager preserves the real standalone radio-button HWND accessibility path. On hover it also raises a UIA focus event from the framework provider and emits native HWND focus/state WinEvents. Radio buttons intentionally do not expose TogglePattern.
 - `TGroupBox` and `TRadioGroup`: UIA group fragments for named option regions. `TRadioGroup` internal button hover is routed to the framework radio-item provider instead of treating the private child buttons as standalone radio controls.
@@ -174,7 +174,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-uia-probe.ps1 
 
 UIA probe scenarios:
 
-- `BasicVclControls`: labels, buttons, speed buttons, checkboxes, panels, generic graphic controls, and decorative-control omission.
+- `BasicVclControls`: labels, buttons, speed buttons, checkboxes, panels, generic graphic controls, explicit/`TLabeledEdit`/inferred `LabeledBy` relationships, ambiguous and unlabeled rejection, and decorative-control omission.
 - `Hints`: help text, visible hint notifications, duplicate throttling, and balloon hint notifications.
 - `MemoListStatus`: manager-installed memo line hit testing, listbox item provider coverage through the framework tree, native-HWND listbox focus speech, and statusbar text hover.
 - `TStringGridCells`: VCL `TStringGrid` DataGrid provider, visible cell providers, per-cell hit testing, current-cell focus, hidden-cell omission, and cell-only names.
@@ -193,5 +193,4 @@ See also:
 - `TAccessibilityManager.Install(Application)` discovers future forms when `Screen.OnActiveFormChange` fires. Forms that are created and never become active should call `TAccessibilityManager.Install(Form)` explicitly after their controls exist.
 - Changing the app-wide or form-scoped adapter registry after accessibility is installed requires `TAccessibilityManager.Uninstall` first. This avoids silently mixing default and custom provider trees.
 - Registry compatibility is instance-based. Repeated custom installs should reuse the same registry instance, or call `TAccessibilityManager.Uninstall` before switching to another registry.
-- Automatic label-to-input relationships such as `LabeledBy` inference are not implemented yet.
 - Screen-reader speech varies by reader and settings. The UIA probe is automated proof of provider behavior; the NVDA checklist remains the manual acceptance pass for spoken output.

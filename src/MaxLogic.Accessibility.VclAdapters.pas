@@ -53,8 +53,9 @@ implementation
 
 uses
   System.Actions, System.Classes, System.Diagnostics, System.Generics.Collections, System.Math, System.SysUtils,
-  System.Types, System.TypInfo, Winapi.ActiveX, Winapi.Messages, Winapi.Windows, Vcl.Buttons, Vcl.ComCtrls,
-  Vcl.ExtCtrls, Vcl.Grids, Vcl.StdCtrls, MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.Text;
+  System.Types, System.TypInfo, System.Variants, Winapi.ActiveX, Winapi.Messages, Winapi.Windows, Vcl.Buttons,
+  Vcl.ComCtrls, Vcl.ExtCtrls, Vcl.Grids, Vcl.StdCtrls, MaxLogic.Accessibility.Diagnostics,
+  MaxLogic.Accessibility.Text;
 
 type
   TAccessibilityVclCheckBoxAccess = class(TCustomCheckBox);
@@ -151,6 +152,8 @@ type
   private
     fControl: TControl;
     fHelpText: string;
+    fLabeledByDirectAccess: IAccessibilityProviderDirectAccess;
+    fLabeledByProvider: IRawElementProviderSimple;
     fLiveHelpText: Boolean;
     fLiveName: Boolean;
     fName: string;
@@ -158,6 +161,7 @@ type
     class function ControlSupportsToggle(aControl: TControl): Boolean; static;
     function CurrentHelpText: string;
     function CurrentName: string;
+    procedure SetLabeledByProvider(const aProvider: IRawElementProviderSimple);
     class function SpeedButtonSupportsToggle(aButton: TSpeedButton): Boolean; static;
     class function SupportsValue(aControl: TControl): Boolean; static;
     class function ToggleCheckBox(aControl: TControl): Boolean; static;
@@ -1671,6 +1675,56 @@ begin
   end;
 end;
 
+procedure AddLabeledByRelationships(const aTree: IAccessibilityScanTree;
+  const aLookup: IAccessibilityVclProviderLookup);
+var
+  i: Integer;
+  lInputNode: IAccessibilityProviderNode;
+  lInputNodeInternal: IAccessibilityProviderNodeInternal;
+  lInputControl: TControl;
+  lInputProvider: IRawElementProviderSimple;
+  lLabelControl: TControl;
+  lLabelProvider: IRawElementProviderSimple;
+  lNodes: TArray<IAccessibilityScanNode>;
+  lRelationship: IAccessibilityScanNodeLabelRelationship;
+  lScanNode: IAccessibilityScanNode;
+  lValue: OleVariant;
+begin
+  if (aTree = nil) or (aLookup = nil) then
+  begin
+    Exit;
+  end;
+
+  lNodes := aTree.FlattenedNodes;
+  for i := 0 to High(lNodes) do
+  begin
+    lScanNode := lNodes[i];
+    if not Supports(lScanNode, IAccessibilityScanNodeLabelRelationship, lRelationship) then
+    begin
+      Continue;
+    end;
+
+    lLabelControl := lRelationship.AssociatedLabelControl;
+    lInputControl := lScanNode.Control;
+    if (lLabelControl = nil) or (lLabelControl = lInputControl) or
+      not aLookup.TryFindProviderForControl(lInputControl, lInputProvider) or
+      not Supports(lInputProvider, IAccessibilityProviderNode, lInputNode) or
+      not aLookup.TryFindProviderForControl(lLabelControl, lLabelProvider) then
+    begin
+      Continue;
+    end;
+
+    if Supports(lInputNode, IAccessibilityProviderNodeInternal, lInputNodeInternal) and
+      (lInputNodeInternal.ProviderObject is TAccessibilityVclControlProvider) then
+    begin
+      TAccessibilityVclControlProvider(lInputNodeInternal.ProviderObject).SetLabeledByProvider(lLabelProvider);
+    end else begin
+      lValue := lLabelProvider as IUnknown;
+      lInputNode.SetProperty(UIA_LabeledByPropertyId, lValue);
+    end;
+  end;
+end;
+
 function TExplicitTextAdapter.CreateInfo(aControl: TControl; const aFallback: TAccessibilityTextInfo):
   TAccessibilityControlInfo;
 begin
@@ -2325,12 +2379,36 @@ begin
 end;
 
 function TAccessibilityVclControlProvider.CurrentName: string;
+var
+  lValue: OleVariant;
 begin
+  if fLabeledByProvider <> nil then
+  begin
+    if (fLabeledByDirectAccess <> nil) and
+      fLabeledByDirectAccess.TryGetStringProperty(UIA_NamePropertyId, Result) then
+    begin
+      Exit;
+    end;
+
+    if (fLabeledByProvider.GetPropertyValue(UIA_NamePropertyId, lValue) = S_OK) and
+      not VarIsEmpty(lValue) and not VarIsNull(lValue) then
+    begin
+      Exit(VarToStr(lValue));
+    end;
+  end;
+
   if fLiveName then
   begin
     Exit(TAccessibilityTextExtractor.Extract(fControl).Name);
   end;
   Result := fName;
+end;
+
+procedure TAccessibilityVclControlProvider.SetLabeledByProvider(const aProvider: IRawElementProviderSimple);
+begin
+  fLabeledByProvider := aProvider;
+  fLabeledByDirectAccess := nil;
+  Supports(aProvider, IAccessibilityProviderDirectAccess, fLabeledByDirectAccess);
 end;
 
 function TAccessibilityVclControlProvider.VclGeometryPartitionsHoverTargets: Boolean;
@@ -2401,6 +2479,13 @@ begin
         aValue := not TabSheetHeaderIsVisible(TTabSheet(fControl));
       end else begin
         aValue := not ControlIsInActiveVisibleTree(fControl);
+      end;
+    UIA_LabeledByPropertyId:
+      if fLabeledByProvider <> nil then
+      begin
+        aValue := fLabeledByProvider as IUnknown;
+      end else begin
+        Result := inherited DoGetPropertyValue(aPropertyId, aValue);
       end;
     UIA_HelpTextPropertyId: aValue := CurrentHelpText;
     UIA_NamePropertyId: aValue := CurrentName;
@@ -5455,6 +5540,7 @@ var
   lNextRuntimeId: Integer;
   lRegistry: IAccessibilityAdapterRegistry;
   lRootProvider: IAccessibilityVclRootProvider;
+  lProviderLookup: IAccessibilityVclProviderLookup;
   lTree: IAccessibilityScanTree;
 begin
   if aForm = nil then
@@ -5479,6 +5565,10 @@ begin
   lNextRuntimeId := 1;
   Supports(Result, IAccessibilityVclRootProvider, lRootProvider);
   AddProviderChildren(Result, lTree.Root, lRegistry, lNextRuntimeId, aApi, lRootProvider);
+  if Supports(Result, IAccessibilityVclProviderLookup, lProviderLookup) then
+  begin
+    AddLabeledByRelationships(lTree, lProviderLookup);
+  end;
 end;
 
 initialization

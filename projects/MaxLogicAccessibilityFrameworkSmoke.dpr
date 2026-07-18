@@ -169,6 +169,39 @@ begin
   Require(Supports(aProvider, IRawElementProviderFragment, Result), 'Simple provider is not a fragment.');
 end;
 
+function ElementProviderProperty(const aProvider: IRawElementProviderSimple; aPropertyId: PROPERTYID):
+  IRawElementProviderSimple;
+var
+  lUnknown: IUnknown;
+  lValue: OleVariant;
+begin
+  Result := nil;
+  Require(aProvider.GetPropertyValue(aPropertyId, lValue) = S_OK, 'Element property query failed.');
+  if VarType(lValue) <> varUnknown then
+  begin
+    Exit;
+  end;
+
+  lUnknown := IUnknown(lValue);
+  Supports(lUnknown, IRawElementProviderSimple, Result);
+end;
+
+function ProvidersAreSame(const aLeft: IRawElementProviderSimple; const aRight: IRawElementProviderSimple):
+  Boolean;
+var
+  lLeft: IUnknown;
+  lRight: IUnknown;
+begin
+  if (aLeft = nil) or (aRight = nil) then
+  begin
+    Exit(aLeft = aRight);
+  end;
+
+  lLeft := aLeft as IUnknown;
+  lRight := aRight as IUnknown;
+  Result := lLeft = lRight;
+end;
+
 function FragmentRoot(const aProvider: IAccessibilityProviderNode): IRawElementProviderFragmentRoot;
 begin
   Result := nil;
@@ -323,13 +356,29 @@ end;
 
 procedure RunBasicVclControlsProbe;
 var
+  lAmbiguousEdit: TEdit;
+  lAmbiguousEditProvider: IRawElementProviderSimple;
+  lAmbiguousLabelOne: TStaticText;
+  lAmbiguousLabelTwo: TStaticText;
   lDecorativeGraphic: TProbeGraphicControl;
   lDecorativeLabel: TLabel;
   lEmptyPanel: TPanel;
+  lExplicitEdit: TEdit;
+  lExplicitEditProvider: IRawElementProviderSimple;
+  lExplicitLabel: TLabel;
+  lExplicitLabelProvider: IRawElementProviderSimple;
   lForm: TForm;
   lGraphic: TProbeGraphicControl;
   lGraphicFragment: IRawElementProviderFragment;
+  lGraphicProvider: IRawElementProviderSimple;
+  lInferredEdit: TEdit;
+  lInferredEditProvider: IRawElementProviderSimple;
+  lInferredLabel: TStaticText;
+  lInferredLabelProvider: IRawElementProviderSimple;
   lInvoke: IInvokeProvider;
+  lLabeledEdit: TLabeledEdit;
+  lLabeledEditLabelProvider: IRawElementProviderSimple;
+  lLabeledEditProvider: IRawElementProviderSimple;
   lApi: IProbeUiaApi;
   lApplyButton: TButton;
   lApplyFragment: IRawElementProviderFragment;
@@ -337,19 +386,22 @@ var
   lCheckBoxFragment: IRawElementProviderFragment;
   lLabel: TLabel;
   lLabelFragment: IRawElementProviderFragment;
+  lMappedProvider: IRawElementProviderSimple;
   lMessage: TMessage;
   lNestedFragment: IRawElementProviderFragment;
   lNestedLabel: TLabel;
   lPanel: TPanel;
   lPattern: IUnknown;
+  lProviderLookup: IAccessibilityVclProviderLookup;
   lRecorder: TProbeClickRecorder;
-  lRootFragment: IRawElementProviderFragment;
   lRunButton: TSpeedButton;
   lRunFragment: IRawElementProviderFragment;
   lToggle: IToggleProvider;
   lToggleButton: TSpeedButton;
   lToggleFragment: IRawElementProviderFragment;
   lToggleState: ToggleState;
+  lUnlabeledEdit: TEdit;
+  lUnlabeledEditProvider: IRawElementProviderSimple;
 begin
   lForm := TForm.Create(nil);
   lRecorder := TProbeClickRecorder.Create;
@@ -404,6 +456,54 @@ begin
     lEmptyPanel.Caption := '';
     lEmptyPanel.Parent := lForm;
 
+    lExplicitLabel := TLabel.Create(lForm);
+    lExplicitLabel.Caption := 'Account';
+    lExplicitLabel.Parent := lForm;
+    lExplicitLabel.SetBounds(12, 160, 90, 23);
+    lExplicitEdit := TEdit.Create(lForm);
+    lExplicitEdit.Name := 'ExplicitAccountEdit';
+    lExplicitEdit.Parent := lForm;
+    lExplicitEdit.SetBounds(112, 160, 160, 23);
+    lExplicitEdit.Text := 'Alice';
+    lExplicitLabel.FocusControl := lExplicitEdit;
+
+    lInferredLabel := TStaticText.Create(lForm);
+    lInferredLabel.Caption := 'Queue';
+    lInferredLabel.Parent := lForm;
+    lInferredLabel.SetBounds(12, 200, 160, 20);
+    lInferredEdit := TEdit.Create(lForm);
+    lInferredEdit.Name := 'InferredQueueEdit';
+    lInferredEdit.Parent := lForm;
+    lInferredEdit.SetBounds(12, 224, 160, 23);
+    lInferredEdit.Text := 'Urgent';
+
+    lLabeledEdit := TLabeledEdit.Create(lForm);
+    lLabeledEdit.Name := 'ReferenceEdit';
+    lLabeledEdit.Parent := lForm;
+    lLabeledEdit.SetBounds(112, 264, 160, 23);
+    lLabeledEdit.EditLabel.Caption := 'Reference number';
+    lLabeledEdit.Text := 'REF-1042';
+
+    lAmbiguousLabelOne := TStaticText.Create(lForm);
+    lAmbiguousLabelOne.Caption := 'First candidate';
+    lAmbiguousLabelOne.Parent := lForm;
+    lAmbiguousLabelOne.SetBounds(12, 304, 90, 23);
+    lAmbiguousLabelTwo := TStaticText.Create(lForm);
+    lAmbiguousLabelTwo.Caption := 'Second candidate';
+    lAmbiguousLabelTwo.Parent := lForm;
+    lAmbiguousLabelTwo.SetBounds(12, 304, 90, 23);
+    lAmbiguousEdit := TEdit.Create(lForm);
+    lAmbiguousEdit.Name := 'AmbiguousEdit';
+    lAmbiguousEdit.Parent := lForm;
+    lAmbiguousEdit.SetBounds(112, 304, 160, 23);
+    lAmbiguousEdit.Text := 'Ambiguous value';
+
+    lUnlabeledEdit := TEdit.Create(lForm);
+    lUnlabeledEdit.Name := 'UnlabeledEdit';
+    lUnlabeledEdit.Parent := lForm;
+    lUnlabeledEdit.SetBounds(112, 344, 160, 23);
+    lUnlabeledEdit.Text := 'Unlabeled value';
+
     lGraphic := TProbeGraphicControl.Create(lForm);
     lGraphic.Caption := '&Custom graphic';
     lGraphic.Hint := 'Graphic help';
@@ -426,20 +526,74 @@ begin
       Require(lMessage.Result = 97531, 'Manager install path did not return a UIA provider message result.');
       Require(lApi.ReturnedProvider <> nil, 'Manager install path did not pass a provider to UIA.');
 
-      lRootFragment := FragmentFromSimple(lApi.ReturnedProvider);
     finally
       TAccessibilityManagerInternals.SetUiaApi(nil);
     end;
 
-    lLabelFragment := FirstNestedChild(lRootFragment, 'label fragment');
-    lRunFragment := NextSibling(lLabelFragment, 'run speed-button fragment');
-    lToggleFragment := NextSibling(lRunFragment, 'toggle speed-button fragment');
-    lApplyFragment := NextSibling(lToggleFragment, 'apply button fragment');
-    lCheckBoxFragment := NextSibling(lApplyFragment, 'checkbox fragment');
-    lNestedFragment := NextSibling(lCheckBoxFragment, 'flattened panel child label fragment');
-    lGraphicFragment := NextSibling(lNestedFragment, 'graphic-control fragment');
-    Require(OptionalNextSibling(lGraphicFragment, 'decorative-control omission check') = nil,
-      'Decorative controls were exposed after the graphic-control fragment.');
+    Require(Supports(lApi.ReturnedProvider, IAccessibilityVclProviderLookup, lProviderLookup),
+      'Form provider does not expose control lookup.');
+    Require(lProviderLookup.TryFindProviderForControl(lExplicitEdit, lExplicitEditProvider),
+      'Explicit edit provider is missing.');
+    Require(lProviderLookup.TryFindProviderForControl(lExplicitLabel, lExplicitLabelProvider),
+      'Explicit label provider is missing.');
+    Require(lProviderLookup.TryFindProviderForControl(lInferredEdit, lInferredEditProvider),
+      'Inferred edit provider is missing.');
+    Require(lProviderLookup.TryFindProviderForControl(lInferredLabel, lInferredLabelProvider),
+      'Inferred label provider is missing.');
+    Require(lProviderLookup.TryFindProviderForControl(lLabeledEdit, lLabeledEditProvider),
+      'TLabeledEdit provider is missing.');
+    Require(lProviderLookup.TryFindProviderForControl(lLabeledEdit.EditLabel, lLabeledEditLabelProvider),
+      'TLabeledEdit label provider is missing.');
+    Require(lProviderLookup.TryFindProviderForControl(lAmbiguousEdit, lAmbiguousEditProvider),
+      'Ambiguous edit provider is missing.');
+    Require(lProviderLookup.TryFindProviderForControl(lUnlabeledEdit, lUnlabeledEditProvider),
+      'Unlabeled edit provider is missing.');
+    Require(lProviderLookup.TryFindProviderForControl(lGraphic, lGraphicProvider),
+      'Graphic-control provider is missing.');
+    Require(ProvidersAreSame(lExplicitLabelProvider,
+      ElementProviderProperty(lExplicitEditProvider, UIA_LabeledByPropertyId)),
+      'Explicit edit LabeledBy provider mismatch.');
+    Require(ProvidersAreSame(lInferredLabelProvider,
+      ElementProviderProperty(lInferredEditProvider, UIA_LabeledByPropertyId)),
+      'Inferred edit LabeledBy provider mismatch.');
+    Require(ProvidersAreSame(lLabeledEditLabelProvider,
+      ElementProviderProperty(lLabeledEditProvider, UIA_LabeledByPropertyId)),
+      'TLabeledEdit LabeledBy provider mismatch.');
+    Require(ElementProviderProperty(lAmbiguousEditProvider, UIA_LabeledByPropertyId) = nil,
+      'Ambiguous edit exposed a LabeledBy provider.');
+    Require(ElementProviderProperty(lUnlabeledEditProvider, UIA_LabeledByPropertyId) = nil,
+      'Unlabeled edit exposed a LabeledBy provider.');
+    lExplicitLabel.Caption := 'Current account';
+    Require(ProviderStringProperty(FragmentFromSimple(ElementProviderProperty(lExplicitEditProvider,
+      UIA_LabeledByPropertyId)), UIA_NamePropertyId) = 'Current account',
+      'LabeledBy provider did not expose the current label caption.');
+    Require(ProviderStringProperty(FragmentFromSimple(lExplicitEditProvider), UIA_NamePropertyId) =
+      'Current account', 'Accessible Name fallback did not stay current with LabeledBy.');
+
+    Require(lProviderLookup.TryFindProviderForControl(lLabel, lMappedProvider), 'Label provider is missing.');
+    lLabelFragment := FragmentFromSimple(lMappedProvider);
+    Require(lProviderLookup.TryFindProviderForControl(lRunButton, lMappedProvider),
+      'Run speed-button provider is missing.');
+    lRunFragment := FragmentFromSimple(lMappedProvider);
+    Require(lProviderLookup.TryFindProviderForControl(lToggleButton, lMappedProvider),
+      'Toggle speed-button provider is missing.');
+    lToggleFragment := FragmentFromSimple(lMappedProvider);
+    Require(lProviderLookup.TryFindProviderForControl(lApplyButton, lMappedProvider),
+      'Apply button provider is missing.');
+    lApplyFragment := FragmentFromSimple(lMappedProvider);
+    Require(lProviderLookup.TryFindProviderForControl(lCheckBox, lMappedProvider),
+      'Checkbox provider is missing.');
+    lCheckBoxFragment := FragmentFromSimple(lMappedProvider);
+    Require(lProviderLookup.TryFindProviderForControl(lNestedLabel, lMappedProvider),
+      'Flattened panel child label provider is missing.');
+    lNestedFragment := FragmentFromSimple(lMappedProvider);
+    lGraphicFragment := FragmentFromSimple(lGraphicProvider);
+    Require(not lProviderLookup.TryFindProviderForControl(lDecorativeLabel, lMappedProvider),
+      'Decorative label was exposed.');
+    Require(not lProviderLookup.TryFindProviderForControl(lEmptyPanel, lMappedProvider),
+      'Empty panel was exposed.');
+    Require(not lProviderLookup.TryFindProviderForControl(lDecorativeGraphic, lMappedProvider),
+      'Decorative graphic control was exposed.');
 
     RequireProvider(lLabelFragment, UIA_TextControlTypeId, 'Customer', 'Shown next to customer edit', 'label');
     RequireProvider(lRunFragment, UIA_ButtonControlTypeId, 'Run', 'Runs the command', 'run speed-button');
@@ -490,7 +644,8 @@ begin
       'label provider=text name/help; button provider=button invoke; ' +
       'speed button provider=button invoke/toggle; checkbox provider=checkbox toggle; ' +
       'empty panel omitted with accessible child flattened; generic graphic-control provider=text; ' +
-      'decorative controls omitted.');
+      'explicit, TLabeledEdit, and inferred labeledBy providers/name=current; ' +
+      'ambiguous and unlabeled relationships omitted; decorative controls omitted.');
   finally
     TAccessibilityManager.Uninstall;
     lRecorder.Free;

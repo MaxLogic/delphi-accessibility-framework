@@ -12,7 +12,7 @@ The same command can be run as `scripts\run-uia-probe.ps1 -Scenario All` from a 
 
 Supported scenarios:
 
-- `BasicVclControls`: verifies `TLabel`, `TButton`, `TSpeedButton`, `TCheckBox`, `TPanel`, generic `TGraphicControl`, nested fragments, Invoke/Toggle patterns, and decorative-control omission.
+- `BasicVclControls`: verifies `TLabel`, `TButton`, `TSpeedButton`, `TCheckBox`, `TPanel`, generic `TGraphicControl`, nested fragments, Invoke/Toggle patterns, exact explicit/`TLabeledEdit`/inferred `LabeledBy` providers, current label captions, ambiguous and unlabeled rejection, and decorative-control omission.
 - `Hints`: verifies UIA `HelpText`, visible hint notification text, duplicate throttling, direct balloon hint notifications, and manager-installed balloon hint observation.
 - `MemoListStatus`: verifies manager-installed `TMemo` line hit testing, `TListBox` item hover, native-HWND listbox focus speech routing, and `TStatusBar` visible status text hover.
 - `TStringGridCells`: verifies the VCL `TStringGrid` DataGrid provider, visible cell providers, `ElementProviderFromPoint` returning only the hovered cell, current-cell focus, hidden-cell omission, and cell-only names.

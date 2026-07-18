@@ -42,6 +42,11 @@ type
     function Name: string;
   end;
 
+  IAccessibilityScanNodeLabelRelationship = interface
+    ['{58CE40D0-810D-462B-A75F-F6820F735B43}']
+    function AssociatedLabelControl: TControl;
+  end;
+
   IAccessibilityScanTree = interface
     ['{CC3744F4-72A1-4E26-A20F-21CED9C5CC03}']
     function FindNode(aControl: TControl): IAccessibilityScanNode;
@@ -112,14 +117,18 @@ type
     function Find(aObject: TObject; const aPropertyName: string): PPropInfo;
   end;
 
-  TAccessibilityScanNode = class(TInterfacedObject, IAccessibilityScanNode)
+  TAccessibilityScanNode = class(TInterfacedObject, IAccessibilityScanNode,
+    IAccessibilityScanNodeLabelRelationship)
   private
+    fAssociatedLabelControl: TControl;
     fChildren: TList<IAccessibilityScanNode>;
     fControl: TControl;
     fHelpText: string;
     fName: string;
   public
-    constructor Create(aControl: TControl; const aName: string; const aHelpText: string);
+    constructor Create(aControl: TControl; const aName: string; const aHelpText: string;
+      aAssociatedLabelControl: TControl);
+    function AssociatedLabelControl: TControl;
     destructor Destroy; override;
     procedure AddChild(const aChild: IAccessibilityScanNode);
     function Child(aIndex: Integer): IAccessibilityScanNode;
@@ -410,13 +419,20 @@ begin
 end;
 
 function LabelScore(const aLabel: TScannerLabelCandidate; aControl: TControl): Integer;
+const
+  cMaximumLabelGap = 32;
+  cOverlapTolerance = 8;
 var
   lControlCenterX: Integer;
   lControlCenterY: Integer;
   lControlRect: TRect;
+  lHorizontalGap: Integer;
   lLabelCenterX: Integer;
   lLabelCenterY: Integer;
   lLabelRect: TRect;
+  lMaximumLabelGap: Integer;
+  lOverlapTolerance: Integer;
+  lVerticalGap: Integer;
   lVerticalOverlap: Boolean;
 begin
   if aLabel.FocusControl = aControl then
@@ -430,42 +446,49 @@ begin
   lControlCenterY := (lControlRect.Top + lControlRect.Bottom) div 2;
   lLabelCenterX := (lLabelRect.Left + lLabelRect.Right) div 2;
   lLabelCenterY := (lLabelRect.Top + lLabelRect.Bottom) div 2;
+  lMaximumLabelGap := aControl.ScaleValue(cMaximumLabelGap);
+  lOverlapTolerance := aControl.ScaleValue(cOverlapTolerance);
+  lHorizontalGap := lControlRect.Left - lLabelRect.Right;
+  lVerticalGap := lControlRect.Top - lLabelRect.Bottom;
   lVerticalOverlap := (lLabelRect.Top <= lControlCenterY) and (lLabelRect.Bottom >= lControlCenterY);
 
-  if lVerticalOverlap and (lLabelRect.Right <= lControlRect.Left + 8) then
+  if lVerticalOverlap and (lHorizontalGap >= -lOverlapTolerance) and
+    (lHorizontalGap <= lMaximumLabelGap) then
   begin
-    Exit(1000 + Abs(lControlRect.Left - lLabelRect.Right) + Abs(lControlCenterY - lLabelCenterY));
+    Exit(1000 + Abs(lHorizontalGap) + Abs(lControlCenterY - lLabelCenterY));
   end;
 
-  if (lLabelRect.Bottom <= lControlRect.Top + 8) and (lLabelRect.Right >= lControlRect.Left) and
-    (lLabelRect.Left <= lControlRect.Right) then
+  if (lVerticalGap >= -lOverlapTolerance) and (lVerticalGap <= lMaximumLabelGap) and
+    (lLabelRect.Right >= lControlRect.Left) and (lLabelRect.Left <= lControlRect.Right) then
   begin
-    Exit(2000 + Abs(lControlRect.Top - lLabelRect.Bottom) + Abs(lControlCenterX - lLabelCenterX));
+    Exit(2000 + Abs(lVerticalGap) + Abs(lControlCenterX - lLabelCenterX));
   end;
 
   Result := MaxInt;
 end;
 
-function TryFindAssociatedLabelText(aControl: TControl; const aLabels: TArray<TScannerLabelCandidate>;
-  aFocusLabels: TDictionary<TControl, string>; out aText: string): Boolean;
+function TryFindAssociatedLabel(aControl: TControl; const aLabels: TArray<TScannerLabelCandidate>;
+  aFocusLabels: TDictionary<TControl, TScannerLabelCandidate>; out aLabel: TScannerLabelCandidate): Boolean;
 var
   i: Integer;
+  lAmbiguous: Boolean;
   lBestScore: Integer;
   lCandidate: TScannerLabelCandidate;
   lCandidateScore: Integer;
 begin
   Result := False;
-  aText := '';
+  aLabel := Default(TScannerLabelCandidate);
   if (aControl = nil) or (aControl.Parent = nil) then
   begin
     Exit;
   end;
 
-  if (aFocusLabels <> nil) and aFocusLabels.TryGetValue(aControl, aText) then
+  if (aFocusLabels <> nil) and aFocusLabels.TryGetValue(aControl, aLabel) then
   begin
     Exit(True);
   end;
 
+  lAmbiguous := False;
   lBestScore := MaxInt;
   for i := 0 to High(aLabels) do
   begin
@@ -479,13 +502,18 @@ begin
     if lCandidateScore < lBestScore then
     begin
       lBestScore := lCandidateScore;
-      aText := lCandidate.Text;
-      Result := True;
+      aLabel := lCandidate;
+      lAmbiguous := False;
+    end else if lCandidateScore = lBestScore then
+    begin
+      lAmbiguous := True;
     end;
   end;
+  Result := (lBestScore < MaxInt) and not lAmbiguous;
 end;
 
-function BuildLabelCandidates(const aChildren: TArray<TControl>; out aFocusLabels: TDictionary<TControl, string>;
+function BuildLabelCandidates(const aChildren: TArray<TControl>;
+  out aFocusLabels: TDictionary<TControl, TScannerLabelCandidate>;
   aCache: TRttiPropertyCache): TArray<TScannerLabelCandidate>;
 var
   i: Integer;
@@ -503,7 +531,7 @@ begin
       Continue;
     end;
 
-    lText := ReadStringProperty(aChildren[i], 'Caption', aCache);
+    lText := TAccessibilityText.Clean(ReadStringProperty(aChildren[i], 'Caption', aCache));
     if lText = '' then
     begin
       Continue;
@@ -517,12 +545,12 @@ begin
       Result[lCount].FocusControl := TControl(lFocusControl);
       if aFocusLabels = nil then
       begin
-        aFocusLabels := TDictionary<TControl, string>.Create;
+        aFocusLabels := TDictionary<TControl, TScannerLabelCandidate>.Create;
       end;
 
       if not aFocusLabels.ContainsKey(TControl(lFocusControl)) then
       begin
-        aFocusLabels.Add(TControl(lFocusControl), lText);
+        aFocusLabels.Add(TControl(lFocusControl), Result[lCount]);
       end;
     end;
 
@@ -811,13 +839,20 @@ begin
   Result := ExtractText(aControl, nil);
 end;
 
-constructor TAccessibilityScanNode.Create(aControl: TControl; const aName: string; const aHelpText: string);
+constructor TAccessibilityScanNode.Create(aControl: TControl; const aName: string; const aHelpText: string;
+  aAssociatedLabelControl: TControl);
 begin
   inherited Create;
+  fAssociatedLabelControl := aAssociatedLabelControl;
   fControl := aControl;
   fName := aName;
   fHelpText := aHelpText;
   fChildren := TList<IAccessibilityScanNode>.Create;
+end;
+
+function TAccessibilityScanNode.AssociatedLabelControl: TControl;
+begin
+  Result := fAssociatedLabelControl;
 end;
 
 destructor TAccessibilityScanNode.Destroy;
@@ -1162,19 +1197,22 @@ begin
 end;
 
 function CreateControlInfo(aControl: TControl; const aRegistry: IAccessibilityAdapterRegistry;
-  const aLabels: TArray<TScannerLabelCandidate>; aFocusLabels: TDictionary<TControl, string>;
-  aCache: TRttiPropertyCache):
+  const aLabels: TArray<TScannerLabelCandidate>;
+  aFocusLabels: TDictionary<TControl, TScannerLabelCandidate>; aCache: TRttiPropertyCache;
+  out aAssociatedLabelControl: TControl):
   TAccessibilityControlInfo;
 var
   lAdapter: IAccessibilityControlAdapter;
-  lAssociatedLabelText: string;
+  lAssociatedLabel: TScannerLabelCandidate;
   lText: TAccessibilityTextInfo;
 begin
+  aAssociatedLabelControl := nil;
   lText := ExtractText(aControl, aCache);
-  if IsTextInputControl(aControl) and TryFindAssociatedLabelText(aControl, aLabels, aFocusLabels,
-    lAssociatedLabelText) then
+  if IsTextInputControl(aControl) and TryFindAssociatedLabel(aControl, aLabels, aFocusLabels,
+    lAssociatedLabel) then
   begin
-    lText.Name := lAssociatedLabelText;
+    lText.Name := lAssociatedLabel.Text;
+    aAssociatedLabelControl := lAssociatedLabel.Control;
   end;
 
   lAdapter := nil;
@@ -1185,7 +1223,12 @@ begin
 
   if lAdapter <> nil then
   begin
-    Exit(lAdapter.CreateInfo(aControl, lText));
+    Result := lAdapter.CreateInfo(aControl, lText);
+    if not Result.IncludeInTree then
+    begin
+      aAssociatedLabelControl := nil;
+    end;
+    Exit;
   end;
 
   if (aControl is TWinControl) and TWinControl(aControl).TabStop and not IsTextInputControl(aControl) then
@@ -1196,6 +1239,7 @@ begin
   if lText.IsEmpty then
   begin
     Result := TAccessibilityControlInfo.Omit;
+    aAssociatedLabelControl := nil;
   end else begin
     Result := TAccessibilityControlInfo.Include(aControl, lText.Name, lText.HelpText);
   end;
@@ -1205,9 +1249,10 @@ procedure ScanControlChildren(aParent: TWinControl; const aParentNode: TAccessib
   const aRegistry: IAccessibilityAdapterRegistry; aCache: TRttiPropertyCache);
 var
   i: Integer;
+  lAssociatedLabelControl: TControl;
   lChildren: TArray<TControl>;
   lChildNode: TAccessibilityScanNode;
-  lFocusLabels: TDictionary<TControl, string>;
+  lFocusLabels: TDictionary<TControl, TScannerLabelCandidate>;
   lInfo: TAccessibilityControlInfo;
   lLabels: TArray<TScannerLabelCandidate>;
   lNextParent: TAccessibilityScanNode;
@@ -1223,11 +1268,13 @@ begin
   try
     for i := 0 to High(lChildren) do
     begin
-      lInfo := CreateControlInfo(lChildren[i], aRegistry, lLabels, lFocusLabels, aCache);
+      lInfo := CreateControlInfo(lChildren[i], aRegistry, lLabels, lFocusLabels, aCache,
+        lAssociatedLabelControl);
       lNextParent := aParentNode;
       if lInfo.IncludeInTree then
       begin
-        lChildNode := TAccessibilityScanNode.Create(lInfo.Control, lInfo.Name, lInfo.HelpText);
+        lChildNode := TAccessibilityScanNode.Create(lInfo.Control, lInfo.Name, lInfo.HelpText,
+          lAssociatedLabelControl);
         aParentNode.AddChild(lChildNode);
         lNextParent := lChildNode;
       end;
@@ -1260,7 +1307,7 @@ begin
   end;
 
   lRoot := TAccessibilityScanNode.Create(aForm, TAccessibilityText.Clean(aForm.Caption),
-    TAccessibilityText.Clean(aForm.Hint));
+    TAccessibilityText.Clean(aForm.Hint), nil);
   lCache := TRttiPropertyCache.Create;
   try
     ScanControlChildren(aForm, lRoot, aRegistry, lCache);

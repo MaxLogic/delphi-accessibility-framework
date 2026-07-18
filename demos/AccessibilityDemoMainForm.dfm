@@ -419,10 +419,77 @@ object AccessibilityDemoMainForm: TAccessibilityDemoMainForm
         Text = 'REF-1042'
       end
     end
-    object pnlFilterOptions: TPanel
+    object pnlFilterAmbiguousRow: TPanel
       AlignWithMargins = True
       Left = 16
       Top = 282
+      Width = 288
+      Height = 58
+      Margins.Left = 0
+      Margins.Top = 0
+      Margins.Right = 0
+      Margins.Bottom = 12
+      Align = alTop
+      BevelOuter = bvNone
+      Caption = ''
+      TabOrder = 3
+      object edtAmbiguousLabelDemo: TEdit
+        Left = 0
+        Top = 29
+        Width = 288
+        Height = 29
+        Hint = 'No LabeledBy relationship because two labels are equally plausible'
+        TabOrder = 0
+        Text = 'Ambiguous label sample'
+      end
+      object staticAmbiguousCandidateA: TStaticText
+        Left = 0
+        Top = 0
+        Width = 136
+        Height = 24
+        AutoSize = False
+        Caption = 'Candidate A'
+        TabStop = False
+      end
+      object staticAmbiguousCandidateB: TStaticText
+        Left = 152
+        Top = 0
+        Width = 136
+        Height = 24
+        AutoSize = False
+        Caption = 'Candidate B'
+        TabStop = False
+      end
+    end
+    object pnlFilterUnlabeledRow: TPanel
+      AlignWithMargins = True
+      Left = 16
+      Top = 352
+      Width = 288
+      Height = 58
+      Margins.Left = 0
+      Margins.Top = 0
+      Margins.Right = 0
+      Margins.Bottom = 12
+      Align = alTop
+      BevelOuter = bvNone
+      Caption = ''
+      TabOrder = 4
+      object edtUnlabeledDemo: TEdit
+        Left = 0
+        Top = 29
+        Width = 288
+        Height = 29
+        Align = alBottom
+        Hint = 'Intentionally unlabeled negative accessibility sample'
+        TabOrder = 0
+        Text = 'Unlabeled sample'
+      end
+    end
+    object pnlFilterOptions: TPanel
+      AlignWithMargins = True
+      Left = 16
+      Top = 422
       Width = 288
       Height = 42
       Margins.Left = 0
@@ -432,7 +499,7 @@ object AccessibilityDemoMainForm: TAccessibilityDemoMainForm
       Align = alTop
       BevelOuter = bvNone
       Caption = ''
-      TabOrder = 3
+      TabOrder = 5
       object chkIncludeArchived: TCheckBox
         Left = 0
         Top = 8
@@ -446,7 +513,7 @@ object AccessibilityDemoMainForm: TAccessibilityDemoMainForm
     object grpViewMode: TGroupBox
       AlignWithMargins = True
       Left = 16
-      Top = 336
+      Top = 476
       Width = 288
       Height = 86
       Margins.Left = 0
@@ -456,7 +523,7 @@ object AccessibilityDemoMainForm: TAccessibilityDemoMainForm
       Align = alTop
       Caption = 'View mode'
       Hint = 'Choose how the demo presents detail density'
-      TabOrder = 4
+      TabOrder = 6
       object rbViewCompact: TRadioButton
         Left = 12
         Top = 28
@@ -481,7 +548,7 @@ object AccessibilityDemoMainForm: TAccessibilityDemoMainForm
     object radioGroupDensity: TRadioGroup
       AlignWithMargins = True
       Left = 16
-      Top = 434
+      Top = 574
       Width = 288
       Height = 80
       Margins.Left = 0
@@ -495,12 +562,12 @@ object AccessibilityDemoMainForm: TAccessibilityDemoMainForm
       Items.Strings = (
         'Comfortable'
         'Compact density')
-      TabOrder = 5
+      TabOrder = 7
     end
     object btnApplyFilters: TButton
       AlignWithMargins = True
       Left = 16
-      Top = 526
+      Top = 666
       Width = 288
       Height = 34
       Margins.Left = 0
@@ -511,7 +578,7 @@ object AccessibilityDemoMainForm: TAccessibilityDemoMainForm
       Caption = 'Apply Filters'
       Default = True
       Hint = 'Apply the selected filters'
-      TabOrder = 6
+      TabOrder = 8
       OnClick = btnApplyFiltersClick
     end
   end

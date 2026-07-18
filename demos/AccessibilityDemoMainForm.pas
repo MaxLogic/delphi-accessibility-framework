@@ -29,8 +29,10 @@ type
     chkIncludeArchived: TCheckBox;
     cmbQueue: TComboBox;
     DynamicContentTimer: TTimer;
+    edtAmbiguousLabelDemo: TEdit;
     edtDynamicText: TEdit;
     edtSearch: TEdit;
+    edtUnlabeledDemo: TEdit;
     grpViewMode: TGroupBox;
     lblAuditMetric: TLabel;
     lblCellsSummary: TLabel;
@@ -62,10 +64,12 @@ type
     pnlDynamicLabelRow: TPanel;
     pnlDynamicStaticTextRow: TPanel;
     pnlFilters: TPanel;
+    pnlFilterAmbiguousRow: TPanel;
     pnlFilterLabeledEditRow: TPanel;
     pnlFilterSearchRow: TPanel;
     pnlFilterQueueRow: TPanel;
     pnlFilterOptions: TPanel;
+    pnlFilterUnlabeledRow: TPanel;
     pnlInspector: TPanel;
     pnlInspectorButtons: TFlowPanel;
     pnlInspectorEventsRow: TPanel;
@@ -80,6 +84,8 @@ type
     SplitterFilters: TSplitter;
     StaticTextDetails: TStaticText;
     StaticTextDetailsWrapped: TStaticText;
+    staticAmbiguousCandidateA: TStaticText;
+    staticAmbiguousCandidateB: TStaticText;
     staticDynamicCaption: TStaticText;
     staticDynamicEditLabel: TStaticText;
     StaticTextEvents: TStaticText;

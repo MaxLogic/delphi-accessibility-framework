@@ -423,17 +423,13 @@ const
   cMaximumLabelGap = 32;
   cOverlapTolerance = 8;
 var
-  lControlCenterX: Integer;
-  lControlCenterY: Integer;
+  lControlCenter: TPoint;
   lControlRect: TRect;
-  lHorizontalGap: Integer;
-  lLabelCenterX: Integer;
-  lLabelCenterY: Integer;
+  lGap: Integer;
+  lLabelCenter: TPoint;
   lLabelRect: TRect;
   lMaximumLabelGap: Integer;
   lOverlapTolerance: Integer;
-  lVerticalGap: Integer;
-  lVerticalOverlap: Boolean;
 begin
   if aLabel.FocusControl = aControl then
   begin
@@ -442,26 +438,24 @@ begin
 
   lControlRect := aControl.BoundsRect;
   lLabelRect := aLabel.Control.BoundsRect;
-  lControlCenterX := (lControlRect.Left + lControlRect.Right) div 2;
-  lControlCenterY := (lControlRect.Top + lControlRect.Bottom) div 2;
-  lLabelCenterX := (lLabelRect.Left + lLabelRect.Right) div 2;
-  lLabelCenterY := (lLabelRect.Top + lLabelRect.Bottom) div 2;
+  lControlCenter := Point((lControlRect.Left + lControlRect.Right) div 2,
+    (lControlRect.Top + lControlRect.Bottom) div 2);
+  lLabelCenter := Point((lLabelRect.Left + lLabelRect.Right) div 2,
+    (lLabelRect.Top + lLabelRect.Bottom) div 2);
   lMaximumLabelGap := aControl.ScaleValue(cMaximumLabelGap);
   lOverlapTolerance := aControl.ScaleValue(cOverlapTolerance);
-  lHorizontalGap := lControlRect.Left - lLabelRect.Right;
-  lVerticalGap := lControlRect.Top - lLabelRect.Bottom;
-  lVerticalOverlap := (lLabelRect.Top <= lControlCenterY) and (lLabelRect.Bottom >= lControlCenterY);
-
-  if lVerticalOverlap and (lHorizontalGap >= -lOverlapTolerance) and
-    (lHorizontalGap <= lMaximumLabelGap) then
+  lGap := lControlRect.Left - lLabelRect.Right;
+  if (lLabelRect.Top <= lControlCenter.Y) and (lLabelRect.Bottom >= lControlCenter.Y) and
+    (lGap >= -lOverlapTolerance) and (lGap <= lMaximumLabelGap) then
   begin
-    Exit(1000 + Abs(lHorizontalGap) + Abs(lControlCenterY - lLabelCenterY));
+    Exit(1000 + Abs(lGap) + Abs(lControlCenter.Y - lLabelCenter.Y));
   end;
 
-  if (lVerticalGap >= -lOverlapTolerance) and (lVerticalGap <= lMaximumLabelGap) and
+  lGap := lControlRect.Top - lLabelRect.Bottom;
+  if (lGap >= -lOverlapTolerance) and (lGap <= lMaximumLabelGap) and
     (lLabelRect.Right >= lControlRect.Left) and (lLabelRect.Left <= lControlRect.Right) then
   begin
-    Exit(2000 + Abs(lVerticalGap) + Abs(lControlCenterX - lLabelCenterX));
+    Exit(2000 + Abs(lGap) + Abs(lControlCenter.X - lLabelCenter.X));
   end;
 
   Result := MaxInt;
@@ -1251,7 +1245,6 @@ var
   i: Integer;
   lAssociatedLabelControl: TControl;
   lChildren: TArray<TControl>;
-  lChildNode: TAccessibilityScanNode;
   lFocusLabels: TDictionary<TControl, TScannerLabelCandidate>;
   lInfo: TAccessibilityControlInfo;
   lLabels: TArray<TScannerLabelCandidate>;
@@ -1273,10 +1266,9 @@ begin
       lNextParent := aParentNode;
       if lInfo.IncludeInTree then
       begin
-        lChildNode := TAccessibilityScanNode.Create(lInfo.Control, lInfo.Name, lInfo.HelpText,
+        lNextParent := TAccessibilityScanNode.Create(lInfo.Control, lInfo.Name, lInfo.HelpText,
           lAssociatedLabelControl);
-        aParentNode.AddChild(lChildNode);
-        lNextParent := lChildNode;
+        aParentNode.AddChild(lNextParent);
       end;
 
       if lChildren[i] is TWinControl then

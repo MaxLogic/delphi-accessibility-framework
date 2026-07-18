@@ -162,6 +162,7 @@ type
     function CurrentHelpText: string;
     function CurrentName: string;
     procedure SetLabeledByProvider(const aProvider: IRawElementProviderSimple);
+    function TryGetLabeledByProperty(out aValue: OleVariant): Boolean;
     class function SpeedButtonSupportsToggle(aButton: TSpeedButton): Boolean; static;
     class function SupportsValue(aControl: TControl): Boolean; static;
     class function ToggleCheckBox(aControl: TControl): Boolean; static;
@@ -1675,20 +1676,46 @@ begin
   end;
 end;
 
+procedure AddLabeledByRelationship(const aScanNode: IAccessibilityScanNode;
+  const aLookup: IAccessibilityVclProviderLookup);
+var
+  lInputNode: IAccessibilityProviderNode;
+  lInputNodeInternal: IAccessibilityProviderNodeInternal;
+  lInputProvider: IRawElementProviderSimple;
+  lLabelControl: TControl;
+  lLabelProvider: IRawElementProviderSimple;
+  lRelationship: IAccessibilityScanNodeLabelRelationship;
+  lValue: OleVariant;
+begin
+  if not Supports(aScanNode, IAccessibilityScanNodeLabelRelationship, lRelationship) then
+  begin
+    Exit;
+  end;
+
+  lLabelControl := lRelationship.AssociatedLabelControl;
+  if (lLabelControl = nil) or (lLabelControl = aScanNode.Control) or
+    not aLookup.TryFindProviderForControl(aScanNode.Control, lInputProvider) or
+    not Supports(lInputProvider, IAccessibilityProviderNode, lInputNode) or
+    not aLookup.TryFindProviderForControl(lLabelControl, lLabelProvider) then
+  begin
+    Exit;
+  end;
+
+  if Supports(lInputNode, IAccessibilityProviderNodeInternal, lInputNodeInternal) and
+    (lInputNodeInternal.ProviderObject is TAccessibilityVclControlProvider) then
+  begin
+    TAccessibilityVclControlProvider(lInputNodeInternal.ProviderObject).SetLabeledByProvider(lLabelProvider);
+  end else begin
+    lValue := lLabelProvider as IUnknown;
+    lInputNode.SetProperty(UIA_LabeledByPropertyId, lValue);
+  end;
+end;
+
 procedure AddLabeledByRelationships(const aTree: IAccessibilityScanTree;
   const aLookup: IAccessibilityVclProviderLookup);
 var
   i: Integer;
-  lInputNode: IAccessibilityProviderNode;
-  lInputNodeInternal: IAccessibilityProviderNodeInternal;
-  lInputControl: TControl;
-  lInputProvider: IRawElementProviderSimple;
-  lLabelControl: TControl;
-  lLabelProvider: IRawElementProviderSimple;
   lNodes: TArray<IAccessibilityScanNode>;
-  lRelationship: IAccessibilityScanNodeLabelRelationship;
-  lScanNode: IAccessibilityScanNode;
-  lValue: OleVariant;
 begin
   if (aTree = nil) or (aLookup = nil) then
   begin
@@ -1698,30 +1725,7 @@ begin
   lNodes := aTree.FlattenedNodes;
   for i := 0 to High(lNodes) do
   begin
-    lScanNode := lNodes[i];
-    if not Supports(lScanNode, IAccessibilityScanNodeLabelRelationship, lRelationship) then
-    begin
-      Continue;
-    end;
-
-    lLabelControl := lRelationship.AssociatedLabelControl;
-    lInputControl := lScanNode.Control;
-    if (lLabelControl = nil) or (lLabelControl = lInputControl) or
-      not aLookup.TryFindProviderForControl(lInputControl, lInputProvider) or
-      not Supports(lInputProvider, IAccessibilityProviderNode, lInputNode) or
-      not aLookup.TryFindProviderForControl(lLabelControl, lLabelProvider) then
-    begin
-      Continue;
-    end;
-
-    if Supports(lInputNode, IAccessibilityProviderNodeInternal, lInputNodeInternal) and
-      (lInputNodeInternal.ProviderObject is TAccessibilityVclControlProvider) then
-    begin
-      TAccessibilityVclControlProvider(lInputNodeInternal.ProviderObject).SetLabeledByProvider(lLabelProvider);
-    end else begin
-      lValue := lLabelProvider as IUnknown;
-      lInputNode.SetProperty(UIA_LabeledByPropertyId, lValue);
-    end;
+    AddLabeledByRelationship(lNodes[i], aLookup);
   end;
 end;
 
@@ -2411,6 +2415,17 @@ begin
   Supports(aProvider, IAccessibilityProviderDirectAccess, fLabeledByDirectAccess);
 end;
 
+function TAccessibilityVclControlProvider.TryGetLabeledByProperty(out aValue: OleVariant): Boolean;
+begin
+  Result := fLabeledByProvider <> nil;
+  if Result then
+  begin
+    aValue := fLabeledByProvider as IUnknown;
+  end else begin
+    Result := inherited DoGetPropertyValue(UIA_LabeledByPropertyId, aValue);
+  end;
+end;
+
 function TAccessibilityVclControlProvider.VclGeometryPartitionsHoverTargets: Boolean;
 var
   lRoot: IRawElementProviderFragmentRoot;
@@ -2480,13 +2495,7 @@ begin
       end else begin
         aValue := not ControlIsInActiveVisibleTree(fControl);
       end;
-    UIA_LabeledByPropertyId:
-      if fLabeledByProvider <> nil then
-      begin
-        aValue := fLabeledByProvider as IUnknown;
-      end else begin
-        Result := inherited DoGetPropertyValue(aPropertyId, aValue);
-      end;
+    UIA_LabeledByPropertyId: Result := TryGetLabeledByProperty(aValue);
     UIA_HelpTextPropertyId: aValue := CurrentHelpText;
     UIA_NamePropertyId: aValue := CurrentName;
     UIA_SelectionItemIsSelectedPropertyId:

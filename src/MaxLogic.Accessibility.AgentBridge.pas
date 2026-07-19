@@ -456,7 +456,7 @@ begin
     TAccessibilityDiagnostics.RecordAgentBridgeRttiPropertyLookup;
     lPropInfo := GetPropInfo(aObject.ClassInfo, aPropertyName);
   end;
-  if (lPropInfo <> nil) and (lPropInfo.PropType^.Kind in [tkString, tkLString, tkWString, tkUString]) then
+  if (lPropInfo <> nil) and (lPropInfo.PropType^.Kind in [tkString, tkLString, tkWString, tkUString]) then //PALOFF STWA5 nil guard precedes dereference
   begin
     Result := TAccessibilityText.Clean(GetStrProp(aObject, lPropInfo));
   end;
@@ -490,7 +490,7 @@ begin
     TAccessibilityDiagnostics.RecordAgentBridgeRttiPropertyLookup;
     lPropInfo := GetPropInfo(aObject.ClassInfo, aPropertyName);
   end;
-  Result := (lPropInfo <> nil) and (lPropInfo.PropType^.Kind = tkEnumeration);
+  Result := (lPropInfo <> nil) and (lPropInfo.PropType^.Kind = tkEnumeration); //PALOFF STWA5 nil guard precedes dereference
   if Result then
   begin
     aValue := GetOrdProp(aObject, lPropInfo) <> 0;
@@ -516,7 +516,7 @@ begin
     TAccessibilityDiagnostics.RecordAgentBridgeRttiPropertyLookup;
     lPropInfo := GetPropInfo(aObject.ClassInfo, aPropertyName);
   end;
-  Result := (lPropInfo <> nil) and (lPropInfo.PropType^.Kind in [tkInteger, tkEnumeration]);
+  Result := (lPropInfo <> nil) and (lPropInfo.PropType^.Kind in [tkInteger, tkEnumeration]); //PALOFF STWA5 nil guard precedes dereference
   if Result then
   begin
     aValue := GetOrdProp(aObject, lPropInfo);
@@ -835,7 +835,7 @@ begin
 
   if TryProviderNativeWindowHandle(lDirectAccess, lHwnd) then
   begin
-    AddUInt(Result, 'handle', UInt64(NativeUInt(lHwnd)));
+    AddUInt(Result, 'handle', UInt64(NativeUInt(lHwnd))); //PALOFF WARN63 explicit handle-width conversion
   end else begin
     AddUInt(Result, 'handle', 0);
   end;
@@ -928,7 +928,7 @@ class function TAccessibilityAgentBridgeInternals.SerializeProviderNode(const aP
   aFullDetail: Boolean; aMaxDepth: Integer; aMaxChildren: Integer): string;
 var
   lDetail: TAccessibilityAgentBridgeMapDetail;
-  lNodeCount: Integer;
+  lNodeCount: Integer; //PALOFF WARN5 recursion updates the shared count
   lRoot: TJSONObject;
 begin
   if aFullDetail then
@@ -991,7 +991,7 @@ begin
     AddBool(lState, 'selected', lSelected);
   end else if aControl is TCustomListBox then
   begin
-    lListBox := TCustomListBox(aControl);
+    lListBox := TCustomListBox(aControl); //PALOFF STWA6 guarded by SupportsListBox
     AddInt(lState, 'itemCount', lListBox.Items.Count);
     AddInt(lState, 'itemIndex', lListBox.ItemIndex);
     if (lListBox.ItemIndex >= 0) and (lListBox.ItemIndex < lListBox.Items.Count) then
@@ -1013,7 +1013,7 @@ begin
     end;
   end else if aControl is TPageControl then
   begin
-    lPageControl := TPageControl(aControl);
+    lPageControl := TPageControl(aControl); //PALOFF STWA6 guarded by SupportsPageControl
     AddInt(lState, 'activePageIndex', lPageControl.ActivePageIndex);
     if lPageControl.ActivePage <> nil then
     begin
@@ -1306,7 +1306,7 @@ begin
     AddBool(aJson, 'focused', (lWindowHandle <> 0) and (lWindowHandle = aFocusedHandle));
     AddBool(aJson, 'tabStop', TWinControl(aControl).TabStop);
     AddInt(aJson, 'tabOrder', TWinControl(aControl).TabOrder);
-    AddUInt(aJson, 'handle', UInt64(NativeUInt(lWindowHandle)));
+    AddUInt(aJson, 'handle', UInt64(NativeUInt(lWindowHandle))); //PALOFF WARN63 explicit handle-width conversion
   end else begin
     AddBool(aJson, 'focused', False);
     AddBool(aJson, 'tabStop', False);
@@ -1488,7 +1488,7 @@ begin
       end;
     end;
 
-    Exit(lChild);
+    Exit(lChild); //PALOFF WARN20 intentional early return from recursive hit test
   end;
 
   if ControlScreenRectFromSnapshot(aParent).Contains(aPoint) then
@@ -1717,10 +1717,10 @@ begin
     Exit(Failure('unsupported_control', 'Control does not support diagnostic click.'));
   end;
 
-  lWinControl := TWinControl(lControl);
+  lWinControl := TWinControl(lControl); //PALOFF STWA6 guarded by is TWinControl
   lWinControl.HandleNeeded;
   lPoint := Point(lWinControl.Width div 2, lWinControl.Height div 2);
-  lMouseParam := MakeLParam(Word(lPoint.X), Word(lPoint.Y));
+  lMouseParam := MakeLParam(Word(lPoint.X), Word(lPoint.Y)); //PALOFF STWA6 Win32 LPARAM packing
   lWinControl.Perform(WM_LBUTTONDOWN, MK_LBUTTON, lMouseParam);
   lWinControl.Perform(WM_LBUTTONUP, 0, lMouseParam);
   Result := SuccessMutation;
@@ -1765,7 +1765,7 @@ begin
     Exit(Failure('unsupported_control', 'Control does not support focus.'));
   end;
 
-  lWinControl := TWinControl(lControl);
+  lWinControl := TWinControl(lControl); //PALOFF STWA6 guarded by is TWinControl
   FocusWinControl(lWinControl);
 
   Result := SuccessMutation;
@@ -2053,7 +2053,7 @@ begin
     Exit;
   end;
 
-  lControl := TControl(aComponent);
+  lControl := TControl(aComponent); //PALOFF STWA6 guarded by is TControl
   if fRefsByControl.TryGetValue(lControl, lRef) then
   begin
     fRefsByControl.Remove(lControl);
@@ -2115,7 +2115,7 @@ begin
     begin
       Exit(nil);
     end;
-    lWinControl := FindControl(HWND(NativeUInt(lHandle)));
+    lWinControl := FindControl(HWND(NativeUInt(lHandle))); //PALOFF explicit reviewed handle conversion
     if lWinControl <> nil then
     begin
       Result := GetParentForm(lWinControl, False);
@@ -2348,7 +2348,7 @@ begin
       end else begin
         lPhaseStartedTicks := TStopwatch.GetTimeStamp;
         lResponse := CaptureBridgeResponse(lRequest, lTicks[btpCapture], lThreadIds[btpCapture]);
-        lTicks[btpSynchronized] := TStopwatch.GetTimeStamp - lPhaseStartedTicks;
+        lTicks[btpSynchronized] := TStopwatch.GetTimeStamp - lPhaseStartedTicks; //PALOFF WARN52 same-width tick arithmetic
       end;
     end else begin
       lThreadIds[btpCapture] := 0;

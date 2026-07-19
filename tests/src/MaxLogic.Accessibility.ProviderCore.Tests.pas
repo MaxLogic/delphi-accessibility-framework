@@ -718,7 +718,7 @@ end;
 
 procedure TProviderCoreTests.DisconnectedProvidersReturnElementUnavailable;
 var
-  lArray: PSafeArray;
+  lArray: PSafeArray; //PALOFF WARN46 output argument verifies unavailable selection behavior
   lFragment: IRawElementProviderFragment;
   lFragmentRoot: IRawElementProviderFragmentRoot;
   lProvider: IAccessibilityProviderNode;
@@ -895,7 +895,7 @@ end;
 procedure TProviderCoreTests.DirectChildCountThenIndexedAccessReusesPreparedChildren;
 var
   lAccess: IAccessibilityProviderChildAccess;
-  lChild: IRawElementProviderSimple;
+  lChild: IRawElementProviderSimple; //PALOFF WARN46 output argument verifies navigation behavior
   lCount: Integer;
   lPrepareProbe: IPrepareProbeProvider;
   lProvider: IAccessibilityProviderNode;

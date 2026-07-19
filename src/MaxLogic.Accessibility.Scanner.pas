@@ -294,7 +294,7 @@ begin
     Exit;
   end;
 
-  lControl := TControl(aObject);
+  lControl := TControl(aObject); //PALOFF STWA6 guarded by is TControl
   if (aPropertyName = 'Caption') and ControlHasDirectCaption(lControl) then
   begin
     aValue := TAccessibilityText.Clean(TScannerControlAccess(lControl).Caption);
@@ -542,9 +542,9 @@ begin
         aFocusLabels := TDictionary<TControl, TScannerLabelCandidate>.Create;
       end;
 
-      if not aFocusLabels.ContainsKey(TControl(lFocusControl)) then
+      if not aFocusLabels.ContainsKey(TControl(lFocusControl)) then //PALOFF STWA6 guarded by is TControl
       begin
-        aFocusLabels.Add(TControl(lFocusControl), Result[lCount]);
+        aFocusLabels.Add(TControl(lFocusControl), Result[lCount]); //PALOFF STWA6 guarded by is TControl
       end;
     end;
 
@@ -1268,7 +1268,7 @@ begin
       begin
         lNextParent := TAccessibilityScanNode.Create(lInfo.Control, lInfo.Name, lInfo.HelpText,
           lAssociatedLabelControl);
-        aParentNode.AddChild(lNextParent);
+        aParentNode.AddChild(lNextParent); //PALOFF WARN53 graph owns concrete nodes behind interfaces
       end;
 
       if lChildren[i] is TWinControl then
@@ -1303,7 +1303,7 @@ begin
   lCache := TRttiPropertyCache.Create;
   try
     ScanControlChildren(aForm, lRoot, aRegistry, lCache);
-    Result := TAccessibilityScanTree.Create(lRoot, 1);
+    Result := TAccessibilityScanTree.Create(lRoot, 1); //PALOFF WARN53 scan tree owns the concrete root
   finally
     lCache.Free;
   end;

@@ -277,7 +277,7 @@ begin
     (lPropertyValue >= ToggleState_Off) and (lPropertyValue <= ToggleState_Indeterminate);
   if Result then
   begin
-    aToggleState := lPropertyValue;
+    aToggleState := lPropertyValue; //PALOFF WARN52 Variant-to-enum MSAA value
   end;
 end;
 

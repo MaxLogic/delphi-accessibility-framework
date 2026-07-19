@@ -35,7 +35,7 @@ begin
   lValue := TJSONObject.ParseJSONValue(aText, True, True);
   Assert.IsNotNull(lValue, 'JSON response was empty.');
   Assert.IsTrue(lValue is TJSONObject, 'JSON response is not an object: ' + aText);
-  Result := TJSONObject(lValue);
+  Result := TJSONObject(lValue); //PALOFF STWA6 guarded by JSON type assertion
 end;
 
 function JsonText(aObject: TJSONObject; const aName: string): string;
@@ -60,6 +60,7 @@ var
   lBytesRead: DWORD;
   lLength: Integer;
 begin
+  Result := '';
   SetLength(lBytes, 0);
   while True do
   begin

@@ -127,6 +127,7 @@ end;
 function NavigateFragment(const aFragment: IRawElementProviderFragment; aDirection: NavigateDirection):
   IRawElementProviderFragment;
 begin
+  Result := nil;
   Assert.AreEqual(S_OK, aFragment.Navigate(aDirection, Result));
 end;
 
@@ -632,7 +633,7 @@ end;
 procedure TStringGridAccessibilityTests.FormRootIgnoresDisconnectedGridHitTestRoots;
 var
   lForm: TForm;
-  lGrid: TStringGrid;
+  lGrid: TStringGrid; //PALOFF WARN46 form-owned fixture setup is intentional
   lHit: IRawElementProviderFragment;
   lPoint: TPoint;
   lProvider: IAccessibilityProviderNode;

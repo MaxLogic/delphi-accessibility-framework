@@ -209,11 +209,11 @@ type
 
 procedure TCaptionGraphicControl.Paint;
 begin
-end;
+end; //PALOFF WARN27 intentional no-op paint for caption-only test control
 
 procedure TColdCaptionGraphicControl.Paint;
 begin
-end;
+end; //PALOFF WARN27 intentional no-op paint for cold-caption test control
 
 procedure TClickRecorder.Click(aSender: TObject);
 begin
@@ -867,15 +867,15 @@ var
   lX: Integer;
   lY: Integer;
 begin
-  lSignedValue := Int64(aValue);
+  lSignedValue := Int64(aValue); //PALOFF WARN63 explicit LPARAM sign normalization
   lRawValue := lSignedValue and $00000000FFFFFFFF;
-  lX := Integer(lRawValue and $FFFF);
+  lX := Integer(lRawValue and $FFFF); //PALOFF explicit reviewed low-word extraction
   if lX > High(Smallint) then
   begin
     Dec(lX, $10000);
   end;
 
-  lY := Integer((lRawValue shr 16) and $FFFF);
+  lY := Integer((lRawValue shr 16) and $FFFF); //PALOFF explicit reviewed high-word extraction
   if lY > High(Smallint) then
   begin
     Dec(lY, $10000);
@@ -2906,7 +2906,7 @@ end;
 procedure TAccessibilityVclAdaptersTests.VclSelectionContainersUseParentWithoutNavigation;
 var
   lContainer: IRawElementProviderSimple;
-  lContainerFragment: IRawElementProviderFragment;
+  lContainerFragment: IRawElementProviderFragment; //PALOFF WARN46 output argument verifies fragment lookup
   lForm: TForm;
   lMetrics: TAccessibilityProviderHotspotMetrics;
   lPageControl: TPageControl;

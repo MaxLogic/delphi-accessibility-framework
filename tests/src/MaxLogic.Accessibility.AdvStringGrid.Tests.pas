@@ -466,6 +466,7 @@ end;
 function NavigateFragment(const aFragment: IRawElementProviderFragment; aDirection: NavigateDirection):
   IRawElementProviderFragment;
 begin
+  Result := nil;
   Assert.AreEqual(S_OK, aFragment.Navigate(aDirection, Result));
 end;
 

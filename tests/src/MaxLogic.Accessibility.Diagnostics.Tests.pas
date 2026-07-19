@@ -303,7 +303,7 @@ begin
     begin
       raise EStreamError.Create('Diagnostics test log is too large to read.');
     end;
-    lByteCount := Integer(lStream.Size);
+    lByteCount := Integer(lStream.Size); //PALOFF STWA6 guarded by MaxInt range check
     SetLength(lBytes, lByteCount);
     if lByteCount > 0 then
     begin

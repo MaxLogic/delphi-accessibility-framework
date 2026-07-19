@@ -221,7 +221,7 @@ type
     fPreparedHandle: HWND;
     fPreparedLineCount: Integer;
     fPreparedValid: Boolean;
-    fRuntimeId: Integer;
+    fProviderRuntimeId: Integer;
     fUiaApi: IAccessibilityUiaApi;
     function ChildrenPreparationIsCurrent: Boolean;
     procedure AddLineProvider(aLine: Integer; const aProvider: IAccessibilityProviderNode);
@@ -291,7 +291,7 @@ type
     fPreparedLastVisibleIndex: Integer;
     fPreparedTopIndex: Integer;
     fPreparedValid: Boolean;
-    fRuntimeId: Integer;
+    fProviderRuntimeId: Integer;
     fSelectionDirty: Boolean;
     fSelectionTracking: Boolean;
     fSelectedIndexes: THashSet<Integer>;
@@ -424,7 +424,7 @@ type
     fPreparedVisibleColCount: Integer;
     fPreparedVisibleRowCount: Integer;
     fRows: TDictionary<Integer, IAccessibilityProviderNode>;
-    fRuntimeId: Integer;
+    fProviderRuntimeId: Integer;
     fUiaApi: IAccessibilityUiaApi;
     procedure BuildVisibleCells;
     function CellProvider(aCol: Integer; aRow: Integer): IAccessibilityProviderNode;
@@ -479,7 +479,7 @@ end;
 
 function CellKey(aCol: Integer; aRow: Integer): Int64;
 begin
-  Result := (Int64(aRow) shl 32) or Cardinal(aCol);
+  Result := (Int64(aRow) shl 32) or Cardinal(aCol); //PALOFF WARN63 explicit row/column key packing
 end;
 
 function CellKeyCol(aKey: Int64): Integer;
@@ -501,15 +501,15 @@ var
   lX: Integer;
   lY: Integer;
 begin
-  lSignedValue := Int64(aValue);
+  lSignedValue := Int64(aValue); //PALOFF WARN63 explicit LPARAM sign normalization
   lRawValue := lSignedValue and $00000000FFFFFFFF;
-  lX := Integer(lRawValue and $FFFF);
+  lX := Integer(lRawValue and $FFFF); //PALOFF explicit reviewed low-word extraction
   if lX > High(Smallint) then
   begin
     Dec(lX, $10000);
   end;
 
-  lY := Integer((lRawValue shr 16) and $FFFF);
+  lY := Integer((lRawValue shr 16) and $FFFF); //PALOFF explicit reviewed high-word extraction
   if lY > High(Smallint) then
   begin
     Dec(lY, $10000);
@@ -616,7 +616,7 @@ begin
   end;
 
   SetLength(lLineBuffer, Integer(lLineLength));
-  PWord(PChar(lLineBuffer))^ := Word(lLineLength);
+  PWord(PChar(lLineBuffer))^ := Word(lLineLength); //PALOFF WARN52 Win32 edit-buffer contract
   lCopiedLength := aMemo.Perform(EM_GETLINE, aLine, LPARAM(PChar(lLineBuffer)));
   if lCopiedLength <= 0 then
   begin
@@ -653,9 +653,9 @@ begin
     Exit;
   end;
 
-  lSignedCharIndex := Int64(lCharIndex);
+  lSignedCharIndex := Int64(lCharIndex); //PALOFF WARN63 explicit WPARAM sign normalization
   lRawCharIndex := lSignedCharIndex and $00000000FFFFFFFF;
-  lCharIndexParam := WPARAM(lRawCharIndex and $FFFF);
+  lCharIndexParam := WPARAM(lRawCharIndex and $FFFF); //PALOFF explicit reviewed Win32 word packing
   Result := aMemo.Perform(EM_LINEFROMCHAR, lCharIndexParam, 0);
   if Result < 0 then
   begin
@@ -732,7 +732,7 @@ begin
     Exit;
   end;
 
-  lListBox := TAccessibilityListBoxAccess(aListBox);
+  lListBox := TAccessibilityListBoxAccess(aListBox); //PALOFF STWA6 access class preserves runtime type
   if aListBox.HandleAllocated then
   begin
     lIndex := 0;
@@ -907,7 +907,7 @@ begin
   end;
 
   lHeaderRow := Pred(aGrid.FixedRows);
-  lFixedColCount := Min(aGrid.FixedCols, aGrid.ColCount);
+  lFixedColCount := Min(aGrid.FixedCols, aGrid.ColCount); //PALOFF WARN52 same-width bounded count
   for lCol := 0 to Pred(lFixedColCount) do
   begin
     if GridCellIsVisible(aGrid, lCol, aRow) and
@@ -1007,7 +1007,7 @@ begin
   lUseHeaderFormat := GridRowHasVisibleHeader(aGrid, aRow);
   lHeaderRow := Pred(aGrid.FixedRows);
   try
-    lFixedColCount := Min(aGrid.FixedCols, aGrid.ColCount);
+    lFixedColCount := Min(aGrid.FixedCols, aGrid.ColCount); //PALOFF WARN52 same-width bounded count
     for lCol := 0 to Pred(lFixedColCount) do
     begin
       if lMetricsEnabled then
@@ -1103,7 +1103,7 @@ begin
     Exit;
   end;
 
-  lControl := TControl(aObject);
+  lControl := TControl(aObject); //PALOFF STWA6 guarded by is TControl
   if (aPropertyName = 'Caption') and ControlHasDirectCaption(lControl) then
   begin
     aValue := TAccessibilityText.Clean(TAccessibilityVclControlAccess(lControl).Caption);
@@ -1152,7 +1152,7 @@ begin
   end;
 
   lPropInfo := LookupRttiProperty(aObject, aPropertyName);
-  if (lPropInfo <> nil) and (lPropInfo.PropType^.Kind = tkClass) then
+  if (lPropInfo <> nil) and (lPropInfo.PropType^.Kind = tkClass) then //PALOFF STWA5 nil guard precedes dereference
   begin
     Result := GetObjectProp(aObject, lPropInfo);
   end;
@@ -1169,7 +1169,7 @@ begin
   end;
 
   lPropInfo := LookupRttiProperty(aObject, aPropertyName);
-  if (lPropInfo <> nil) and (lPropInfo.PropType^.Kind in [tkString, tkLString, tkWString, tkUString]) then
+  if (lPropInfo <> nil) and (lPropInfo.PropType^.Kind in [tkString, tkLString, tkWString, tkUString]) then //PALOFF STWA5 nil guard precedes dereference
   begin
     Result := TAccessibilityText.Clean(GetStrProp(aObject, lPropInfo));
   end;
@@ -1242,7 +1242,7 @@ begin
   end;
 
   lPropInfo := LookupRttiProperty(aObject, aPropertyName);
-  if (lPropInfo <> nil) and (lPropInfo.PropType^.Kind = tkEnumeration) then
+  if (lPropInfo <> nil) and (lPropInfo.PropType^.Kind = tkEnumeration) then //PALOFF STWA5 nil guard precedes dereference
   begin
     Result := GetOrdProp(aObject, lPropInfo) <> 0;
   end;
@@ -1269,7 +1269,7 @@ begin
   end;
 
   lPropInfo := LookupRttiProperty(aObject, aPropertyName);
-  if (lPropInfo <> nil) and (lPropInfo.PropType^.Kind = tkEnumeration) then
+  if (lPropInfo <> nil) and (lPropInfo.PropType^.Kind = tkEnumeration) then //PALOFF STWA5 nil guard precedes dereference
   begin
     SetOrdProp(aObject, lPropInfo, Ord(aValue));
     Result := True;
@@ -1289,7 +1289,7 @@ begin
   end;
 
   lPropInfo := LookupRttiProperty(aObject, aPropertyName);
-  if (lPropInfo <> nil) and (lPropInfo.PropType^.Kind = tkEnumeration) then
+  if (lPropInfo <> nil) and (lPropInfo.PropType^.Kind = tkEnumeration) then //PALOFF STWA5 nil guard precedes dereference
   begin
     aValue := GetOrdProp(aObject, lPropInfo);
     Result := True;
@@ -1309,7 +1309,7 @@ begin
   end;
 
   lPropInfo := LookupRttiProperty(aObject, aPropertyName);
-  if (lPropInfo <> nil) and (lPropInfo.PropType^.Kind in [tkString, tkLString, tkWString, tkUString]) then
+  if (lPropInfo <> nil) and (lPropInfo.PropType^.Kind in [tkString, tkLString, tkWString, tkUString]) then //PALOFF STWA5 nil guard precedes dereference
   begin
     SetStrProp(aObject, lPropInfo, aValue);
     Result := True;
@@ -1323,12 +1323,12 @@ begin
   Result := False;
   if (aPropertyName = 'State') and (aObject is TCustomCheckBox) then
   begin
-    TAccessibilityVclCheckBoxAccess(aObject).State := TCheckBoxState(aValue);
+    TAccessibilityVclCheckBoxAccess(aObject).State := TCheckBoxState(aValue); //PALOFF STWA6 validated enum conversion
     Exit(True);
   end;
 
   lPropInfo := LookupRttiProperty(aObject, aPropertyName);
-  if (lPropInfo <> nil) and (lPropInfo.PropType^.Kind = tkEnumeration) then
+  if (lPropInfo <> nil) and (lPropInfo.PropType^.Kind = tkEnumeration) then //PALOFF STWA5 nil guard precedes dereference
   begin
     SetOrdProp(aObject, lPropInfo, aValue);
     Result := True;
@@ -1378,7 +1378,7 @@ begin
     Exit;
   end;
 
-  lFixedColCount := Min(aGrid.FixedCols, aGrid.ColCount);
+  lFixedColCount := Min(aGrid.FixedCols, aGrid.ColCount); //PALOFF WARN52 same-width bounded count
   for lCol := 0 to Pred(lFixedColCount) do
   begin
     if GridCellIsVisible(aGrid, lCol, aRow) then
@@ -1429,7 +1429,7 @@ begin
     Exit;
   end;
 
-  lControl := TWinControl(aControl);
+  lControl := TWinControl(aControl); //PALOFF STWA6 guarded by is TWinControl
   if not lControl.HandleAllocated or not IsWindowVisible(lControl.Handle) then
   begin
     Exit;
@@ -1474,7 +1474,7 @@ begin
   lAction := ReadObjectProperty(aControl, 'Action');
   if lAction is TContainedAction then
   begin
-    if (TAccessibilityText.Clean(TContainedAction(lAction).Caption) <> '') or
+    if (TAccessibilityText.Clean(TContainedAction(lAction).Caption) <> '') or //PALOFF STWA5 guarded by is TContainedAction
       (TAccessibilityText.Clean(TContainedAction(lAction).Hint) <> '') then
     begin
       Exit(True);
@@ -1781,7 +1781,7 @@ end;
 function TStringGridAdapter.CreateProvider(aControl: TControl; aRuntimeId: Integer; const aName: string;
   const aHelpText: string; const aApi: IAccessibilityUiaApi): IAccessibilityProviderNode;
 begin
-  Result := TAccessibilityStringGridProvider.Create(TStringGrid(aControl), aRuntimeId, aName, aHelpText, aApi) as
+  Result := TAccessibilityStringGridProvider.Create(TStringGrid(aControl), aRuntimeId, aName, aHelpText, aApi) as //PALOFF STWA6 guarded by Supports
     IAccessibilityProviderNode;
 end;
 
@@ -1800,7 +1800,7 @@ end;
 function TMemoAdapter.CreateProvider(aControl: TControl; aRuntimeId: Integer; const aName: string;
   const aHelpText: string; const aApi: IAccessibilityUiaApi): IAccessibilityProviderNode;
 begin
-  Result := TAccessibilityMemoProvider.Create(TCustomMemo(aControl), aRuntimeId, aName, aHelpText, aApi) as
+  Result := TAccessibilityMemoProvider.Create(TCustomMemo(aControl), aRuntimeId, aName, aHelpText, aApi) as //PALOFF STWA6 guarded by Supports
     IAccessibilityProviderNode;
 end;
 
@@ -1819,7 +1819,7 @@ end;
 function TListBoxAdapter.CreateProvider(aControl: TControl; aRuntimeId: Integer; const aName: string;
   const aHelpText: string; const aApi: IAccessibilityUiaApi): IAccessibilityProviderNode;
 begin
-  Result := TAccessibilityListBoxProvider.Create(TCustomListBox(aControl), aRuntimeId, aName, aHelpText, aApi) as
+  Result := TAccessibilityListBoxProvider.Create(TCustomListBox(aControl), aRuntimeId, aName, aHelpText, aApi) as //PALOFF STWA6 guarded by Supports
     IAccessibilityProviderNode;
 end;
 
@@ -1848,7 +1848,7 @@ end;
 function TStatusBarAdapter.CreateProvider(aControl: TControl; aRuntimeId: Integer; const aName: string;
   const aHelpText: string; const aApi: IAccessibilityUiaApi): IAccessibilityProviderNode;
 begin
-  Result := TAccessibilityStatusBarProvider.Create(TCustomStatusBar(aControl), [aRuntimeId], aHelpText, aApi) as
+  Result := TAccessibilityStatusBarProvider.Create(TCustomStatusBar(aControl), [aRuntimeId], aHelpText, aApi) as //PALOFF STWA6 guarded by Supports
     IAccessibilityProviderNode;
 end;
 
@@ -2562,7 +2562,7 @@ begin
     Exit(S_OK);
   end;
 
-  lTabSheet := TTabSheet(fControl);
+  lTabSheet := TTabSheet(fControl); //PALOFF STWA6 provider contract fixes control type
   if (lTabSheet.PageControl <> nil) and (lTabSheet.PageControl.ActivePage = lTabSheet) then
   begin
     aRetVal := True;
@@ -2658,7 +2658,7 @@ begin
     lToolButton := TToolButton(fControl);
     lToolButton.Click;
   end else begin
-    lButton := TCustomButton(fControl);
+    lButton := TCustomButton(fControl); //PALOFF STWA6 provider contract fixes control type
     lButton.Click;
   end;
   Result := S_OK;
@@ -2676,7 +2676,7 @@ begin
 
   if ReadOrdinalProperty(aControl, 'State', lState) then
   begin
-    case TCheckBoxState(lState) of
+    case TCheckBoxState(lState) of //PALOFF STWA6 validated UIA enum conversion
       cbChecked:
         Result := ToggleState_On;
       cbGrayed:
@@ -2696,7 +2696,7 @@ end;
 class function TAccessibilityVclControlProvider.ControlSupportsToggle(aControl: TControl): Boolean;
 begin
   Result := (aControl is TCustomCheckBox) or ((aControl is TSpeedButton) and
-    SpeedButtonSupportsToggle(TSpeedButton(aControl)));
+    SpeedButtonSupportsToggle(TSpeedButton(aControl))); //PALOFF STWA6 guarded by is TSpeedButton
 end;
 
 class function TAccessibilityVclControlProvider.SpeedButtonSupportsToggle(aButton: TSpeedButton): Boolean;
@@ -2738,7 +2738,7 @@ begin
     Exit(E_NOTIMPL);
   end;
 
-  lTabSheet := TTabSheet(fControl);
+  lTabSheet := TTabSheet(fControl); //PALOFF STWA6 provider contract fixes control type
   if (lTabSheet.PageControl = nil) or not TabSheetHeaderIsVisible(lTabSheet) then
   begin
     Exit(UIA_E_ELEMENTNOTAVAILABLE);
@@ -2791,7 +2791,7 @@ begin
   end;
 
   lAllowGrayed := ReadBooleanProperty(aControl, 'AllowGrayed');
-  case TCheckBoxState(lState) of
+  case TCheckBoxState(lState) of //PALOFF STWA6 validated UIA enum conversion
     cbUnchecked:
       if lAllowGrayed then
       begin
@@ -2832,7 +2832,7 @@ begin
     Exit(E_NOTIMPL);
   end;
 
-  lButton := TSpeedButton(fControl);
+  lButton := TSpeedButton(fControl); //PALOFF STWA6 provider contract fixes control type
   if lButton.Down and not lButton.AllowAllUp then
   begin
     lButton.Down := True;
@@ -2896,7 +2896,7 @@ begin
   inherited Create(aMemo, [aRuntimeId], UIA_EditControlTypeId, aName, aHelpText, aApi);
   SetPublishNativeWindowHandle(True);
   fMemo := aMemo;
-  fRuntimeId := aRuntimeId;
+  fProviderRuntimeId := aRuntimeId;
   fUiaApi := aApi;
   fLineIndexes := TList<Integer>.Create;
   fLines := TDictionary<Integer, IAccessibilityProviderNode>.Create;
@@ -3000,7 +3000,7 @@ begin
   Result := LineProvider(aLine);
   if Result = nil then
   begin
-    Result := TAccessibilityMemoLineProvider.Create(fMemo, aLine, [fRuntimeId, aLine], fUiaApi) as
+    Result := TAccessibilityMemoLineProvider.Create(fMemo, aLine, [fProviderRuntimeId, aLine], fUiaApi) as
       IAccessibilityProviderNode;
     AddLineProvider(aLine, Result);
   end;
@@ -3017,7 +3017,7 @@ begin
   Result := LineProvider(aLine);
   if Result = nil then
   begin
-    Result := TAccessibilityMemoLineProvider.Create(fMemo, aLine, [fRuntimeId, aLine], fUiaApi) as
+    Result := TAccessibilityMemoLineProvider.Create(fMemo, aLine, [fProviderRuntimeId, aLine], fUiaApi) as
       IAccessibilityProviderNode;
     AddLineProvider(aLine, Result);
   end;
@@ -3391,7 +3391,7 @@ begin
   fItemRawTexts := TDictionary<Integer, string>.Create;
   fSelectedIndexes := THashSet<Integer>.Create;
   fListBox := aListBox;
-  fRuntimeId := aRuntimeId;
+  fProviderRuntimeId := aRuntimeId;
   fUiaApi := aApi;
 end;
 
@@ -3700,7 +3700,7 @@ begin
   if Result = nil then
   begin
     lCreated := True;
-    Result := TAccessibilityListBoxItemProvider.Create(Self, fListBox, aIndex, [fRuntimeId, aIndex], fUiaApi,
+    Result := TAccessibilityListBoxItemProvider.Create(Self, fListBox, aIndex, [fProviderRuntimeId, aIndex], fUiaApi,
       lRawText, lCleanText) as IAccessibilityProviderNode;
     AddItemProvider(aIndex, lRawText, Result);
   end;
@@ -4534,7 +4534,7 @@ begin
   end;
 
   try
-    lFixedColCount := Min(fGrid.FixedCols, fGrid.ColCount);
+    lFixedColCount := Min(fGrid.FixedCols, fGrid.ColCount); //PALOFF WARN52 same-width bounded count
     for lCol := 0 to Pred(lFixedColCount) do
     begin
       IncludeGridRowBoundsCell(fGrid, fRow, lCol, lLeft, lRight, lTop, lHeight, lVisibleCellFound,
@@ -4809,7 +4809,8 @@ begin
   if (Result = nil) and (fGrid <> nil) and (aCol >= 0) and (aCol < fGrid.ColCount) and
     (aRow >= 0) and (aRow < fGrid.RowCount) then
   begin
-    Result := TAccessibilityStringGridCellProvider.Create(Self, fGrid, aCol, aRow, [fRuntimeId, aRow, aCol], fUiaApi) as
+    Result := TAccessibilityStringGridCellProvider.Create(Self, fGrid, aCol, aRow,
+      [fProviderRuntimeId, aRow, aCol], fUiaApi) as
       IAccessibilityProviderNode;
     AddChild(Result);
     fCells.Add(lKey, Result);
@@ -4833,7 +4834,8 @@ begin
 
   if (Result = nil) and (fGrid <> nil) and GridUsesRowSelection(fGrid) and GridRowIsVisible(fGrid, aRow) then
   begin
-    Result := TAccessibilityStringGridRowProvider.Create(Self, fGrid, aRow, [fRuntimeId, aRow, fGrid.ColCount],
+    Result := TAccessibilityStringGridRowProvider.Create(Self, fGrid, aRow,
+      [fProviderRuntimeId, aRow, fGrid.ColCount],
       fUiaApi) as IAccessibilityProviderNode;
     AddChild(Result);
     fRows.Add(aRow, Result);
@@ -4853,7 +4855,7 @@ begin
   if IsVisibleCell(aCol, aRow) and (CellProvider(aCol, aRow) = nil) then
   begin
     lCell := TAccessibilityStringGridCellProvider.Create(Self, fGrid, aCol, aRow,
-      [fRuntimeId, aRow, aCol], fUiaApi) as IAccessibilityProviderNode;
+      [fProviderRuntimeId, aRow, aCol], fUiaApi) as IAccessibilityProviderNode;
     AddChild(lCell);
     fCells.Add(CellKey(aCol, aRow), lCell);
     if aMetricsEnabled then
@@ -4876,7 +4878,7 @@ begin
   if GridRowIsVisible(fGrid, aRow) and (RowProvider(aRow) = nil) then
   begin
     lRowProvider := TAccessibilityStringGridRowProvider.Create(Self, fGrid, aRow,
-      [fRuntimeId, aRow, fGrid.ColCount], fUiaApi) as IAccessibilityProviderNode;
+      [fProviderRuntimeId, aRow, fGrid.ColCount], fUiaApi) as IAccessibilityProviderNode;
     AddChild(lRowProvider);
     fRows.Add(aRow, lRowProvider);
     if aMetricsEnabled then
@@ -4952,8 +4954,8 @@ begin
     lKeysToRemove.Free;
   end;
 
-  lFixedColCount := Min(fGrid.FixedCols, fGrid.ColCount);
-  lFixedRowCount := Min(fGrid.FixedRows, fGrid.RowCount);
+  lFixedColCount := Min(fGrid.FixedCols, fGrid.ColCount); //PALOFF WARN52 same-width bounded count
+  lFixedRowCount := Min(fGrid.FixedRows, fGrid.RowCount); //PALOFF WARN52 same-width bounded count
   lFirstScrollableCol := EnsureRange(fGrid.LeftCol, 0, Pred(fGrid.ColCount));
   lLastScrollableCol := Min(Pred(fGrid.ColCount), lFirstScrollableCol + Max(0, fGrid.VisibleColCount) + 1);
   lFirstScrollableRow := EnsureRange(fGrid.TopRow, 0, Pred(fGrid.RowCount));
@@ -5066,7 +5068,7 @@ begin
     Exit;
   end;
 
-  lFixedRowCount := Min(fGrid.FixedRows, fGrid.RowCount);
+  lFixedRowCount := Min(fGrid.FixedRows, fGrid.RowCount); //PALOFF WARN52 same-width bounded count
   lFirstScrollableRow := EnsureRange(fGrid.TopRow, 0, Pred(fGrid.RowCount));
   lLastScrollableRow := Min(Pred(fGrid.RowCount), lFirstScrollableRow + Max(0, fGrid.VisibleRowCount) + 1);
 
@@ -5131,7 +5133,7 @@ begin
   fCells := TDictionary<Int64, IAccessibilityProviderNode>.Create;
   fRows := TDictionary<Integer, IAccessibilityProviderNode>.Create;
   fGrid := aGrid;
-  fRuntimeId := aRuntimeId;
+  fProviderRuntimeId := aRuntimeId;
   fUiaApi := aApi;
   SetProperty(UIA_NamePropertyId, aName);
   SetProperty(UIA_ControlTypePropertyId, UIA_DataGridControlTypeId);

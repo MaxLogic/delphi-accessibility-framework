@@ -6,7 +6,7 @@ uses
   System.Variants, Winapi.ActiveX, Winapi.Windows;
 
 const
-  UIAutomationCoreDll = 'UIAutomationCore.dll';
+  UIAutomationCoreDll = 'UIAutomationCore.dll'; //PALOFF WARN1 public integration constant
   UiaRootObjectId = -25;
 
 type
@@ -399,8 +399,8 @@ type
   end;
 
 function UiaClientsAreListening: BOOL; stdcall;
-function UiaGetReservedNotSupportedValue(out aNotSupportedValue: IUnknown): HRESULT; stdcall;
-function UiaHostProviderFromHwnd(aHwnd: HWND; out aProvider: IRawElementProviderSimple): HRESULT; stdcall;
+function UiaGetReservedNotSupportedValue(out aNotSupportedValue: IUnknown): HRESULT; stdcall; //PALOFF WARN51 external API writes out value
+function UiaHostProviderFromHwnd(aHwnd: HWND; out aProvider: IRawElementProviderSimple): HRESULT; stdcall; //PALOFF WARN51 external API writes out value
 function UiaReturnRawElementProvider(aHwnd: HWND; aWParam: WPARAM; aLParam: LPARAM;
   aElement: IRawElementProviderSimple): LRESULT; stdcall;
 function UiaDisconnectProvider(aProvider: IRawElementProviderSimple): HRESULT; stdcall;
@@ -427,8 +427,8 @@ function GetModuleHandleExW(aFlags: DWORD; aModuleName: PWideChar; var aModule: 
 
 type
   TUiaClientsAreListeningProc = function: BOOL; stdcall;
-  TUiaGetReservedNotSupportedValueProc = function(out aNotSupportedValue: IUnknown): HRESULT; stdcall;
-  TUiaHostProviderFromHwndProc = function(aHwnd: HWND; out aProvider: IRawElementProviderSimple): HRESULT; stdcall;
+  TUiaGetReservedNotSupportedValueProc = function(out aNotSupportedValue: IUnknown): HRESULT; stdcall; //PALOFF WARN51 external API writes out value
+  TUiaHostProviderFromHwndProc = function(aHwnd: HWND; out aProvider: IRawElementProviderSimple): HRESULT; stdcall; //PALOFF WARN51 external API writes out value
   TUiaReturnRawElementProviderProc = function(aHwnd: HWND; aWParam: WPARAM; aLParam: LPARAM;
     aElement: IRawElementProviderSimple): LRESULT; stdcall;
   TUiaDisconnectProviderProc = function(aProvider: IRawElementProviderSimple): HRESULT; stdcall;
@@ -534,7 +534,7 @@ begin
     Result := gUIAutomationCoreProcs[aExport];
     if Result = nil then
     begin
-      lName := AnsiString(TUIAutomationCoreImports.ExportName(aExport));
+      lName := AnsiString(TUIAutomationCoreImports.ExportName(aExport)); //PALOFF WARN52 explicit DLL export encoding
       Result := ResolveUIAutomationCoreProc(lModule, lName);
       TInterlocked.Increment(gUIAutomationCoreResolveCounts[aExport]);
       TInterlocked.Exchange(gUIAutomationCoreProcs[aExport], Result);
@@ -583,7 +583,7 @@ begin
   end;
 
   try
-    lName := AnsiString(ExportName(aExport));
+    lName := AnsiString(ExportName(aExport)); //PALOFF WARN52 explicit DLL export encoding
     Result := GetProcAddress(lModule, PAnsiChar(lName)) <> nil;
   finally
     FreeLibrary(lModule);
@@ -642,7 +642,7 @@ end;
 
 class function TUIAutomationCoreInternals.ResolveNamedExport(const aName: string): Pointer;
 begin
-  Result := ResolveUIAutomationCoreProc(UIAutomationCoreModule, AnsiString(aName));
+  Result := ResolveUIAutomationCoreProc(UIAutomationCoreModule, AnsiString(aName)); //PALOFF STWA6 explicit DLL export encoding
 end;
 
 function UiaClientsAreListening: BOOL;

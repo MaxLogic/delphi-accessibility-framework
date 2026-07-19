@@ -249,7 +249,7 @@ begin
 
     lEdit := lForm.FindComponent('Edit' + IntToStr(aPairCount));
     Assert.IsTrue(lEdit is TControl, 'Expected the final edit control to exist.');
-    lNode := lTree.FindNode(TControl(lEdit));
+    lNode := lTree.FindNode(TControl(lEdit)); //PALOFF STWA6 guarded by type assertion
     Assert.IsNotNull(lNode, 'The final edit should be included in the scan tree.');
     Assert.AreEqual('Label ' + IntToStr(aPairCount), lNode.Name);
 
@@ -399,7 +399,7 @@ var
   lForm: TForm;
   lMessage: TMessage;
   lProbe: TWindowProcChainProbe;
-  lScan: IAccessibilityObservedFormScan;
+  lScan: IAccessibilityObservedFormScan; //PALOFF WARN5 retains the observed scan for the test lifetime
 begin
   lForm := TForm.Create(nil);
   try

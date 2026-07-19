@@ -158,7 +158,7 @@ type
     function TryGetPropertyValueDirect(aPropertyId: PROPERTYID; out aValue: OleVariant): Boolean;
     procedure UpdateFragmentRootCacheRecursive(aNearestRoot: TAccessibilityProviderNode);
   protected
-    constructor CreateNode(const aRuntimeId: array of Integer; aHwnd: HWND; const aApi: IAccessibilityUiaApi;
+    constructor CreateNode(const aRuntimeId: array of Integer; aHwnd: HWND; const aApi: IAccessibilityUiaApi; //PALOFF WARN43 protected construction enforces provider factories
       aOwner: TComponent); virtual;
     procedure AssignApiRecursive(const aApi: IAccessibilityUiaApi);
     function CanUsePreparedSiblingNavigation(aChild: TAccessibilityProviderNode): Boolean; virtual;
@@ -909,7 +909,7 @@ begin
     begin
       aProvider := lDeeperProvider;
     end else begin
-      aProvider := lChild.FragmentProvider;
+      aProvider := lChild.FragmentProvider; //PALOFF WARN53 internal node exposes its UIA interface
     end;
     Exit(True);
   end;
@@ -1202,7 +1202,7 @@ begin
           lChildCount := lParent.ChildCount;
           if (lIndex >= 0) and (lIndex < Pred(lChildCount)) then
           begin
-            aRetVal := lParent.ChildProviderAt(lIndex + 1).FragmentProvider;
+            aRetVal := lParent.ChildProviderAt(lIndex + 1).FragmentProvider; //PALOFF WARN53 internal node exposes its UIA interface
           end;
         end;
       NavigateDirection_PreviousSibling:
@@ -1221,7 +1221,7 @@ begin
           lIndex := lParent.ChildIndex(Self);
           if lIndex > 0 then
           begin
-            aRetVal := lParent.ChildProviderAt(lIndex - 1).FragmentProvider;
+            aRetVal := lParent.ChildProviderAt(lIndex - 1).FragmentProvider; //PALOFF WARN53 internal node exposes its UIA interface
           end;
         end;
       NavigateDirection_FirstChild:
@@ -1373,7 +1373,7 @@ begin
   begin
     if aRemovalFlags[i] then
     begin
-      lChild := aChildren[i];
+      lChild := aChildren[i]; //PALOFF WARN53 interface ownership is retained by the scan graph
       FromNode(lChild).DetachFromParentDestruction;
     end;
   end;
@@ -2087,7 +2087,7 @@ var
 begin
   lRootNode := TAccessibilityProviderRoot.CreateNode(aRuntimeId, aHwnd, ResolveApi(aApi), aOwner);
   lRootNode.UpdateFragmentRootCacheRecursive(nil);
-  Result := lRootNode;
+  Result := lRootNode; //PALOFF WARN53 factory returns the node interface
 end;
 
 class procedure TAccessibilityProviderEvents.BeginEventBatch;
@@ -2277,7 +2277,7 @@ begin
   begin
     TAccessibilityDiagnostics.Log(Format(
       'WM_GETOBJECT returned framework provider hwnd=%d wParam=%d lParam=%d lResult=$%s',
-      [aHwnd, aWParam, aLParam, SignedDWordHex(aResult)]));
+      [aHwnd, aWParam, aLParam, SignedDWordHex(aResult)])); //PALOFF WARN63 WinAPI result formatting
   end;
   if aResult < 0 then
   begin

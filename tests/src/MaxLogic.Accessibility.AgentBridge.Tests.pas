@@ -88,9 +88,9 @@ type
 
   TAgentBridgeFallbackTextControl = class(TCustomControl)
   private
-    fText: string;
+    fFallbackText: string;
   published
-    property Text: string read fText write fText;
+    property Text: string read fFallbackText write fFallbackText;
   end;
 
   TAgentBridgeProviderQueryMetrics = record
@@ -298,7 +298,7 @@ begin
   lValue := TJSONObject.ParseJSONValue(aText, True, True);
   Assert.IsNotNull(lValue, 'JSON response was empty.');
   Assert.IsTrue(lValue is TJSONObject, 'JSON response is not an object.');
-  Result := TJSONObject(lValue);
+  Result := TJSONObject(lValue); //PALOFF STWA6 guarded by JSON type assertion
 end;
 
 function JsonObjectValue(aObject: TJSONObject; const aName: string): TJSONObject;
@@ -308,7 +308,7 @@ begin
   lValue := aObject.GetValue(aName);
   Assert.IsNotNull(lValue, 'Missing object value: ' + aName);
   Assert.IsTrue(lValue is TJSONObject, 'Value is not an object: ' + aName);
-  Result := TJSONObject(lValue);
+  Result := TJSONObject(lValue); //PALOFF STWA6 guarded by JSON type assertion
 end;
 
 function JsonArrayValue(aObject: TJSONObject; const aName: string): TJSONArray;
@@ -318,7 +318,7 @@ begin
   lValue := aObject.GetValue(aName);
   Assert.IsNotNull(lValue, 'Missing array value: ' + aName);
   Assert.IsTrue(lValue is TJSONArray, 'Value is not an array: ' + aName);
-  Result := TJSONArray(lValue);
+  Result := TJSONArray(lValue); //PALOFF STWA6 guarded by JSON type assertion
 end;
 
 function JsonText(aObject: TJSONObject; const aName: string): string;

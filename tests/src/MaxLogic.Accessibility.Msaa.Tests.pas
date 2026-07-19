@@ -673,7 +673,7 @@ var
   lProvider: IAccessibilityProviderNode;
 begin
   lDirectRoot := TDirectFocusedMsaaRootProvider.Create;
-  lProvider := lDirectRoot as IAccessibilityProviderNode;
+  lProvider := lDirectRoot as IAccessibilityProviderNode; //PALOFF WARN53 test also inspects the concrete root
   lAccessible := TAccessibilityMsaaBridge.CreateAccessible(lProvider.RawElementProvider);
 
   lFocus := Unassigned;
@@ -903,10 +903,10 @@ var
   lButtonFragment: IRawElementProviderFragment;
   lForm: TForm;
   lHeight: Integer;
-  lLeft: Integer;
+  lLeft: Integer; //PALOFF WARN46 output argument verifies the API call path
   lMetrics: TAccessibilityProviderHotspotMetrics;
   lProvider: IAccessibilityProviderNode;
-  lTop: Integer;
+  lTop: Integer; //PALOFF WARN46 output argument verifies the API call path
   lWidth: Integer;
 begin
   lForm := TForm.Create(nil);

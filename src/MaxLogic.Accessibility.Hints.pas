@@ -14,7 +14,7 @@ type
     fDispatchDepth: Integer;
     fHookInstalled: Boolean;
     fLastNotificationText: string;
-    fObservers: TDictionary<Pointer, TComponent>;
+    fObservedForms: TDictionary<Pointer, TComponent>;
     fPassive: Boolean;
     fPendingBalloonFollowUpText: string;
     fPreviousHint: TNotifyEvent;
@@ -478,7 +478,7 @@ begin
   begin
     Exit(0);
   end;
-  Result := aController.fObservers.Count;
+  Result := aController.fObservedForms.Count;
 end;
 
 class function TAccessibilityHintControllerInternals.ObserverHookCount(
@@ -492,7 +492,7 @@ begin
     Exit;
   end;
 
-  for lObserver in aController.fObservers.Values do
+  for lObserver in aController.fObservedForms.Values do
   begin
     Inc(Result, (lObserver as TAccessibilityHintFormObserver).fHooks.Count);
   end;
@@ -509,7 +509,7 @@ begin
     Exit;
   end;
 
-  for lObserver in aController.fObservers.Values do
+  for lObserver in aController.fObservedForms.Values do
   begin
     Inc(Result, (lObserver as TAccessibilityHintFormObserver).fRefreshCount);
   end;
@@ -521,7 +521,7 @@ begin
   inherited Create(nil);
   fApi := aApi;
   fApplication := aApplication;
-  fObservers := TDictionary<Pointer, TComponent>.Create;
+  fObservedForms := TDictionary<Pointer, TComponent>.Create;
   fProvider := aProvider;
   if fApplication <> nil then
   begin
@@ -541,7 +541,7 @@ begin
   end;
 
   ReleaseObservers;
-  fObservers.Free;
+  fObservedForms.Free;
   DisconnectProvider;
   inherited Destroy;
 end;
@@ -808,14 +808,14 @@ begin
     raise EArgumentException.Create('Form must not be nil.');
   end;
 
-  if fObservers.ContainsKey(Pointer(aForm)) then
+  if fObservedForms.ContainsKey(Pointer(aForm)) then
   begin
     Exit;
   end;
 
   lObserver := TAccessibilityHintFormObserver.Create(Self, aForm);
   try
-    fObservers.Add(Pointer(aForm), lObserver);
+    fObservedForms.Add(Pointer(aForm), lObserver);
   except
     lObserver.Free;
     raise;
@@ -831,9 +831,9 @@ begin
     Exit;
   end;
 
-  if fObservers.TryGetValue(Pointer(aForm), lObserver) and (lObserver = aObserver) then
+  if fObservedForms.TryGetValue(Pointer(aForm), lObserver) and (lObserver = aObserver) then
   begin
-    fObservers.Remove(Pointer(aForm));
+    fObservedForms.Remove(Pointer(aForm));
   end;
 end;
 
@@ -891,10 +891,10 @@ var
   lComponent: TComponent;
   lObserver: TAccessibilityHintFormObserver;
 begin
-  while fObservers.Count > 0 do
+  while fObservedForms.Count > 0 do
   begin
     lObserver := nil;
-    for lComponent in fObservers.Values do
+    for lComponent in fObservedForms.Values do
     begin
       lObserver := lComponent as TAccessibilityHintFormObserver;
       Break;
@@ -904,7 +904,7 @@ begin
       Exit;
     end;
 
-    fObservers.Remove(Pointer(lObserver.fForm));
+    fObservedForms.Remove(Pointer(lObserver.fForm));
     lObserver.fController := nil;
     lObserver.Free;
   end;

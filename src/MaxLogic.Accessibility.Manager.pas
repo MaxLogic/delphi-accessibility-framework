@@ -278,7 +278,7 @@ var
 begin
   aChild := nil;
   Result := Supports(aProvider, IAccessibilityProviderChildAccess, lChildAccess) and
-    (lChildAccess.DirectChildAt(aIndex, aChild) = S_OK) and (aChild <> nil);
+    (lChildAccess.DirectChildAt(aIndex, aChild) = S_OK) and (aChild <> nil); //PALOFF WARN61 out value is written by DirectChildAt
 end;
 
 function TryProviderDirectChildCount(const aProvider: IRawElementProviderSimple; out aCount: Integer): Boolean;
@@ -336,7 +336,7 @@ begin
     Exit;
   end;
 
-  lRadioGroup := TRadioGroup(aControl);
+  lRadioGroup := TRadioGroup(aControl); //PALOFF STWA6 guarded by is TRadioGroup
   for i := 0 to Pred(lRadioGroup.Items.Count) do
   begin
     lRadioGroup.Buttons[i].HandleNeeded;
@@ -361,29 +361,29 @@ function MouseLParamLowWord(aValue: LPARAM): Word;
 var
   lRawValue: Int64;
 begin
-  lRawValue := Int64(aValue) and $00000000FFFFFFFF;
-  Result := Word(lRawValue and $FFFF);
+  lRawValue := Int64(aValue) and $00000000FFFFFFFF; //PALOFF WARN63 explicit unsigned normalization
+  Result := Word(lRawValue and $FFFF); //PALOFF WARN52 explicit low-word extraction
 end;
 
 function MouseLParamHighWord(aValue: LPARAM): Word;
 var
   lRawValue: Int64;
 begin
-  lRawValue := Int64(aValue) and $00000000FFFFFFFF;
-  Result := Word((lRawValue shr 16) and $FFFF);
+  lRawValue := Int64(aValue) and $00000000FFFFFFFF; //PALOFF WARN63 explicit unsigned normalization
+  Result := Word((lRawValue shr 16) and $FFFF); //PALOFF WARN52 explicit high-word extraction
 end;
 
 function PointToMouseLParam(const aPoint: TPoint): LPARAM;
 var
   lValue: Int64;
 begin
-  lValue := Int64(MouseCoordinateWord(aPoint.X)) or (Int64(MouseCoordinateWord(aPoint.Y)) shl 16);
+  lValue := Int64(MouseCoordinateWord(aPoint.X)) or (Int64(MouseCoordinateWord(aPoint.Y)) shl 16); //PALOFF WARN63 Win32 LPARAM packing
   if (lValue and $80000000) <> 0 then
   begin
     Dec(lValue, $100000000);
   end;
 
-  Result := LPARAM(lValue);
+  Result := LPARAM(lValue); //PALOFF STWA6 explicit LPARAM conversion
 end;
 
 function MouseMoveClientLParam(aControl: TWinControl; const aMessage: TMessage): LPARAM;
@@ -1252,7 +1252,7 @@ begin
     if lDirectAccess.TryGetIntegerProperty(UIA_ToggleToggleStatePropertyId, lPropertyValue) then
     begin
       aState.Kind := pskToggle;
-      aState.ToggleState := lPropertyValue;
+      aState.ToggleState := lPropertyValue; //PALOFF WARN52 Variant-to-enum UIA value
       Exit(True);
     end;
 
@@ -1362,7 +1362,7 @@ begin
   lChanged := False;
   TAccessibilityProviderEvents.BeginEventBatch;
   try
-    case aNewState.Kind of
+    case aNewState.Kind of //PALOFF WARN57 pskNone has no state-change event
       pskToggle:
         if aOldState.ToggleState <> aNewState.ToggleState then
         begin
@@ -2675,7 +2675,7 @@ begin
     Exit;
   end;
 
-  lListBox := TCustomListBox(fControl);
+  lListBox := TCustomListBox(fControl); //PALOFF STWA6 provider contract fixes control type
   if not ProviderPublishesControlNativeWindowHandle then
   begin
     Exit;
@@ -3371,7 +3371,7 @@ begin
   Result := (lMarker <> nil) and (lMarker.fHook <> nil) and (lMarker.fHook.fProvider <> nil);
   if Result then
   begin
-    aProvider := lMarker.fHook.fProvider.RawElementProvider;
+    aProvider := lMarker.fHook.fProvider.RawElementProvider; //PALOFF WARN53 intentional object-to-interface bridge
   end;
 end;
 

@@ -443,7 +443,7 @@ begin
   inherited Create;
   fFileHandle := INVALID_HANDLE_VALUE;
   fIdleEvent := TEvent.Create(nil, True, True, '');
-  fMaximumLogBytes := cDiagnosticsLogMaximumBytes;
+  fMaximumLogBytes := cDiagnosticsLogMaximumBytes; //PALOFF WARN63 validated size constant
   fPauseEvent := TEvent.Create(nil, True, True, '');
   fProcessId := GetCurrentProcessId;
   fQueue := TThreadedQueue<TAccessibilityDiagnosticLogEntry>.Create(cDiagnosticsLogQueueCapacity, 0, INFINITE);
@@ -648,7 +648,7 @@ begin
       begin
         Break;
       end;
-      lWaitMs := Cardinal(aTimeoutMs - lElapsedMs);
+      lWaitMs := Cardinal(aTimeoutMs - lElapsedMs); //PALOFF WARN52 elapsed time is bounded above
     end;
 
     if fIdleEvent.WaitFor(lWaitMs) <> wrSignaled then
@@ -735,7 +735,7 @@ begin
   end;
   if aMaxBytes = 0 then
   begin
-    fMaximumLogBytes := cDiagnosticsLogMaximumBytes;
+    fMaximumLogBytes := cDiagnosticsLogMaximumBytes; //PALOFF WARN63 validated size constant
   end else if aMaxBytes < cDiagnosticsLogSummaryReserve then
   begin
     raise EArgumentOutOfRangeException.CreateFmt('Maximum diagnostics log size must be at least %d bytes.',
@@ -1179,7 +1179,7 @@ begin
       Inc(gAgentBridgePipeMetrics.RequestReadByteCount, aByteCount);
       Inc(gAgentBridgePipeMetrics.RequestReadResizeCount, aResizeCount);
       gAgentBridgePipeMetrics.RequestReadLastElapsedTicks := aElapsedTicks;
-      Inc(gAgentBridgePipeMetrics.RequestReadTotalElapsedTicks, aElapsedTicks);
+      Inc(gAgentBridgePipeMetrics.RequestReadTotalElapsedTicks, aElapsedTicks); //PALOFF WARN63 same-width counter increment
     end;
   finally
     TMonitor.Exit(gDiagnosticsLock);
@@ -1326,7 +1326,7 @@ begin
       Inc(gProviderHotspotMetrics.MemoLineProbeCount, aLineProbeCount);
       Inc(gProviderHotspotMetrics.MemoLineProviderCreatedCount, aProviderCreatedCount);
       gProviderHotspotMetrics.MemoPrepareChildrenLastElapsedTicks := aElapsedTicks;
-      Inc(gProviderHotspotMetrics.MemoPrepareChildrenTotalElapsedTicks, aElapsedTicks);
+      Inc(gProviderHotspotMetrics.MemoPrepareChildrenTotalElapsedTicks, aElapsedTicks); //PALOFF WARN63 same-width counter increment
     end;
   finally
     TMonitor.Exit(gDiagnosticsLock);
@@ -1349,7 +1349,7 @@ begin
       Inc(gProviderHotspotMetrics.ListBoxSelectionItemProbeCount, aItemProbeCount);
       Inc(gProviderHotspotMetrics.ListBoxSelectionProviderCount, aProviderCount);
       gProviderHotspotMetrics.ListBoxGetSelectionLastElapsedTicks := aElapsedTicks;
-      Inc(gProviderHotspotMetrics.ListBoxGetSelectionTotalElapsedTicks, aElapsedTicks);
+      Inc(gProviderHotspotMetrics.ListBoxGetSelectionTotalElapsedTicks, aElapsedTicks); //PALOFF WARN63 same-width counter increment
     end;
   finally
     TMonitor.Exit(gDiagnosticsLock);
@@ -1457,7 +1457,7 @@ begin
       if aElapsedTicks > 0 then
       begin
         gProviderHotspotMetrics.ProviderFocusAnnouncementTextLastElapsedTicks := aElapsedTicks;
-        Inc(gProviderHotspotMetrics.ProviderFocusAnnouncementTextTotalElapsedTicks, aElapsedTicks);
+        Inc(gProviderHotspotMetrics.ProviderFocusAnnouncementTextTotalElapsedTicks, aElapsedTicks); //PALOFF WARN63 same-width counter increment
       end;
     end;
   finally
@@ -1480,7 +1480,7 @@ begin
       if aElapsedTicks > 0 then
       begin
         gProviderHotspotMetrics.ProviderNotificationLastElapsedTicks := aElapsedTicks;
-        Inc(gProviderHotspotMetrics.ProviderNotificationTotalElapsedTicks, aElapsedTicks);
+        Inc(gProviderHotspotMetrics.ProviderNotificationTotalElapsedTicks, aElapsedTicks); //PALOFF WARN63 same-width counter increment
       end;
     end;
   finally
@@ -1687,8 +1687,8 @@ class procedure TAccessibilityDiagnostics.RecordProviderBoundaryCall(aCall: TAcc
   procedure AddBoundaryMetrics(var aCount: Integer; var aTotalElapsedTicks: Int64);
   begin
     Inc(aCount);
-    Inc(aTotalElapsedTicks, aElapsedTicks);
-    Inc(gProviderHotspotMetrics.ProviderBoundaryTotalElapsedTicks, aElapsedTicks);
+    Inc(aTotalElapsedTicks, aElapsedTicks); //PALOFF WARN63 same-width counter increment
+    Inc(gProviderHotspotMetrics.ProviderBoundaryTotalElapsedTicks, aElapsedTicks); //PALOFF WARN63 same-width counter increment
   end;
 
 begin
@@ -1859,7 +1859,7 @@ begin
       Inc(gProviderHotspotMetrics.StringGridCellProbeCount, aCellProbeCount);
       Inc(gProviderHotspotMetrics.StringGridCellProviderCreatedCount, aProviderCreatedCount);
       gProviderHotspotMetrics.StringGridRefreshLastElapsedTicks := aElapsedTicks;
-      Inc(gProviderHotspotMetrics.StringGridRefreshTotalElapsedTicks, aElapsedTicks);
+      Inc(gProviderHotspotMetrics.StringGridRefreshTotalElapsedTicks, aElapsedTicks); //PALOFF WARN63 same-width counter increment
     end;
   finally
     TMonitor.Exit(gDiagnosticsLock);
@@ -1898,7 +1898,7 @@ begin
       Inc(gProviderHotspotMetrics.StringGridCellBoundsBuildCount);
       Inc(gProviderHotspotMetrics.StringGridCellBoundsCellProbeCount, aCellProbeCount);
       gProviderHotspotMetrics.StringGridCellBoundsLastElapsedTicks := aElapsedTicks;
-      Inc(gProviderHotspotMetrics.StringGridCellBoundsTotalElapsedTicks, aElapsedTicks);
+      Inc(gProviderHotspotMetrics.StringGridCellBoundsTotalElapsedTicks, aElapsedTicks); //PALOFF WARN63 same-width counter increment
     end;
   finally
     TMonitor.Exit(gDiagnosticsLock);
@@ -1921,7 +1921,7 @@ begin
       Inc(gProviderHotspotMetrics.StringGridRowProbeCount, aRowProbeCount);
       Inc(gProviderHotspotMetrics.StringGridRowProviderCreatedCount, aProviderCreatedCount);
       gProviderHotspotMetrics.StringGridRowRefreshLastElapsedTicks := aElapsedTicks;
-      Inc(gProviderHotspotMetrics.StringGridRowRefreshTotalElapsedTicks, aElapsedTicks);
+      Inc(gProviderHotspotMetrics.StringGridRowRefreshTotalElapsedTicks, aElapsedTicks); //PALOFF WARN63 same-width counter increment
     end;
   finally
     TMonitor.Exit(gDiagnosticsLock);
@@ -1962,7 +1962,7 @@ begin
       Inc(gProviderHotspotMetrics.StringGridRowTextCellProbeCount, aCellProbeCount);
       Inc(gProviderHotspotMetrics.StringGridRowTextHeaderProbeCount, aHeaderProbeCount);
       gProviderHotspotMetrics.StringGridRowTextLastElapsedTicks := aElapsedTicks;
-      Inc(gProviderHotspotMetrics.StringGridRowTextTotalElapsedTicks, aElapsedTicks);
+      Inc(gProviderHotspotMetrics.StringGridRowTextTotalElapsedTicks, aElapsedTicks); //PALOFF WARN63 same-width counter increment
     end;
   finally
     TMonitor.Exit(gDiagnosticsLock);
@@ -1983,7 +1983,7 @@ begin
       Inc(gProviderHotspotMetrics.StringGridRowBoundsBuildCount);
       Inc(gProviderHotspotMetrics.StringGridRowBoundsCellProbeCount, aCellProbeCount);
       gProviderHotspotMetrics.StringGridRowBoundsLastElapsedTicks := aElapsedTicks;
-      Inc(gProviderHotspotMetrics.StringGridRowBoundsTotalElapsedTicks, aElapsedTicks);
+      Inc(gProviderHotspotMetrics.StringGridRowBoundsTotalElapsedTicks, aElapsedTicks); //PALOFF WARN63 same-width counter increment
     end;
   finally
     TMonitor.Exit(gDiagnosticsLock);
@@ -2024,7 +2024,7 @@ begin
       Inc(gProviderHotspotMetrics.TmsAdvStringGridCellProbeCount, aCellProbeCount);
       Inc(gProviderHotspotMetrics.TmsAdvStringGridCellProviderCreatedCount, aProviderCreatedCount);
       gProviderHotspotMetrics.TmsAdvStringGridRefreshLastElapsedTicks := aElapsedTicks;
-      Inc(gProviderHotspotMetrics.TmsAdvStringGridRefreshTotalElapsedTicks, aElapsedTicks);
+      Inc(gProviderHotspotMetrics.TmsAdvStringGridRefreshTotalElapsedTicks, aElapsedTicks); //PALOFF WARN63 same-width counter increment
     end;
   finally
     TMonitor.Exit(gDiagnosticsLock);
@@ -2095,7 +2095,7 @@ begin
 
     Inc(gListBoxFocusMetrics.FocusMovementCount);
     gListBoxFocusMetrics.LastElapsedTicks := aElapsedTicks;
-    Inc(gListBoxFocusMetrics.TotalElapsedTicks, aElapsedTicks);
+    Inc(gListBoxFocusMetrics.TotalElapsedTicks, aElapsedTicks); //PALOFF WARN63 same-width counter increment
   finally
     TMonitor.Exit(gDiagnosticsLock);
   end;

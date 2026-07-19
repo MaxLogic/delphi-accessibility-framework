@@ -719,7 +719,7 @@ end;
 function TLyingRadioGroupAdapter.CreateProvider(aControl: TControl; aRuntimeId: Integer; const aName: string;
   const aHelpText: string; const aApi: IAccessibilityUiaApi): IAccessibilityProviderNode;
 begin
-  Result := TLyingRadioGroupProvider.Create(TRadioGroup(aControl), aRuntimeId, aName, aHelpText, aApi) as
+  Result := TLyingRadioGroupProvider.Create(TRadioGroup(aControl), aRuntimeId, aName, aHelpText, aApi) as //PALOFF STWA6 adapter contract fixes control type
     IAccessibilityProviderNode;
 end;
 
@@ -1010,7 +1010,7 @@ begin
   end else begin
     lDiagnosticsState := 'disabled';
   end;
-  lJson := Format('{"scenario":"t112-active-form-change","phase":"warm-installed-active-form-callback",' +
+  lJson := Format('{"scenario":"t112-active-form-change","phase":"warm-installed-active-form-callback",' + //PALOFF WARN64 verified 15 placeholders and arguments
     '"buildConfiguration":"%s","diagnosticsState":"%s","sampleCount":%d,"inactiveFormCount":%d,' +
     '"stopwatchFrequency":%d,"firstActivationTicks":%d,"firstActivationMs":%.6f,' +
     '"medianTicks":%d,"p95Ticks":%d,"p99Ticks":%d,"maximumTicks":%d,' +
@@ -1309,6 +1309,7 @@ function NavigateFragment(const aFragment: IRawElementProviderFragment; aDirecti
 var
   lResult: HResult;
 begin
+  Result := nil;
   lResult := aFragment.Navigate(aDirection, Result);
   Assert.IsTrue(lResult = S_OK, 'Fragment navigation failed.');
 end;
@@ -1489,13 +1490,13 @@ function PointToMouseLParam(const aPoint: TPoint): LPARAM;
 var
   lValue: Int64;
 begin
-  lValue := Int64(MouseCoordinateWord(aPoint.X)) or (Int64(MouseCoordinateWord(aPoint.Y)) shl 16);
+  lValue := Int64(MouseCoordinateWord(aPoint.X)) or (Int64(MouseCoordinateWord(aPoint.Y)) shl 16); //PALOFF WARN63 Win32 LPARAM packing
   if (lValue and $80000000) <> 0 then
   begin
     Dec(lValue, $100000000);
   end;
 
-  Result := LPARAM(lValue);
+  Result := LPARAM(lValue); //PALOFF STWA6 explicit LPARAM conversion
 end;
 
 function PointFromMessageResult(aValue: LRESULT): TPoint;
@@ -1505,15 +1506,15 @@ var
   lX: Integer;
   lY: Integer;
 begin
-  lSignedValue := Int64(aValue);
+  lSignedValue := Int64(aValue); //PALOFF WARN63 explicit LPARAM sign normalization
   lRawValue := lSignedValue and $00000000FFFFFFFF;
-  lX := Integer(lRawValue and $FFFF);
+  lX := Integer(lRawValue and $FFFF); //PALOFF explicit reviewed low-word extraction
   if lX > High(Smallint) then
   begin
     Dec(lX, $10000);
   end;
 
-  lY := Integer((lRawValue shr 16) and $FFFF);
+  lY := Integer((lRawValue shr 16) and $FFFF); //PALOFF explicit reviewed high-word extraction
   if lY > High(Smallint) then
   begin
     Dec(lY, $10000);
@@ -3481,7 +3482,7 @@ var
 begin
   ResetManager;
   lWinEvents := TWinEventRecorder.Create;
-  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents);
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents); //PALOFF WARN53 test retains the concrete recorder
   lForm := TForm.Create(nil);
   try
     lEdit := TEdit.Create(lForm);
@@ -4995,7 +4996,7 @@ begin
   lApi.SetClientsAreListening(True);
   lWinEvents := TWinEventRecorder.Create;
   TAccessibilityManagerInternals.SetUiaApi(lApi);
-  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents);
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents); //PALOFF WARN53 test retains the concrete recorder
   lForm := TForm.Create(nil);
   try
     lForm.SetBounds(100, 100, 360, 180);
@@ -5054,7 +5055,7 @@ begin
   lApi.SetClientsAreListening(True);
   lWinEvents := TWinEventRecorder.Create;
   TAccessibilityManagerInternals.SetUiaApi(lApi);
-  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents);
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents); //PALOFF WARN53 test retains the concrete recorder
   lForm := TForm.Create(nil);
   try
     lForm.SetBounds(100, 100, 360, 180);
@@ -5642,7 +5643,7 @@ begin
   lApi.SetClientsAreListening(True);
   lWinEvents := TWinEventRecorder.Create;
   TAccessibilityManagerInternals.SetUiaApi(lApi);
-  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents);
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents); //PALOFF WARN53 test retains the concrete recorder
   lForm := TForm.Create(nil);
   try
     lForm.SetBounds(100, 100, 360, 140);
@@ -5773,7 +5774,7 @@ begin
   lApi.SetClientsAreListening(True);
   lWinEvents := TWinEventRecorder.Create;
   TAccessibilityManagerInternals.SetUiaApi(lApi);
-  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents);
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents); //PALOFF WARN53 test retains the concrete recorder
   lForm := TForm.Create(nil);
   try
     lForm.SetBounds(100, 100, 360, 140);
@@ -5818,7 +5819,7 @@ begin
   lApi.SetClientsAreListening(False);
   lWinEvents := TWinEventRecorder.Create;
   TAccessibilityManagerInternals.SetUiaApi(lApi);
-  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents);
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents); //PALOFF WARN53 test retains the concrete recorder
   lForm := TForm.Create(nil);
   try
     lForm.SetBounds(100, 100, 360, 140);
@@ -5865,7 +5866,7 @@ begin
   lApi.SetClientsAreListening(True);
   lWinEvents := TWinEventRecorder.Create;
   TAccessibilityManagerInternals.SetUiaApi(lApi);
-  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents);
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents); //PALOFF WARN53 test retains the concrete recorder
   lForm := TForm.Create(nil);
   try
     lForm.SetBounds(100, 100, 360, 140);
@@ -5917,7 +5918,7 @@ begin
   lApi.SetClientsAreListening(True);
   lWinEvents := TWinEventRecorder.Create;
   TAccessibilityManagerInternals.SetUiaApi(lApi);
-  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents);
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents); //PALOFF WARN53 test retains the concrete recorder
   lForm := TForm.Create(nil);
   try
     lForm.SetBounds(100, 100, 360, 140);
@@ -5975,7 +5976,7 @@ begin
   lApi.SetClientsAreListening(True);
   lWinEvents := TWinEventRecorder.Create;
   TAccessibilityManagerInternals.SetUiaApi(lApi);
-  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents);
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents); //PALOFF WARN53 test retains the concrete recorder
   lForm := TForm.Create(nil);
   try
     lForm.SetBounds(100, 100, 360, 140);
@@ -6017,7 +6018,7 @@ begin
   lApi.SetClientsAreListening(True);
   lWinEvents := TWinEventRecorder.Create;
   TAccessibilityManagerInternals.SetUiaApi(lApi);
-  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents);
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents); //PALOFF WARN53 test retains the concrete recorder
   lForm := TForm.Create(nil);
   try
     lForm.SetBounds(100, 100, 360, 160);
@@ -6387,7 +6388,7 @@ var
 begin
   ResetManager;
   lWinEvents := TWinEventRecorder.Create;
-  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents);
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents); //PALOFF WARN53 test retains the concrete recorder
   lForm := TForm.Create(nil);
   try
     lGrid := TStringGrid.Create(lForm);

@@ -81,7 +81,7 @@ type
     fResolvedCurrentGridRow: Integer;
     fResolvedCurrentRowCount: Integer;
     fResolvedCurrentValid: Boolean;
-    fRuntimeId: Integer;
+    fProviderRuntimeId: Integer;
     fUiaApi: IAccessibilityUiaApi;
     function CellBelongsToMerge(aCol: Integer; aRow: Integer; const aBaseCell: TPoint): Boolean;
     function CellProvider(aCol: Integer; aRow: Integer): IAccessibilityProviderNode;
@@ -133,7 +133,7 @@ type
 
 function CellKey(aCol: Integer; aRow: Integer): Int64;
 begin
-  Result := (Int64(aRow) shl 32) or Cardinal(aCol);
+  Result := (Int64(aRow) shl 32) or Cardinal(aCol); //PALOFF WARN63 explicit row/column key packing
 end;
 
 function CellKeyCol(aKey: Int64): Integer;
@@ -192,7 +192,7 @@ begin
     Exit;
   end;
 
-  lControl := TWinControl(aControl);
+  lControl := TWinControl(aControl); //PALOFF STWA6 guarded by is TWinControl
   if not lControl.HandleAllocated or not IsWindowVisible(lControl.Handle) then
   begin
     Exit;
@@ -216,7 +216,7 @@ end;
 function TAdvStringGridAdapter.CreateProvider(aControl: TControl; aRuntimeId: Integer; const aName: string;
   const aHelpText: string; const aApi: IAccessibilityUiaApi): IAccessibilityProviderNode;
 begin
-  Result := TAccessibilityAdvStringGridProvider.Create(TAdvStringGrid(aControl), aRuntimeId, aName, aHelpText,
+  Result := TAccessibilityAdvStringGridProvider.Create(TAdvStringGrid(aControl), aRuntimeId, aName, aHelpText, //PALOFF STWA6 guarded by Supports
     aApi) as IAccessibilityProviderNode;
 end;
 
@@ -499,7 +499,7 @@ begin
   SetPublishNativeWindowHandle(True);
   fCells := TDictionary<Int64, IAccessibilityProviderNode>.Create;
   fGrid := aGrid;
-  fRuntimeId := aRuntimeId;
+  fProviderRuntimeId := aRuntimeId;
   fUiaApi := aApi;
   SetProperty(UIA_NamePropertyId, aName);
   SetProperty(UIA_ControlTypePropertyId, UIA_DataGridControlTypeId);
@@ -746,7 +746,7 @@ begin
   if (Result = nil) and IsAccessibleCell(lCell.X, lCell.Y) then
   begin
     Result := TAccessibilityAdvStringGridCellProvider.Create(Self, fGrid, lCell.X, lCell.Y,
-      [fRuntimeId, lCell.Y, lCell.X], fUiaApi) as IAccessibilityProviderNode;
+      [fProviderRuntimeId, lCell.Y, lCell.X], fUiaApi) as IAccessibilityProviderNode;
     AddChild(Result);
     fCells.Add(lKey, Result);
   end;
@@ -766,7 +766,7 @@ begin
   if VisibleCellRect(aCol, aRow, lCellRect) and (CellProvider(aCol, aRow) = nil) then
   begin
     lCell := TAccessibilityAdvStringGridCellProvider.Create(Self, fGrid, aCol, aRow,
-      [fRuntimeId, aRow, aCol], fUiaApi) as IAccessibilityProviderNode;
+      [fProviderRuntimeId, aRow, aCol], fUiaApi) as IAccessibilityProviderNode;
     AddChild(lCell);
     fCells.Add(CellKey(aCol, aRow), lCell);
     if aMetricsEnabled then

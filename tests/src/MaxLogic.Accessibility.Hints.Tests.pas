@@ -1048,9 +1048,9 @@ end;
 procedure TAccessibilityHintTests.PreviousApplicationShowHintHandlerCanUninstallManager;
 var
   lApi: IHintTestUiaApi;
-  lCanShow: Boolean;
-  lHintInfo: Vcl.Controls.THintInfo;
-  lHintStr: string;
+  lCanShow: Boolean; //PALOFF WARN5 var argument exercises the installed handler
+  lHintInfo: Vcl.Controls.THintInfo; //PALOFF WARN5 var argument exercises the installed handler
+  lHintStr: string; //PALOFF WARN5 var argument exercises the installed handler
   lOriginalHint: TNotifyEvent;
   lOriginalHintText: string;
   lOriginalShowHint: TShowHintEvent;
@@ -1213,11 +1213,11 @@ end;
 procedure TAccessibilityHintTests.VisibleHintShortPartAfterLongPartIsSuppressed;
 var
   lApi: IHintTestUiaApi;
-  lCanShow: Boolean;
+  lCanShow: Boolean; //PALOFF WARN5 var argument exercises the installed handler
   lController: TAccessibilityHintController;
   lForm: TForm;
   lHintInfo: Vcl.Controls.THintInfo;
-  lHintStr: string;
+  lHintStr: string; //PALOFF WARN5 var argument exercises the installed handler
   lLabel: TLabel;
   lOriginalHint: TNotifyEvent;
   lOriginalHintText: string;

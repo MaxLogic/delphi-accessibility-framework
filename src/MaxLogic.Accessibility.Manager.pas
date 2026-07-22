@@ -134,6 +134,7 @@ type
     procedure MaybeRaiseProviderHover(aLParam: LPARAM; aClientsKnown: Boolean; aClientsListening: Boolean);
     function Passivate: Boolean;
     procedure ReleaseChildHooks;
+    procedure SynchronizeFormName;
   protected
     procedure Notification(aComponent: TComponent; aOperation: TOperation); override;
   public
@@ -2058,14 +2059,51 @@ begin
   end;
 end;
 
+procedure TAccessibilityFormWindowHook.SynchronizeFormName;
+var
+  lHwnd: HWND;
+  lNewName: string;
+  lOldName: string;
+  lRawProvider: IRawElementProviderSimple;
+begin
+  if fPassive or (fForm = nil) or (fProvider = nil) or fProvider.IsDisconnected then
+  begin
+    Exit;
+  end;
+
+  lRawProvider := fProvider.RawElementProvider;
+  lOldName := ProviderName(lRawProvider);
+  lNewName := fForm.Caption;
+  if lOldName = lNewName then
+  begin
+    Exit;
+  end;
+
+  lHwnd := 0;
+  if fForm.HandleAllocated then
+  begin
+    lHwnd := fForm.Handle;
+  end;
+  fProvider.SetProperty(UIA_NamePropertyId, lNewName);
+  TAccessibilityProviderEvents.RaiseAutomationPropertyChanged(
+    lRawProvider, UIA_NamePropertyId,
+    lOldName, lNewName, fApi); //PALOFF event delivery is best effort
+  if lHwnd <> 0 then
+  begin
+    NotifyAccessibilityWinEvent(EVENT_OBJECT_NAMECHANGE, lHwnd, cMsaaObjIdClient, CHILDID_SELF);
+  end;
+end;
+
 procedure TAccessibilityFormWindowHook.WindowProc(var aMessage: TMessage);
 var
   lClientsAreListening: Boolean;
   lIsMouseMoveMessage: Boolean;
   lMouseParam: LPARAM;
   lResult: Winapi.Windows.LRESULT;
+  lSynchronizeName: Boolean;
 begin
   lIsMouseMoveMessage := (aMessage.Msg = WM_MOUSEMOVE) or (aMessage.Msg = WM_NCMOUSEMOVE);
+  lSynchronizeName := (aMessage.Msg = WM_SETTEXT) or (aMessage.Msg = CM_TEXTCHANGED);
   if HoverMissCacheInvalidatingMessage(aMessage.Msg) then
   begin
     fHoverCache.ClearMiss;
@@ -2101,6 +2139,10 @@ begin
   end;
 
   fOriginalWindowProc(aMessage);
+  if lSynchronizeName then
+  begin
+    SynchronizeFormName;
+  end;
   if (not fPassive) and (fForm <> nil) and (fProvider <> nil) and lIsMouseMoveMessage then
   begin
     lMouseParam := MouseMoveClientLParam(fForm, aMessage);

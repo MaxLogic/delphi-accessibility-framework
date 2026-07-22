@@ -42,6 +42,8 @@ type
     [Test]
     procedure FormInstallIsScopedAndIdempotent;
     [Test]
+    procedure FormCaptionChangeUpdatesInstalledProviderAndRaisesNameEvents;
+    [Test]
     procedure FormInstallWithCustomRegistryUsesTmsProviderThroughWmGetObject;
     [Test]
     procedure FormRegistrySwitchRequiresUninstall;
@@ -2166,6 +2168,61 @@ begin
     end;
   finally
     lFirst.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormCaptionChangeUpdatesInstalledProviderAndRaisesNameEvents;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lProvider: IRawElementProviderSimple;
+  lValue: OleVariant;
+  lWinEvents: TWinEventRecorder;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lWinEvents := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents); //PALOFF WARN53 test retains the concrete recorder
+  lForm := TForm.Create(nil);
+  try
+    lForm.Caption := 'Paused tasks';
+    lForm.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lProvider));
+    Assert.AreEqual('Paused tasks',
+      ProviderStringProperty(FragmentFromSimple(lProvider), UIA_NamePropertyId));
+
+    lForm.Caption := 'Running tasks';
+
+    Assert.AreEqual('Running tasks',
+      ProviderStringProperty(FragmentFromSimple(lProvider), UIA_NamePropertyId));
+    Assert.AreEqual(1, lApi.PropertyChangedCalls);
+    Assert.AreEqual(UIA_NamePropertyId, lApi.LastPropertyChangedPropertyId);
+    Assert.AreEqual('Paused tasks', string(lApi.LastPropertyChangedOldValue));
+    Assert.AreEqual('Running tasks', string(lApi.LastPropertyChangedNewValue));
+    Assert.IsTrue(lApi.LastPropertyChangedProvider = lProvider);
+    Assert.AreEqual(1, lWinEvents.Calls);
+    Assert.AreEqual(EVENT_OBJECT_NAMECHANGE, lWinEvents.LastEvent);
+    Assert.AreEqual(lForm.Handle, lWinEvents.LastHwnd);
+    Assert.AreEqual(Cardinal($FFFFFFFC), lWinEvents.LastObjectId);
+    Assert.AreEqual(Cardinal(CHILDID_SELF), lWinEvents.LastChildId);
+
+    lForm.Caption := 'Running tasks';
+    Assert.AreEqual(1, lApi.PropertyChangedCalls);
+    Assert.AreEqual(1, lWinEvents.Calls);
+
+    TAccessibilityManager.Uninstall;
+    Assert.AreEqual(UIA_E_ELEMENTNOTAVAILABLE,
+      lProvider.GetPropertyValue(UIA_NamePropertyId, lValue));
+    lForm.Caption := 'Stopped tasks';
+    Assert.AreEqual(1, lApi.PropertyChangedCalls);
+    Assert.AreEqual(1, lWinEvents.Calls);
+  finally
+    lForm.Free;
     ResetManager;
   end;
 end;

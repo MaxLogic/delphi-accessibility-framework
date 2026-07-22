@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-07-22
+### Fixed
+- Installed VCL form providers now synchronize their UIA name when `TCustomForm.Caption` changes at runtime and publish one UIA property-change event plus the corresponding MSAA name-change event.
+
 ## 2026-07-18
 ### Added
 - The complex demo now has a `Dynamic content` tab whose `TStaticText`, `TLabel`, `TEdit`, `TButton`, and `TBitBtn` text and hints update every 10 seconds for live screen-reader verification.

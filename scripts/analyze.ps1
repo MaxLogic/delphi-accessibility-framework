@@ -6,7 +6,11 @@ param(
     [ValidateSet('Win32', 'Win64')]
     [string] $Platform = 'Win32',
 
-    [string] $OutPath = ''
+    [string] $OutPath = '',
+
+    [string] $BaselinePath = '',
+
+    [switch] $UpdateBaseline
 )
 
 Set-StrictMode -Version Latest
@@ -33,7 +37,23 @@ if ([string]::IsNullOrWhiteSpace($OutPath)) {
     $OutPath = Join-Path $env:TEMP "dak\Accessibility-Framework\static-analysis-$lTimestamp-$PID"
 }
 
+if ([string]::IsNullOrWhiteSpace($BaselinePath)) {
+    $BaselinePath = Join-Path $PSScriptRoot 'static-analysis-baseline.json'
+}
+
 $lOutPath = [System.IO.Path]::GetFullPath($OutPath)
+$lBaselinePath = [System.IO.Path]::GetFullPath($BaselinePath)
+$lBaselineMarkdown = [System.IO.Path]::ChangeExtension($lBaselinePath, '.md')
+$lBaselineParent = Split-Path -Parent $lBaselinePath
+if (-not (Test-Path -LiteralPath $lBaselineParent -PathType Container)) {
+    throw "Static-analysis baseline directory not found: $lBaselineParent"
+}
+
+if ((-not $UpdateBaseline) -and
+    (-not (Test-Path -LiteralPath $lBaselinePath -PathType Leaf))) {
+    throw "Static-analysis baseline not found: $lBaselinePath. Use -UpdateBaseline to establish it intentionally."
+}
+
 $lDUnitXPathMasks = '*\Embarcadero\Studio\23.0\source\DUnitX\*;*\3rdParty\VSoft\DUnitX\Source\*'
 $lIgnoredFixInsightCodes = 'C101;C102;C103;O801;O803;O804;W528'
 $lArguments = @(
@@ -50,50 +70,51 @@ $lArguments = @(
     '--ignore-warning-ids', $lIgnoredFixInsightCodes
 )
 
-Write-Output "Analyzing $lProject [$Platform|$Config]"
-$lOutput = & $lDakExe @lArguments 2>&1
-$lExitCode = $LASTEXITCODE
-$lOutput | ForEach-Object { Write-Output $_ }
-
-if ($lExitCode -ne 0) {
-    throw "Static analysis failed with exit code $lExitCode"
-}
-
 $lDakRoot = Split-Path -Parent (Split-Path -Parent $lDakExe)
 $lPostprocess = Join-Path $lDakRoot 'agentskills\dak-static-analysis\postprocess.py'
 if (-not (Test-Path -LiteralPath $lPostprocess -PathType Leaf)) {
     throw "DAK static-analysis postprocessor not found: $lPostprocess"
 }
 
-$lPostprocessOutput = & python $lPostprocess $lOutPath 2>&1
-$lPostprocessExitCode = $LASTEXITCODE
-$lPostprocessOutput | ForEach-Object { Write-Output $_ }
-if ($lPostprocessExitCode -ne 0) {
-    throw "DAK static-analysis postprocessing failed with exit code $lPostprocessExitCode"
+$lPreviousEnvironment = @{
+    DAK_BASELINE = [Environment]::GetEnvironmentVariable('DAK_BASELINE', 'Process')
+    DAK_GATE = [Environment]::GetEnvironmentVariable('DAK_GATE', 'Process')
+    DAK_UPDATE_BASELINE = [Environment]::GetEnvironmentVariable('DAK_UPDATE_BASELINE', 'Process')
 }
 
-$lSummaryPath = Join-Path $lOutPath 'summary.json'
-if (-not (Test-Path -LiteralPath $lSummaryPath -PathType Leaf)) {
-    throw "Static analysis summary not found: $lSummaryPath"
-}
+Write-Output "Analyzing $lProject [$Platform|$Config]"
+try {
+    $env:DAK_BASELINE = $lBaselinePath
+    $env:DAK_GATE = '1'
+    $env:DAK_UPDATE_BASELINE = if ($UpdateBaseline) { '1' } else { '0' }
 
-$lSummary = Get-Content -LiteralPath $lSummaryPath -Raw | ConvertFrom-Json
-if (($lSummary.analyzers.fixinsight.status -ne 'complete') -or
-    ($lSummary.analyzers.pascal_analyzer.status -ne 'complete')) {
-    throw 'One or more configured analyzers did not complete.'
-}
+    $lOutput = & $lDakExe @lArguments 2>&1
+    $lExitCode = $LASTEXITCODE
+    $lOutput | ForEach-Object { Write-Output $_ }
 
-$lFixInsightPath = Join-Path $lOutPath 'fixinsight\fi-findings.jsonl'
-$lDUnitXFindings = @()
-if (Test-Path -LiteralPath $lFixInsightPath -PathType Leaf) {
-    $lDUnitXFindings = @(
-        Get-Content -LiteralPath $lFixInsightPath |
-            Where-Object { $_ -match '(?i)[\\/](DUnitX)[\\/]' }
-    )
-}
+    if ($lExitCode -ne 0) {
+        throw "Static analysis failed with exit code $lExitCode"
+    }
 
-if ($lDUnitXFindings.Count -ne 0) {
-    throw "FixInsight retained $($lDUnitXFindings.Count) excluded DUnitX findings."
+    $lPostprocessOutput = & python $lPostprocess $lOutPath 2>&1
+    $lPostprocessExitCode = $LASTEXITCODE
+    $lPostprocessOutput | ForEach-Object { Write-Output $_ }
+    if ($lPostprocessExitCode -ne 0) {
+        throw "DAK static-analysis postprocessing or its evaluated policy failed with exit code $lPostprocessExitCode"
+    }
+} finally {
+    foreach ($lName in $lPreviousEnvironment.Keys) {
+        $lValue = $lPreviousEnvironment[$lName]
+        if ($null -eq $lValue) {
+            Remove-Item -LiteralPath "Env:$lName" -ErrorAction SilentlyContinue
+        } else {
+            Set-Item -LiteralPath "Env:$lName" -Value $lValue
+        }
+    }
+
+    if (Test-Path -LiteralPath $lBaselineMarkdown -PathType Leaf) {
+        Remove-Item -LiteralPath $lBaselineMarkdown
+    }
 }
 
 $lVerifyOutput = & python $lPostprocess --verify $lOutPath 2>&1
@@ -103,75 +124,49 @@ if ($lVerifyExitCode -ne 0) {
     throw "DAK static-analysis artifact verification failed with exit code $lVerifyExitCode"
 }
 
-$lFixInsightOwned = $lSummary.counts.fixinsight.ownership.project +
-    $lSummary.counts.fixinsight.ownership.repository
-$lPalOwned = $lSummary.counts.pascal_analyzer.ownership.project +
-    $lSummary.counts.pascal_analyzer.ownership.repository
-$lPalExternal = $lSummary.counts.pascal_analyzer.ownership.third_party
-$lPalUnknown = $lSummary.counts.pascal_analyzer.ownership.unknown
-
-$lResolvedExternal = 0
-if ($lPalUnknown -gt 0) {
-    $lPalFindingsPath = Join-Path $lOutPath 'pascal-analyzer\pal-findings.jsonl'
-    $lModulesPath = Get-ChildItem -LiteralPath (Join-Path $lOutPath 'pascal-analyzer') -Recurse -Filter 'Modules.xml' |
-        Select-Object -First 1 -ExpandProperty FullName
-    if ([string]::IsNullOrWhiteSpace($lModulesPath)) {
-        throw 'PAL reported pathless findings, but Modules.xml was not found.'
-    }
-
-    [xml] $lModules = Get-Content -LiteralPath $lModulesPath -Raw
-    $lModuleSection = @($lModules.report.section) |
-        Where-Object { $_.name -eq 'Module information' } |
-        Select-Object -First 1
-    if ($null -eq $lModuleSection) {
-        throw 'PAL Modules.xml does not contain the Module information section.'
-    }
-
-    $lModulePaths = @{}
-    foreach ($lModule in $lModuleSection.module) {
-        $lName = [string] $lModule.name
-        $lPath = [string] $lModule.path
-        if ([string]::IsNullOrWhiteSpace($lName) -or [string]::IsNullOrWhiteSpace($lPath)) {
-            continue
-        }
-
-        $lKey = $lName.ToLowerInvariant()
-        if ($lModulePaths.ContainsKey($lKey) -and ($lModulePaths[$lKey] -ne $lPath)) {
-            $lModulePaths[$lKey] = ''
-        } else {
-            $lModulePaths[$lKey] = $lPath
-        }
-    }
-
-    $lUnresolved = 0
-    $lRepoPrefix = $lRepoRoot.TrimEnd('\') + '\'
-    Get-Content -LiteralPath $lPalFindingsPath | ForEach-Object {
-        $lFinding = $_ | ConvertFrom-Json
-        if ($lFinding.ownership -ne 'unknown') {
-            return
-        }
-
-        $lModuleName = ([string] $lFinding.module -split '[\\/]')[0].ToLowerInvariant()
-        $lModulePath = $lModulePaths[$lModuleName]
-        if ([string]::IsNullOrWhiteSpace($lModulePath)) {
-            $lUnresolved++
-        } elseif ($lModulePath.StartsWith($lRepoPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw "PAL misclassified a project module as unknown: $lModulePath"
-        } else {
-            $lResolvedExternal++
-        }
-    }
-
-    if ($lUnresolved -ne 0) {
-        throw "PAL retained $lUnresolved findings whose ownership could not be resolved from Modules.xml."
-    }
-
-    $lPalExternal += $lResolvedExternal
-    $lPalUnknown = 0
+$lSummaryPath = Join-Path $lOutPath 'summary.json'
+if (-not (Test-Path -LiteralPath $lSummaryPath -PathType Leaf)) {
+    throw "Static analysis summary not found: $lSummaryPath"
 }
 
-Write-Output "ANALYSIS_COUNTS fixinsight_owned=$lFixInsightOwned pal_owned=$lPalOwned pal_third_party=$lPalExternal pal_unknown=$lPalUnknown"
-Write-Output "ANALYSIS_RAW pal_pathless_resolved_external=$lResolvedExternal"
+$lSummary = Get-Content -LiteralPath $lSummaryPath -Raw | ConvertFrom-Json
+if ($lSummary.schema_version -ne 3) {
+    throw "Unsupported DAK static-analysis schema: $($lSummary.schema_version)"
+}
+
+if (($lSummary.status.finalization -ne 'complete') -or
+    ($lSummary.status.ownership_resolution -ne 'complete') -or
+    ($lSummary.status.postprocessor -ne 'complete') -or
+    ($lSummary.analyzers.fixinsight.status -ne 'complete') -or
+    ($lSummary.analyzers.pascal_analyzer.status -ne 'complete')) {
+    throw 'DAK static-analysis infrastructure, ownership resolution, or an analyzer did not complete.'
+}
+
+if ($lSummary.status.policy -ne 'pass') {
+    throw "DAK static-analysis policy did not pass: $($lSummary.status.policy)"
+}
+
+$lUnknown = $lSummary.counts.unknown.total
+if ($lUnknown -ne 0) {
+    throw "DAK retained $lUnknown findings with unknown ownership."
+}
+
+$lFixInsightOwned = $lSummary.counts.actionable.fixinsight.ownership.project +
+    $lSummary.counts.actionable.fixinsight.ownership.repository
+$lPalOwned = $lSummary.counts.actionable.pascal_analyzer.ownership.project +
+    $lSummary.counts.actionable.pascal_analyzer.ownership.repository
+$lPalExternal = $lSummary.counts.external.pascal_analyzer.total
+$lPalStrong = $lSummary.counts.actionable.pascal_analyzer.strong_warnings
+$lIgnored = $lSummary.counts.ignored.total
+$lAdvisory = $lSummary.counts.advisory_metrics.total
+$lDakHash = $lSummary.compatibility.context.dak.executable_sha256
+$lDakHead = $lSummary.compatibility.context.dak.head
+
+Write-Output "ANALYSIS_SCHEMA version=$($lSummary.schema_version)"
+Write-Output "ANALYSIS_COUNTS actionable_total=$($lSummary.counts.actionable.total) fixinsight_owned=$lFixInsightOwned pal_owned=$lPalOwned pal_strong=$lPalStrong"
+Write-Output "ANALYSIS_PROJECTIONS ignored=$lIgnored external_pal=$lPalExternal advisory_metrics=$lAdvisory unknown=$lUnknown"
+Write-Output "ANALYSIS_GATE status=$($lSummary.status.policy) baseline=$lBaselinePath updated=$($UpdateBaseline.IsPresent)"
+Write-Output "ANALYSIS_TOOL dak_sha256=$lDakHash dak_head=$lDakHead"
 Write-Output "ANALYSIS_POLICY fixinsight_ignored_codes=$lIgnoredFixInsightCodes"
 Write-Output "ANALYSIS_ARTIFACTS $lOutPath"
 Write-Output 'ANALYSIS_OK'

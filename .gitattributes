@@ -8,6 +8,7 @@
 
 # Scripts should stay LF
 *.sh       text eol=lf
+/scripts/static-analysis-baseline.json text eol=lf
 
 
 # Then normalize:

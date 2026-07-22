@@ -49,6 +49,8 @@ end;
 
 `TAccessibilityManager.Install(Form)` installs accessibility for that form and its controls without enabling app-wide form discovery.
 
+Installed VCL form providers automatically reconcile controls added, removed, or reparented at runtime. Lookup, navigation, and hit testing reflect the current hierarchy without reinstalling the form, and retained providers for removed controls become unavailable.
+
 Call `TAccessibilityManager.Uninstall` to remove the framework hooks, hint observers, and installed form providers. The complex demo exposes this as an `Accessibility enabled` checkbox so manual NVDA testing can compare the framework-on and framework-off behavior in the same process.
 
 Applications that want to enable the framework only when assistive technology is likely active can use the screen-reader detector:
@@ -89,6 +91,7 @@ The default VCL adapter registry covers:
 - `TToolBar` and `TToolButton`: UIA toolbar/button fragments for toolbar commands.
 - Generic `TGraphicControl`: text fallback for caption/text/hint-style controls.
 - VCL hints: control `Hint` is exposed as UIA `HelpText`, and visible hint text raises a UIA notification when UIA clients are listening.
+- Runtime properties: installed providers expose current Name, HelpText, Value, enabled/offscreen state, and bounds for supported VCL forms and controls, and publish corresponding UIA property changes and MSAA notifications when those effective values change. This includes status-bar HelpText and `TStringGrid`/opt-in `TAdvStringGrid` root Name and HelpText.
 - VCL balloon hints: title and description are exposed through UIA notification text without requiring MaxLogicFoundation.
 - `TMemo`: UIA edit provider with per-line mouse hit testing while keyboard caret navigation remains with the native edit behavior.
 - `TListBox`: UIA list/list-item providers remain available in the framework form tree for mouse hit testing and selection queries, while the real listbox HWND keeps the native accessibility path for fast arrow-key item focus speech.

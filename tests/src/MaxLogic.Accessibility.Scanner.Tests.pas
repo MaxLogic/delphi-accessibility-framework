@@ -314,6 +314,7 @@ end;
 
 procedure TAccessibilityScannerTests.RuntimeControlChangesRefreshObservedTree;
 var
+  lEdit: TEdit;
   lForm: TForm;
   lLabel: TLabel;
   lScan: IAccessibilityObservedFormScan;
@@ -335,6 +336,27 @@ begin
 
     Assert.AreEqual(3, lScan.Revision);
     Assert.IsNull(lScan.Tree.FindNode(lLabel));
+
+    lLabel.Parent := lForm;
+
+    Assert.AreEqual(4, lScan.Revision);
+    Assert.IsNotNull(lScan.Tree.FindNode(lLabel));
+
+    lEdit := TEdit.Create(lForm);
+    lEdit.Text := 'Windowed';
+    lEdit.Parent := lForm;
+    lEdit.HandleNeeded;
+    Assert.AreEqual(5, lScan.Revision);
+    Assert.IsNotNull(lScan.Tree.FindNode(lEdit));
+
+    lEdit.Parent := nil;
+    Assert.AreEqual(6, lScan.Revision);
+    Assert.IsNull(lScan.Tree.FindNode(lEdit));
+
+    lEdit.Parent := lForm;
+    lEdit.HandleNeeded;
+    Assert.AreEqual(7, lScan.Revision);
+    Assert.IsNotNull(lScan.Tree.FindNode(lEdit));
   finally
     lForm.Free;
   end;

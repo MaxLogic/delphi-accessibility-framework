@@ -85,7 +85,7 @@ $lPreviousEnvironment = @{
 Write-Output "Analyzing $lProject [$Platform|$Config]"
 try {
     $env:DAK_BASELINE = $lBaselinePath
-    $env:DAK_GATE = '1'
+    $env:DAK_GATE = if ($UpdateBaseline) { '0' } else { '1' }
     $env:DAK_UPDATE_BASELINE = if ($UpdateBaseline) { '1' } else { '0' }
 
     $lOutput = & $lDakExe @lArguments 2>&1
@@ -117,11 +117,13 @@ try {
     }
 }
 
-$lVerifyOutput = & python $lPostprocess --verify $lOutPath 2>&1
-$lVerifyExitCode = $LASTEXITCODE
-$lVerifyOutput | ForEach-Object { Write-Output $_ }
-if ($lVerifyExitCode -ne 0) {
-    throw "DAK static-analysis artifact verification failed with exit code $lVerifyExitCode"
+if (-not $UpdateBaseline) {
+    $lVerifyOutput = & python $lPostprocess --verify $lOutPath 2>&1
+    $lVerifyExitCode = $LASTEXITCODE
+    $lVerifyOutput | ForEach-Object { Write-Output $_ }
+    if ($lVerifyExitCode -ne 0) {
+        throw "DAK static-analysis artifact verification failed with exit code $lVerifyExitCode"
+    }
 }
 
 $lSummaryPath = Join-Path $lOutPath 'summary.json'
@@ -142,7 +144,8 @@ if (($lSummary.status.finalization -ne 'complete') -or
     throw 'DAK static-analysis infrastructure, ownership resolution, or an analyzer did not complete.'
 }
 
-if ($lSummary.status.policy -ne 'pass') {
+$lExpectedPolicy = if ($UpdateBaseline) { 'not_evaluated' } else { 'pass' }
+if ($lSummary.status.policy -ne $lExpectedPolicy) {
     throw "DAK static-analysis policy did not pass: $($lSummary.status.policy)"
 }
 

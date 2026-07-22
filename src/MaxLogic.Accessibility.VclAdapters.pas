@@ -23,6 +23,11 @@ type
     function TryFindProviderForControl(aControl: TControl; out aProvider: IRawElementProviderSimple): Boolean;
   end;
 
+  IAccessibilityVclProviderRuntimeInternal = interface
+    ['{3318F903-76F0-48B2-90CC-203037295357}']
+    function ReconcileProviderHierarchy(const aTree: IAccessibilityScanTree): Boolean;
+  end;
+
   IAccessibilityVclHoverGeometryPartition = interface
     ['{463E21F1-28E8-40F2-8686-3A098DFFC492}']
     function VclGeometryPartitionsHoverTargets: Boolean;
@@ -121,11 +126,20 @@ type
   end;
 
   TAccessibilityVclFormProviderRoot = class(TAccessibilityProviderRoot, IAccessibilityVclRootProvider,
-    IAccessibilityVclProviderLookup, IAccessibilityVclHoverGeometryPartition)
+    IAccessibilityVclProviderLookup, IAccessibilityVclProviderRuntimeInternal,
+    IAccessibilityVclHoverGeometryPartition)
   private
     fForm: TCustomForm;
     fHitTestRoots: TList<IRawElementProviderFragmentRoot>;
+    fNextRuntimeId: Integer;
+    fProviderNodesByControl: TDictionary<TControl, IAccessibilityProviderNode>;
     fProvidersByControl: TDictionary<TControl, IRawElementProviderFragment>;
+    fRegistry: IAccessibilityAdapterRegistry;
+    fRuntimeApi: IAccessibilityUiaApi;
+    function AddMissingProviderChildren(const aParentProvider: IAccessibilityProviderNode;
+      const aScanNode: IAccessibilityScanNode): Boolean;
+    procedure CollectScanControls(const aScanNode: IAccessibilityScanNode;
+      aControls: TDictionary<TControl, Byte>);
     function CanUseDirectHitTarget(aControl: TControl): Boolean;
     function ControlFromPoint(const aScreenPoint: TPoint): TControl;
     function TryFindControlProvider(aControl: TControl; out aProvider: IRawElementProviderFragment): Boolean;
@@ -135,18 +149,26 @@ type
     function DoElementProviderFromPoint(aX: Double; aY: Double; out aProvider: IRawElementProviderFragment):
       HResult; override;
     function DoGetFocus(out aProvider: IRawElementProviderFragment): HResult; override;
+    function DoGetPropertyValue(aPropertyId: PROPERTYID; out aValue: OleVariant): Boolean; override;
   public
-    constructor Create(aForm: TCustomForm; const aApi: IAccessibilityUiaApi);
+    constructor Create(aForm: TCustomForm; const aRegistry: IAccessibilityAdapterRegistry;
+      const aApi: IAccessibilityUiaApi);
     destructor Destroy; override;
     procedure AddHitTestRoot(const aRoot: IRawElementProviderFragmentRoot);
     procedure RegisterControlProvider(aControl: TControl; const aProvider: IRawElementProviderFragment);
+    function ReconcileProviderHierarchy(const aTree: IAccessibilityScanTree): Boolean;
     function TryFindProviderForControl(aControl: TControl; out aProvider: IRawElementProviderSimple): Boolean;
     function VclGeometryPartitionsHoverTargets: Boolean;
   end;
 
   TAccessibilityStringGridProvider = class;
 
-  TAccessibilityVclControlProvider = class(TAccessibilityProviderNode, IAccessibilityVclControlProviderInfo,
+  TAccessibilityVclOwnedProvider = class(TAccessibilityProviderNode)
+  protected
+    procedure DetachReparentedChildren(aOwner: TControl);
+  end;
+
+  TAccessibilityVclControlProvider = class(TAccessibilityVclOwnedProvider, IAccessibilityVclControlProviderInfo,
     IAccessibilityVclHoverGeometryPartition, IInvokeProvider, IToggleProvider, IValueProvider,
     ISelectionItemProvider)
   private
@@ -170,6 +192,7 @@ type
     function DoGetBoundingRectangle(out aValue: UiaRect): Boolean; override;
     function DoGetPatternProvider(aPatternId: PATTERNID): IUnknown; override;
     function DoGetPropertyValue(aPropertyId: PROPERTYID; out aValue: OleVariant): Boolean; override;
+    procedure PrepareForOwnerDisconnect; override;
   public
     constructor Create(aControl: TControl; const aRuntimeId: array of Integer; aControlTypeId: Integer;
       const aName: string; const aHelpText: string; const aApi: IAccessibilityUiaApi);
@@ -341,13 +364,15 @@ type
     procedure StartSelectionTracking;
   end;
 
-  TAccessibilityStatusBarProvider = class(TAccessibilityProviderNode, IAccessibilityVclControlProviderInfo)
+  TAccessibilityStatusBarProvider = class(TAccessibilityVclOwnedProvider, IAccessibilityVclControlProviderInfo)
   private
     fHelpText: string;
+    fLiveHelpText: Boolean;
     fStatusBar: TCustomStatusBar;
   protected
     function DoGetBoundingRectangle(out aValue: UiaRect): Boolean; override;
     function DoGetPropertyValue(aPropertyId: PROPERTYID; out aValue: OleVariant): Boolean; override;
+    procedure PrepareForOwnerDisconnect; override;
   public
     constructor Create(aStatusBar: TCustomStatusBar; const aRuntimeId: array of Integer; const aHelpText: string;
       const aApi: IAccessibilityUiaApi);
@@ -410,6 +435,10 @@ type
   private
     fCells: TDictionary<Int64, IAccessibilityProviderNode>;
     fGrid: TStringGrid;
+    fHelpText: string;
+    fLiveHelpText: Boolean;
+    fLiveName: Boolean;
+    fName: string;
     fPreparedClientHeight: Integer;
     fPreparedClientWidth: Integer;
     fPreparedColCount: Integer;
@@ -2100,6 +2129,95 @@ begin
   end;
 end;
 
+function TAccessibilityVclFormProviderRoot.AddMissingProviderChildren(
+  const aParentProvider: IAccessibilityProviderNode; const aScanNode: IAccessibilityScanNode): Boolean;
+var
+  i: Integer;
+  lCurrentParent: IRawElementProviderFragment;
+  lChildHitTestRoot: IRawElementProviderFragmentRoot;
+  lChildManagesOwnTree: Boolean;
+  lChildProvider: IAccessibilityProviderNode;
+  lCurrentIndex: Integer;
+  lHierarchy: IAccessibilityProviderHierarchyInternal;
+  lParentHierarchy: IAccessibilityProviderHierarchyInternal;
+  lParentMatches: Boolean;
+  lParentSimple: IRawElementProviderSimple;
+begin
+  Result := False;
+  if not Supports(aParentProvider, IAccessibilityProviderHierarchyInternal, lParentHierarchy) then
+  begin
+    raise EInvalidOperation.Create('Provider parent does not support hierarchy reconciliation.');
+  end;
+  for i := 0 to Pred(aScanNode.ChildCount) do
+  begin
+    if not fProviderNodesByControl.TryGetValue(aScanNode.Child(i).Control, lChildProvider) or
+      (lChildProvider = nil) or lChildProvider.IsDisconnected then
+    begin
+      if lChildProvider <> nil then
+      begin
+        if Supports(lChildProvider.RawElementProvider, IRawElementProviderFragmentRoot, lChildHitTestRoot) then
+        begin
+          fHitTestRoots.Remove(lChildHitTestRoot);
+        end;
+        if Supports(lChildProvider, IAccessibilityProviderHierarchyInternal, lHierarchy) then
+        begin
+          lHierarchy.DetachFromParent(True);
+        end;
+      end;
+      lChildProvider := CreateProviderForNode(aScanNode.Child(i), fRegistry, fNextRuntimeId, fRuntimeApi);
+      lParentHierarchy.InsertChildAt(i, lChildProvider);
+      RegisterControlProvider(aScanNode.Child(i).Control, lChildProvider.FragmentProvider);
+      lChildManagesOwnTree := Supports(lChildProvider.RawElementProvider,
+        IRawElementProviderFragmentRoot, lChildHitTestRoot);
+      if lChildManagesOwnTree then
+      begin
+        AddHitTestRoot(lChildHitTestRoot);
+      end;
+      Result := True;
+    end else begin
+      lChildManagesOwnTree := Supports(lChildProvider.RawElementProvider,
+        IRawElementProviderFragmentRoot, lChildHitTestRoot);
+      lCurrentParent := nil;
+      lParentSimple := nil;
+      lParentMatches := (lChildProvider.FragmentProvider.Navigate(NavigateDirection_Parent, lCurrentParent) = S_OK) and
+        Supports(lCurrentParent, IRawElementProviderSimple, lParentSimple) and
+        ((lParentSimple as IUnknown) = (aParentProvider.RawElementProvider as IUnknown));
+      lCurrentIndex := -1;
+      if lParentMatches then
+      begin
+        lCurrentIndex := lParentHierarchy.ChildIndexOf(lChildProvider);
+      end;
+      if not lParentMatches or (lCurrentIndex <> i) then
+      begin
+        if not Supports(lChildProvider, IAccessibilityProviderHierarchyInternal, lHierarchy) then
+        begin
+          raise EInvalidOperation.Create('Provider node does not support hierarchy reconciliation.');
+        end;
+        lHierarchy.DetachFromParent(False);
+        lParentHierarchy.InsertChildAt(i, lChildProvider);
+        Result := True;
+      end;
+    end;
+
+    if not lChildManagesOwnTree then
+    begin
+      Result := AddMissingProviderChildren(lChildProvider, aScanNode.Child(i)) or Result;
+    end;
+  end;
+end;
+
+procedure TAccessibilityVclFormProviderRoot.CollectScanControls(const aScanNode: IAccessibilityScanNode;
+  aControls: TDictionary<TControl, Byte>);
+var
+  i: Integer;
+begin
+  for i := 0 to Pred(aScanNode.ChildCount) do
+  begin
+    aControls.AddOrSetValue(aScanNode.Child(i).Control, 0);
+    CollectScanControls(aScanNode.Child(i), aControls);
+  end;
+end;
+
 procedure TAccessibilityVclFormProviderRoot.AddHitTestRoot(const aRoot: IRawElementProviderFragmentRoot);
 begin
   if aRoot <> nil then
@@ -2108,27 +2226,107 @@ begin
   end;
 end;
 
-constructor TAccessibilityVclFormProviderRoot.Create(aForm: TCustomForm; const aApi: IAccessibilityUiaApi);
+constructor TAccessibilityVclFormProviderRoot.Create(aForm: TCustomForm;
+  const aRegistry: IAccessibilityAdapterRegistry; const aApi: IAccessibilityUiaApi);
 begin
   inherited CreateNode([1], aForm.Handle, aApi, aForm);
   fForm := aForm;
+  fRegistry := aRegistry;
+  fRuntimeApi := aApi;
   fHitTestRoots := TList<IRawElementProviderFragmentRoot>.Create;
+  fNextRuntimeId := 1;
+  fProviderNodesByControl := TDictionary<TControl, IAccessibilityProviderNode>.Create;
   fProvidersByControl := TDictionary<TControl, IRawElementProviderFragment>.Create;
 end;
 
 destructor TAccessibilityVclFormProviderRoot.Destroy;
 begin
   fProvidersByControl.Free;
+  fProviderNodesByControl.Free;
   fHitTestRoots.Free;
   inherited Destroy;
 end;
 
+function TAccessibilityVclFormProviderRoot.DoGetPropertyValue(aPropertyId: PROPERTYID;
+  out aValue: OleVariant): Boolean;
+begin
+  if aPropertyId = UIA_HelpTextPropertyId then
+  begin
+    aValue := TAccessibilityTextExtractor.Extract(fForm).HelpText;
+    Exit(True);
+  end;
+
+  Result := inherited DoGetPropertyValue(aPropertyId, aValue);
+end;
+
 procedure TAccessibilityVclFormProviderRoot.RegisterControlProvider(aControl: TControl;
   const aProvider: IRawElementProviderFragment);
+var
+  lNode: IAccessibilityProviderNode;
 begin
   if (aControl <> nil) and (aProvider <> nil) then
   begin
     fProvidersByControl.AddOrSetValue(aControl, aProvider);
+    if Supports(aProvider, IAccessibilityProviderNode, lNode) then
+    begin
+      fProviderNodesByControl.AddOrSetValue(aControl, lNode);
+    end;
+  end;
+end;
+
+function TAccessibilityVclFormProviderRoot.ReconcileProviderHierarchy(
+  const aTree: IAccessibilityScanTree): Boolean;
+var
+  i: Integer;
+  lControl: TControl;
+  lControlsToRemove: TList<TControl>;
+  lDesiredControls: TDictionary<TControl, Byte>;
+  lHierarchy: IAccessibilityProviderHierarchyInternal;
+  lHitTestRoot: IRawElementProviderFragmentRoot;
+  lNode: IAccessibilityProviderNode;
+begin
+  Result := False;
+  if (aTree = nil) or IsDisconnected then
+  begin
+    Exit;
+  end;
+
+  lDesiredControls := TDictionary<TControl, Byte>.Create;
+  lControlsToRemove := TList<TControl>.Create;
+  try
+    CollectScanControls(aTree.Root, lDesiredControls);
+    for lControl in fProviderNodesByControl.Keys do
+    begin
+      if not lDesiredControls.ContainsKey(lControl) then
+      begin
+        lControlsToRemove.Add(lControl);
+      end;
+    end;
+
+    Result := AddMissingProviderChildren(Self as IAccessibilityProviderNode, aTree.Root);
+    for i := 0 to Pred(lControlsToRemove.Count) do
+    begin
+      lControl := lControlsToRemove[i];
+      if fProviderNodesByControl.TryGetValue(lControl, lNode) then
+      begin
+        if Supports(lNode, IRawElementProviderFragmentRoot, lHitTestRoot) then
+        begin
+          fHitTestRoots.Remove(lHitTestRoot);
+        end;
+        if Supports(lNode, IAccessibilityProviderHierarchyInternal, lHierarchy) then
+        begin
+          lHierarchy.DetachFromParent(True);
+        end else begin
+          lNode.Disconnect;
+        end;
+      end;
+      fProviderNodesByControl.Remove(lControl);
+      fProvidersByControl.Remove(lControl);
+      Result := True;
+    end;
+  finally
+    lControlsToRemove.Free;
+    lDesiredControls.Free;
   end;
 end;
 
@@ -2527,6 +2725,51 @@ begin
   else
     Result := inherited DoGetPropertyValue(aPropertyId, aValue);
   end;
+end;
+
+procedure TAccessibilityVclOwnedProvider.DetachReparentedChildren(aOwner: TControl);
+var
+  i: Integer;
+  lChild: IAccessibilityProviderNode;
+  lChildControl: TControl;
+  lChildInfo: IAccessibilityVclControlProviderInfo;
+  lHierarchy: IAccessibilityProviderHierarchyInternal;
+  lParent: TWinControl;
+begin
+  for i := Pred(ExistingChildCount) downto 0 do
+  begin
+    lChild := ExistingChildProviderAt(i);
+    if (lChild = nil) or lChild.IsDisconnected or
+      not Supports(lChild, IAccessibilityVclControlProviderInfo, lChildInfo) then
+    begin
+      Continue;
+    end;
+
+    lChildControl := lChildInfo.Control;
+    if (lChildControl <> nil) and (csDestroying in lChildControl.ComponentState) then
+    begin
+      Continue;
+    end;
+    lParent := nil;
+    if lChildControl <> nil then
+    begin
+      lParent := lChildControl.Parent;
+    end;
+    while (lParent <> nil) and (lParent <> aOwner) do
+    begin
+      lParent := lParent.Parent;
+    end;
+    if (lParent = nil) and Supports(lChild, IAccessibilityProviderHierarchyInternal, lHierarchy) then
+    begin
+      lHierarchy.DetachFromParent(False);
+    end;
+  end;
+end;
+
+procedure TAccessibilityVclControlProvider.PrepareForOwnerDisconnect;
+begin
+  DetachReparentedChildren(fControl);
+  inherited PrepareForOwnerDisconnect;
 end;
 
 function TAccessibilityVclControlProvider.AddToSelection: HResult;
@@ -4210,6 +4453,7 @@ begin
   SetPublishNativeWindowHandle(True);
   fStatusBar := aStatusBar;
   fHelpText := aHelpText;
+  fLiveHelpText := SameText(fHelpText, TAccessibilityTextExtractor.Extract(aStatusBar).HelpText);
 end;
 
 function TAccessibilityStatusBarProvider.Control: TControl;
@@ -4250,7 +4494,12 @@ begin
     UIA_ClassNamePropertyId:
       aValue := fStatusBar.ClassName;
     UIA_HelpTextPropertyId:
-      aValue := fHelpText;
+      if fLiveHelpText then
+      begin
+        aValue := TAccessibilityTextExtractor.Extract(fStatusBar).HelpText;
+      end else begin
+        aValue := fHelpText;
+      end;
     UIA_IsEnabledPropertyId:
       aValue := (fStatusBar <> nil) and fStatusBar.Enabled;
     UIA_IsKeyboardFocusablePropertyId,
@@ -4261,6 +4510,12 @@ begin
   else
     Result := inherited DoGetPropertyValue(aPropertyId, aValue);
   end;
+end;
+
+procedure TAccessibilityStatusBarProvider.PrepareForOwnerDisconnect;
+begin
+  DetachReparentedChildren(fStatusBar);
+  inherited PrepareForOwnerDisconnect;
 end;
 
 function TAccessibilityStringGridCellProvider.AddToSelection: HResult;
@@ -5127,18 +5382,23 @@ end;
 
 constructor TAccessibilityStringGridProvider.Create(aGrid: TStringGrid; aRuntimeId: Integer; const aName: string;
   const aHelpText: string; const aApi: IAccessibilityUiaApi);
+var
+  lTextInfo: TAccessibilityTextInfo;
 begin
   inherited CreateNode([aRuntimeId], aGrid.Handle, aApi, aGrid);
   SetPublishNativeWindowHandle(True);
   fCells := TDictionary<Int64, IAccessibilityProviderNode>.Create;
   fRows := TDictionary<Integer, IAccessibilityProviderNode>.Create;
   fGrid := aGrid;
+  fHelpText := aHelpText;
+  fName := aName;
+  lTextInfo := TAccessibilityTextExtractor.Extract(aGrid);
+  fLiveHelpText := SameText(fHelpText, lTextInfo.HelpText);
+  fLiveName := SameText(fName, lTextInfo.Name);
   fProviderRuntimeId := aRuntimeId;
   fUiaApi := aApi;
-  SetProperty(UIA_NamePropertyId, aName);
   SetProperty(UIA_ControlTypePropertyId, UIA_DataGridControlTypeId);
   SetProperty(UIA_ClassNamePropertyId, aGrid.ClassName);
-  SetProperty(UIA_HelpTextPropertyId, aHelpText);
   BuildVisibleCells;
 end;
 
@@ -5231,6 +5491,13 @@ function TAccessibilityStringGridProvider.DoGetPropertyValue(aPropertyId: PROPER
 begin
   Result := True;
   case aPropertyId of
+    UIA_HelpTextPropertyId:
+      if fLiveHelpText then
+      begin
+        aValue := TAccessibilityTextExtractor.Extract(fGrid).HelpText;
+      end else begin
+        aValue := fHelpText;
+      end;
     UIA_HasKeyboardFocusPropertyId:
       aValue := GridOwnsFocus;
     UIA_IsEnabledPropertyId:
@@ -5239,6 +5506,13 @@ begin
       aValue := fGrid.TabStop;
     UIA_IsOffscreenPropertyId:
       aValue := not ControlIsInActiveVisibleTree(fGrid);
+    UIA_NamePropertyId:
+      if fLiveName then
+      begin
+        aValue := TAccessibilityTextExtractor.Extract(fGrid).Name;
+      end else begin
+        aValue := fName;
+      end;
   else
     Result := inherited DoGetPropertyValue(aPropertyId, aValue);
   end;
@@ -5548,6 +5822,7 @@ end;
 class function TAccessibilityVclProviderBuilder.BuildForm(aForm: TCustomForm;
   const aRegistry: IAccessibilityAdapterRegistry; const aApi: IAccessibilityUiaApi): IAccessibilityProviderNode;
 var
+  lFormRoot: TAccessibilityVclFormProviderRoot;
   lNextRuntimeId: Integer;
   lRegistry: IAccessibilityAdapterRegistry;
   lRootProvider: IAccessibilityVclRootProvider;
@@ -5567,15 +5842,16 @@ begin
 
   EnsureRadioGroupButtonControls(aForm);
   lTree := TAccessibilityScanner.ScanForm(aForm, lRegistry);
-  Result := TAccessibilityVclFormProviderRoot.Create(aForm, aApi) as IAccessibilityProviderNode;
+  lFormRoot := TAccessibilityVclFormProviderRoot.Create(aForm, lRegistry, aApi);
+  Result := lFormRoot as IAccessibilityProviderNode;
   Result.SetProperty(UIA_NamePropertyId, lTree.Root.Name);
   Result.SetProperty(UIA_ControlTypePropertyId, UIA_WindowControlTypeId);
   Result.SetProperty(UIA_ClassNamePropertyId, aForm.ClassName);
-  Result.SetProperty(UIA_HelpTextPropertyId, lTree.Root.HelpText);
 
   lNextRuntimeId := 1;
   Supports(Result, IAccessibilityVclRootProvider, lRootProvider);
   AddProviderChildren(Result, lTree.Root, lRegistry, lNextRuntimeId, aApi, lRootProvider);
+  lFormRoot.fNextRuntimeId := lNextRuntimeId;
   if Supports(Result, IAccessibilityVclProviderLookup, lProviderLookup) then
   begin
     AddLabeledByRelationships(lTree, lProviderLookup);

@@ -42,6 +42,13 @@ type
     function ProviderObject: TObject;
   end;
 
+  IAccessibilityProviderHierarchyInternal = interface
+    ['{C5218702-CC97-4F05-A319-997E41FA26AC}']
+    function ChildIndexOf(const aChild: IAccessibilityProviderNode): Integer;
+    procedure DetachFromParent(aDisconnect: Boolean);
+    procedure InsertChildAt(aIndex: Integer; const aChild: IAccessibilityProviderNode);
+  end;
+
   IAccessibilityProviderNativeWindow = interface
     ['{FD5C427A-0B84-441D-9398-1DFA3788A584}']
     function NativeWindowHandle: HWND;
@@ -84,9 +91,9 @@ type
   end;
 
   TAccessibilityProviderNode = class(TInterfacedObject, IAccessibilityProviderNode,
-    IAccessibilityProviderNodeInternal, IAccessibilityProviderNativeWindow, IAccessibilityProviderDirectAccess,
-    IAccessibilityProviderGeometryAccess, IAccessibilityProviderSpeechAccess, IAccessibilityProviderChildAccess,
-    IRawElementProviderSimple, IRawElementProviderFragment)
+    IAccessibilityProviderNodeInternal, IAccessibilityProviderHierarchyInternal, IAccessibilityProviderNativeWindow,
+    IAccessibilityProviderDirectAccess, IAccessibilityProviderGeometryAccess, IAccessibilityProviderSpeechAccess,
+    IAccessibilityProviderChildAccess, IRawElementProviderSimple, IRawElementProviderFragment)
   private
     fApi: IAccessibilityUiaApi;
     fAutomationIdProperty: string;
@@ -166,12 +173,15 @@ type
     function DoGetPatternProvider(aPatternId: PATTERNID): IUnknown; virtual;
     function DoGetPropertyValue(aPropertyId: PROPERTYID; out aValue: OleVariant): Boolean; virtual;
     function DoSetFocus: HResult; virtual;
+    function ExistingChildCount: Integer;
+    function ExistingChildProviderAt(aIndex: Integer): IAccessibilityProviderNode;
     function FindDescendantFromPoint(aX: Double; aY: Double; out aProvider: IRawElementProviderFragment): Boolean;
     function HasCurrentChildIndex(aChild: TAccessibilityProviderNode): Boolean;
     procedure InsertChildNode(aIndex: Integer; const aChild: IAccessibilityProviderNode);
     procedure InsertChildIntoList(aChildren: TList<IAccessibilityProviderNode>; aIndex: Integer;
       const aChild: IAccessibilityProviderNode); virtual;
     function ParentRawElementProvider: IRawElementProviderSimple;
+    procedure PrepareForOwnerDisconnect; virtual;
     procedure PrepareChildrenForNavigation; virtual;
     procedure RemoveChildNode(const aChild: IAccessibilityProviderNode; aDisconnect: Boolean);
     procedure RemoveChildNodes(const aChildren: TArray<IAccessibilityProviderNode>; aDisconnect: Boolean);
@@ -183,6 +193,8 @@ type
   public
     destructor Destroy; override;
     procedure AddChild(const aChild: IAccessibilityProviderNode);
+    function ChildIndexOf(const aChild: IAccessibilityProviderNode): Integer;
+    procedure DetachFromParent(aDisconnect: Boolean);
     procedure Disconnect;
     function DirectChildAt(aIndex: Integer; out aProvider: IRawElementProviderSimple): HResult;
     function DirectChildCount(out aCount: Integer): HResult;
@@ -196,6 +208,7 @@ type
     function GetPropertyValue(aPropertyId: PROPERTYID; out aRetVal: OleVariant): HResult; stdcall;
     function GetRuntimeId(out aRetVal: PSafeArray): HResult; stdcall;
     function IsDisconnected: Boolean;
+    procedure InsertChildAt(aIndex: Integer; const aChild: IAccessibilityProviderNode);
     function Navigate(aDirection: NavigateDirection; out aRetVal: IRawElementProviderFragment): HResult; stdcall;
     function NativeWindowHandle: HWND;
     function ProviderObject: TObject;
@@ -511,7 +524,11 @@ begin
     fOwnerComponent := nil;
     if fProvider <> nil then
     begin
-      fProvider.Disconnect;
+      try
+        fProvider.PrepareForOwnerDisconnect;
+      finally
+        fProvider.Disconnect;
+      end;
     end;
   end;
 end;
@@ -613,6 +630,46 @@ end;
 procedure TAccessibilityProviderNode.AddChild(const aChild: IAccessibilityProviderNode);
 begin
   InsertChildNode(ChildCount, aChild);
+end;
+
+function TAccessibilityProviderNode.ChildIndexOf(const aChild: IAccessibilityProviderNode): Integer;
+begin
+  Result := ChildIndex(FromNode(aChild));
+end;
+
+procedure TAccessibilityProviderNode.DetachFromParent(aDisconnect: Boolean);
+var
+  lIndex: Integer;
+  lParent: TAccessibilityProviderNode;
+begin
+  lParent := fParent;
+  if lParent = nil then
+  begin
+    if aDisconnect then
+    begin
+      Disconnect;
+    end;
+    Exit;
+  end;
+
+  if aDisconnect then
+  begin
+    lParent.RemoveChildNode(Self as IAccessibilityProviderNode, True);
+    Exit;
+  end;
+
+  lIndex := lParent.ChildIndex(Self);
+  if lIndex < 0 then
+  begin
+    raise EInvalidOperation.Create('Provider parent does not contain its child.');
+  end;
+  lParent.fChildren.Delete(lIndex);
+  lParent.fChildrenPreparedForNavigation := False;
+  lParent.fDirectChildAccessReadsRemaining := 0;
+  fParent := nil;
+  fParentIndex := -1;
+  UpdateFragmentRootCacheRecursive(nil);
+  lParent.RefreshChildIndexesFrom(lIndex);
 end;
 
 procedure TAccessibilityProviderNode.InsertChildNode(aIndex: Integer;
@@ -871,6 +928,22 @@ end;
 function TAccessibilityProviderNode.DoSetFocus: HResult;
 begin
   Result := S_OK;
+end;
+
+procedure TAccessibilityProviderNode.InsertChildAt(aIndex: Integer;
+  const aChild: IAccessibilityProviderNode);
+begin
+  InsertChildNode(aIndex, aChild);
+end;
+
+function TAccessibilityProviderNode.ExistingChildCount: Integer;
+begin
+  Result := ChildCount;
+end;
+
+function TAccessibilityProviderNode.ExistingChildProviderAt(aIndex: Integer): IAccessibilityProviderNode;
+begin
+  Result := ChildProviderAt(aIndex);
 end;
 
 function TAccessibilityProviderNode.FragmentProvider: IRawElementProviderFragment;
@@ -1260,6 +1333,10 @@ end;
 function TAccessibilityProviderNode.ProviderObject: TObject;
 begin
   Result := Self;
+end;
+
+procedure TAccessibilityProviderNode.PrepareForOwnerDisconnect;
+begin
 end;
 
 procedure TAccessibilityProviderNode.PrepareChildrenForNavigation;

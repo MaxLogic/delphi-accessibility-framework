@@ -42,7 +42,65 @@ type
     [Test]
     procedure FormInstallIsScopedAndIdempotent;
     [Test]
+    [Category('AccessibilityManager,FormCaptionChangeUpdatesInstalledProviderAndRaisesNameEvents')]
     procedure FormCaptionChangeUpdatesInstalledProviderAndRaisesNameEvents;
+    [Test]
+    [Category('AccessibilityManager,RuntimePropertySynchronization')]
+    procedure RuntimeButtonCaptionPublishesNameChangeOnce;
+    [Test]
+    [Category('AccessibilityManager,RuntimePropertySynchronization')]
+    procedure RuntimeNonWindowedHintPublishesHelpTextChangeOnce;
+    [Test]
+    [Category('AccessibilityManager,RuntimePropertySynchronization,RuntimeEditTextPublishesValueChangeOnce')]
+    procedure RuntimeEditTextPublishesValueChangeOnce;
+    [Test]
+    [Category('AccessibilityManager,RuntimePropertySynchronization,RuntimeEnabledChangePublishesStateOnce')]
+    procedure RuntimeEnabledChangePublishesStateOnce;
+    [Test]
+    [Category('AccessibilityManager,RuntimePropertySynchronization,RuntimeVisibilityPublishesOffscreenOnce')]
+    procedure RuntimeVisibilityPublishesOffscreenOnce;
+    [Test]
+    [Category('AccessibilityManager,RuntimePropertySynchronization,RuntimeMovePublishesBoundingRectangleOnce')]
+    procedure RuntimeMovePublishesBoundingRectangleOnce;
+    [Test]
+    [Category('AccessibilityManager,RuntimePropertySynchronization,RuntimeSpecializedProvidersPublishChanges')]
+    procedure RuntimeSpecializedProvidersPublishChanges;
+    [Test]
+    [Category('AccessibilityManager,RuntimePropertySynchronization,RuntimeDisconnectedChildPublishesNoPropertyChanges')]
+    procedure RuntimeDisconnectedChildPublishesNoPropertyChanges;
+    [Test]
+    [Category('AccessibilityManager,RuntimePropertySynchronization,RuntimeIdleReplacementAllowsReinstall')]
+    procedure RuntimeIdleReplacementAllowsReinstall;
+    [Test]
+    [Category('AccessibilityManager,RuntimePropertySynchronization,RuntimeGenericSnapshotSkipsSyntheticGridCells')]
+    procedure RuntimeGenericSnapshotSkipsSyntheticGridCells;
+    [Test]
+    [Category('AccessibilityManager,RuntimeProviderHierarchy,RuntimeAddedControlJoinsProviderHierarchy')]
+    procedure RuntimeAddedControlJoinsProviderHierarchy;
+    [Test]
+    [Category('AccessibilityManager,RuntimeProviderHierarchy,RuntimeRemovedControlLeavesProviderHierarchy')]
+    procedure RuntimeRemovedControlLeavesProviderHierarchy;
+    [Test]
+    [Category('AccessibilityManager,RuntimeProviderHierarchy,RuntimeReparentedControlPreservesProviderIdentity')]
+    procedure RuntimeReparentedControlPreservesProviderIdentity;
+    [Test]
+    [Category('AccessibilityManager,RuntimeProviderHierarchy,RuntimeReparentedControlSurvivesOldParentRemoval')]
+    procedure RuntimeReparentedControlSurvivesOldParentRemoval;
+    [Test]
+    [Category('AccessibilityManager,RuntimeProviderHierarchy,RuntimeNestedReparentSurvivesOldAncestorRemoval')]
+    procedure RuntimeNestedReparentSurvivesOldAncestorRemoval;
+    [Test]
+    [Category('AccessibilityManager,RuntimeProviderHierarchy,RuntimeStatusBarChildSurvivesOldParentRemoval')]
+    procedure RuntimeStatusBarChildSurvivesOldParentRemoval;
+    [Test]
+    [Category('AccessibilityManager,RuntimeProviderHierarchy,RuntimeNestedRemovalAndUninstallAreSafe')]
+    procedure RuntimeNestedRemovalAndUninstallAreSafe;
+    [Test]
+    [Category('AccessibilityManager,RuntimeProviderHierarchy,RuntimeWindowedControlReaddRebindsProviderHook')]
+    procedure RuntimeWindowedControlReaddRebindsProviderHook;
+    [Test]
+    [Category('AccessibilityManager,RuntimeProviderHierarchy,RuntimeDisconnectedMappedProviderLeavesNoStaleSibling')]
+    procedure RuntimeDisconnectedMappedProviderLeavesNoStaleSibling;
     [Test]
     procedure FormInstallWithCustomRegistryUsesTmsProviderThroughWmGetObject;
     [Test]
@@ -280,10 +338,13 @@ type
     function LastPropertyChangedOldValue: OleVariant;
     function LastPropertyChangedPropertyId: PROPERTYID;
     function LastPropertyChangedProvider: IRawElementProviderSimple;
+    function LastStructureChangeProvider: IRawElementProviderSimple;
+    function LastStructureChangeType: StructureChangeType;
     function ReturnedProvider: IRawElementProviderSimple;
     function NotificationCalls: Integer;
     function PropertyChangedCalls: Integer;
     function ReturnCalls: Integer;
+    function StructureChangedCalls: Integer;
     procedure ResetClientsAreListeningCalls;
     procedure SetClientsAreListening(aValue: Boolean);
   end;
@@ -305,10 +366,13 @@ type
     fLastPropertyChangedOldValue: OleVariant;
     fLastPropertyChangedPropertyId: PROPERTYID;
     fLastPropertyChangedProvider: IRawElementProviderSimple;
+    fLastStructureChangeProvider: IRawElementProviderSimple;
+    fLastStructureChangeType: StructureChangeType;
     fNotificationCalls: Integer;
     fPropertyChangedCalls: Integer;
     fReturnedProvider: IRawElementProviderSimple;
     fReturnCalls: Integer;
+    fStructureChangedCalls: Integer;
   public
     function ClientsAreListening: Boolean;
     function ClientsAreListeningCalls: Integer;
@@ -327,6 +391,8 @@ type
     function LastPropertyChangedOldValue: OleVariant;
     function LastPropertyChangedPropertyId: PROPERTYID;
     function LastPropertyChangedProvider: IRawElementProviderSimple;
+    function LastStructureChangeProvider: IRawElementProviderSimple;
+    function LastStructureChangeType: StructureChangeType;
     function NotificationCalls: Integer;
     function PropertyChangedCalls: Integer;
     function ReturnedProvider: IRawElementProviderSimple;
@@ -340,6 +406,7 @@ type
       const aRuntimeId: TArray<Integer>): HRESULT;
     procedure ResetClientsAreListeningCalls;
     function ReturnCalls: Integer;
+    function StructureChangedCalls: Integer;
     function ReturnRawElementProvider(aHwnd: HWND; aWParam: WPARAM; aLParam: LPARAM;
       const aProvider: IRawElementProviderSimple): LRESULT;
     procedure SetClientsAreListening(aValue: Boolean);
@@ -388,6 +455,17 @@ type
   public
     procedure HandleActiveFormChange(aSender: TObject);
     property Calls: Integer read fCalls;
+  end;
+
+  TIdleProbe = class
+  private
+    fCallingPrior: Boolean;
+    fCalls: Integer;
+    fPrior: TIdleEvent;
+  public
+    procedure HandleIdle(aSender: TObject; var aDone: Boolean);
+    property Calls: Integer read fCalls;
+    property Prior: TIdleEvent read fPrior write fPrior;
   end;
 
   TChainedActiveFormChangeProbe = class
@@ -589,6 +667,20 @@ end;
 procedure TActiveFormChangeProbe.HandleActiveFormChange(aSender: TObject);
 begin
   Inc(fCalls);
+end;
+
+procedure TIdleProbe.HandleIdle(aSender: TObject; var aDone: Boolean);
+begin
+  Inc(fCalls);
+  if Assigned(fPrior) and not fCallingPrior then
+  begin
+    fCallingPrior := True;
+    try
+      fPrior(aSender, aDone);
+    finally
+      fCallingPrior := False;
+    end;
+  end;
 end;
 
 procedure TChainedActiveFormChangeProbe.HandleActiveFormChange(aSender: TObject);
@@ -1174,6 +1266,16 @@ begin
   Result := fLastPropertyChangedProvider;
 end;
 
+function TManagerTestUiaApi.LastStructureChangeProvider: IRawElementProviderSimple;
+begin
+  Result := fLastStructureChangeProvider;
+end;
+
+function TManagerTestUiaApi.LastStructureChangeType: StructureChangeType;
+begin
+  Result := fLastStructureChangeType;
+end;
+
 function TManagerTestUiaApi.NotificationCalls: Integer;
 begin
   Result := fNotificationCalls;
@@ -1223,6 +1325,9 @@ end;
 function TManagerTestUiaApi.RaiseStructureChanged(const aProvider: IRawElementProviderSimple;
   aStructureChangeType: StructureChangeType; const aRuntimeId: TArray<Integer>): HRESULT;
 begin
+  Inc(fStructureChangedCalls);
+  fLastStructureChangeProvider := aProvider;
+  fLastStructureChangeType := aStructureChangeType;
   Result := S_OK;
 end;
 
@@ -1234,6 +1339,11 @@ end;
 function TManagerTestUiaApi.ReturnCalls: Integer;
 begin
   Result := fReturnCalls;
+end;
+
+function TManagerTestUiaApi.StructureChangedCalls: Integer;
+begin
+  Result := fStructureChangedCalls;
 end;
 
 function TManagerTestUiaApi.ReturnRawElementProvider(aHwnd: HWND; aWParam: WPARAM; aLParam: LPARAM;
@@ -2175,6 +2285,7 @@ end;
 procedure TAccessibilityManagerTests.FormCaptionChangeUpdatesInstalledProviderAndRaisesNameEvents;
 var
   lApi: IManagerTestUiaApi;
+  lDone: Boolean;
   lForm: TForm;
   lProvider: IRawElementProviderSimple;
   lValue: OleVariant;
@@ -2188,7 +2299,7 @@ begin
   TAccessibilityManagerInternals.SetWinEventSink(lWinEvents); //PALOFF WARN53 test retains the concrete recorder
   lForm := TForm.Create(nil);
   try
-    lForm.Caption := 'Paused tasks';
+    lForm.Caption := '&Paused tasks';
     lForm.HandleNeeded;
     TAccessibilityManager.Install(lForm);
 
@@ -2196,7 +2307,14 @@ begin
     Assert.AreEqual('Paused tasks',
       ProviderStringProperty(FragmentFromSimple(lProvider), UIA_NamePropertyId));
 
-    lForm.Caption := 'Running tasks';
+    lForm.Caption := 'P&aused tasks';
+
+    Assert.AreEqual('Paused tasks',
+      ProviderStringProperty(FragmentFromSimple(lProvider), UIA_NamePropertyId));
+    Assert.AreEqual(0, lApi.PropertyChangedCalls);
+    Assert.AreEqual(0, lWinEvents.Calls);
+
+    lForm.Caption := '&Running tasks';
 
     Assert.AreEqual('Running tasks',
       ProviderStringProperty(FragmentFromSimple(lProvider), UIA_NamePropertyId));
@@ -2210,8 +2328,18 @@ begin
     Assert.AreEqual(lForm.Handle, lWinEvents.LastHwnd);
     Assert.AreEqual(Cardinal($FFFFFFFC), lWinEvents.LastObjectId);
     Assert.AreEqual(Cardinal(CHILDID_SELF), lWinEvents.LastChildId);
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.AreEqual(1, lApi.PropertyChangedCalls);
+    Assert.AreEqual(1, lWinEvents.Calls);
 
-    lForm.Caption := 'Running tasks';
+    lForm.Caption := '&Running tasks';
+    Assert.AreEqual(1, lApi.PropertyChangedCalls);
+    Assert.AreEqual(1, lWinEvents.Calls);
+
+    lForm.Caption := 'R&unning tasks';
+    Assert.AreEqual('Running tasks',
+      ProviderStringProperty(FragmentFromSimple(lProvider), UIA_NamePropertyId));
     Assert.AreEqual(1, lApi.PropertyChangedCalls);
     Assert.AreEqual(1, lWinEvents.Calls);
 
@@ -2221,6 +2349,1188 @@ begin
     lForm.Caption := 'Stopped tasks';
     Assert.AreEqual(1, lApi.PropertyChangedCalls);
     Assert.AreEqual(1, lWinEvents.Calls);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.RuntimeButtonCaptionPublishesNameChangeOnce;
+var
+  lApi: IManagerTestUiaApi;
+  lButton: TButton;
+  lButtonProvider: IRawElementProviderSimple;
+  lDone: Boolean;
+  lForm: TForm;
+  lRootProvider: IRawElementProviderSimple;
+  lWinEvents: TWinEventRecorder;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lWinEvents := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents); //PALOFF WARN53 test retains the concrete recorder
+  lForm := TForm.Create(nil);
+  try
+    lButton := TButton.Create(lForm);
+    lButton.Parent := lForm;
+    lButton.Caption := 'Initial action';
+    lForm.HandleNeeded;
+    lButton.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider));
+    lButtonProvider := SimpleProvider(FirstChildFragment(FragmentFromSimple(lRootProvider)));
+
+    lButton.Caption := 'Updated action';
+    if Assigned(Application.OnIdle) then
+    begin
+      lDone := True;
+      Application.OnIdle(Application, lDone);
+    end;
+
+    Assert.AreEqual('Updated action',
+      ProviderStringProperty(FragmentFromSimple(lButtonProvider), UIA_NamePropertyId));
+    Assert.AreEqual(1, lApi.PropertyChangedCalls);
+    Assert.AreEqual(UIA_NamePropertyId, lApi.LastPropertyChangedPropertyId);
+    Assert.AreEqual('Initial action', string(lApi.LastPropertyChangedOldValue));
+    Assert.AreEqual('Updated action', string(lApi.LastPropertyChangedNewValue));
+    Assert.IsTrue(lApi.LastPropertyChangedProvider = lButtonProvider);
+    Assert.AreEqual(1, lWinEvents.Calls);
+    Assert.AreEqual(EVENT_OBJECT_NAMECHANGE, lWinEvents.LastEvent);
+    Assert.AreEqual(lButton.Handle, lWinEvents.LastHwnd);
+
+    lButton.Caption := 'Updated action';
+    if Assigned(Application.OnIdle) then
+    begin
+      lDone := True;
+      Application.OnIdle(Application, lDone);
+    end;
+    Assert.AreEqual(1, lApi.PropertyChangedCalls);
+    Assert.AreEqual(1, lWinEvents.Calls);
+
+    TAccessibilityManager.Uninstall;
+    lButton.Caption := 'After uninstall';
+    if Assigned(Application.OnIdle) then
+    begin
+      lDone := True;
+      Application.OnIdle(Application, lDone);
+    end;
+    Assert.AreEqual(1, lApi.PropertyChangedCalls);
+    Assert.AreEqual(1, lWinEvents.Calls);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.RuntimeNonWindowedHintPublishesHelpTextChangeOnce;
+var
+  lApi: IManagerTestUiaApi;
+  lDone: Boolean;
+  lForm: TForm;
+  lLabel: TLabel;
+  lLabelProvider: IRawElementProviderSimple;
+  lRootProvider: IRawElementProviderSimple;
+  lWinEvents: TWinEventRecorder;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lWinEvents := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents); //PALOFF WARN53 test retains the concrete recorder
+  lForm := TForm.Create(nil);
+  try
+    lLabel := TLabel.Create(lForm);
+    lLabel.Parent := lForm;
+    lLabel.Caption := 'Status';
+    lLabel.Hint := 'Initial status help';
+    lForm.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider));
+    lLabelProvider := SimpleProvider(FirstChildFragment(FragmentFromSimple(lRootProvider)));
+
+    lLabel.Hint := 'Updated status help';
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+
+    Assert.AreEqual('Updated status help',
+      ProviderStringProperty(FragmentFromSimple(lLabelProvider), UIA_HelpTextPropertyId));
+    Assert.AreEqual(1, lApi.PropertyChangedCalls);
+    Assert.AreEqual(UIA_HelpTextPropertyId, lApi.LastPropertyChangedPropertyId);
+    Assert.AreEqual('Initial status help', string(lApi.LastPropertyChangedOldValue));
+    Assert.AreEqual('Updated status help', string(lApi.LastPropertyChangedNewValue));
+    Assert.IsTrue(lApi.LastPropertyChangedProvider = lLabelProvider);
+    Assert.AreEqual(1, lWinEvents.Calls);
+    Assert.AreEqual(EVENT_OBJECT_DESCRIPTIONCHANGE, lWinEvents.LastEvent);
+    Assert.AreEqual(lForm.Handle, lWinEvents.LastHwnd);
+
+    lLabel.Hint := 'Updated status help';
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.AreEqual(1, lApi.PropertyChangedCalls);
+    Assert.AreEqual(1, lWinEvents.Calls);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.RuntimeEditTextPublishesValueChangeOnce;
+var
+  lApi: IManagerTestUiaApi;
+  lDone: Boolean;
+  lEdit: TEdit;
+  lEditProvider: IRawElementProviderSimple;
+  lForm: TForm;
+  lLabel: TLabel;
+  lRootProvider: IRawElementProviderSimple;
+  lValue: WideString;
+  lValuePattern: IValueProvider;
+  lWinEvents: TWinEventRecorder;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lWinEvents := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents); //PALOFF WARN53 test retains the concrete recorder
+  lForm := TForm.Create(nil);
+  try
+    lEdit := TEdit.Create(lForm);
+    lEdit.Parent := lForm;
+    lEdit.Text := 'Initial value';
+    lLabel := TLabel.Create(lForm);
+    lLabel.Parent := lForm;
+    lLabel.Caption := 'Task name';
+    lLabel.FocusControl := lEdit;
+    lForm.HandleNeeded;
+    lEdit.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider));
+    lEditProvider := SimpleProvider(FirstChildFragment(FragmentFromSimple(lRootProvider)));
+    Assert.IsTrue(Supports(ProviderPattern(FragmentFromSimple(lEditProvider), UIA_ValuePatternId),
+      IValueProvider, lValuePattern));
+
+    lEdit.Text := 'Updated value';
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+
+    Assert.AreEqual(S_OK, lValuePattern.Get_Value(lValue));
+    Assert.AreEqual('Updated value', string(lValue));
+    Assert.AreEqual(1, lApi.PropertyChangedCalls);
+    Assert.AreEqual(UIA_ValueValuePropertyId, lApi.LastPropertyChangedPropertyId);
+    Assert.AreEqual('Initial value', string(lApi.LastPropertyChangedOldValue));
+    Assert.AreEqual('Updated value', string(lApi.LastPropertyChangedNewValue));
+    Assert.IsTrue(lApi.LastPropertyChangedProvider = lEditProvider);
+    Assert.AreEqual(1, lWinEvents.Calls);
+    Assert.AreEqual(EVENT_OBJECT_VALUECHANGE, lWinEvents.LastEvent);
+    Assert.AreEqual(lEdit.Handle, lWinEvents.LastHwnd);
+
+    lEdit.Text := 'Updated value';
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.AreEqual(1, lApi.PropertyChangedCalls);
+    Assert.AreEqual(1, lWinEvents.Calls);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.RuntimeEnabledChangePublishesStateOnce;
+var
+  lApi: IManagerTestUiaApi;
+  lButton: TButton;
+  lButtonProvider: IRawElementProviderSimple;
+  lDone: Boolean;
+  lForm: TForm;
+  lRootProvider: IRawElementProviderSimple;
+  lWinEvents: TWinEventRecorder;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lWinEvents := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents); //PALOFF WARN53 test retains the concrete recorder
+  lForm := TForm.Create(nil);
+  try
+    lButton := TButton.Create(lForm);
+    lButton.Parent := lForm;
+    lButton.Caption := 'Run';
+    lForm.HandleNeeded;
+    lButton.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider));
+    lButtonProvider := SimpleProvider(FirstChildFragment(FragmentFromSimple(lRootProvider)));
+    Assert.AreNotEqual(0,
+      ProviderIntProperty(FragmentFromSimple(lButtonProvider), UIA_IsEnabledPropertyId));
+
+    lButton.Enabled := False;
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+
+    Assert.AreEqual(0,
+      ProviderIntProperty(FragmentFromSimple(lButtonProvider), UIA_IsEnabledPropertyId));
+    Assert.AreEqual(1, lApi.PropertyChangedCalls);
+    Assert.AreEqual(UIA_IsEnabledPropertyId, lApi.LastPropertyChangedPropertyId);
+    Assert.IsTrue(Boolean(lApi.LastPropertyChangedOldValue));
+    Assert.IsFalse(Boolean(lApi.LastPropertyChangedNewValue));
+    Assert.IsTrue(lApi.LastPropertyChangedProvider = lButtonProvider);
+    Assert.AreEqual(1, lWinEvents.Calls);
+    Assert.AreEqual(EVENT_OBJECT_STATECHANGE, lWinEvents.LastEvent);
+    Assert.AreEqual(lButton.Handle, lWinEvents.LastHwnd);
+
+    lButton.Enabled := False;
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.AreEqual(1, lApi.PropertyChangedCalls);
+    Assert.AreEqual(1, lWinEvents.Calls);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.RuntimeVisibilityPublishesOffscreenOnce;
+var
+  lApi: IManagerTestUiaApi;
+  lDone: Boolean;
+  lForm: TForm;
+  lLabel: TLabel;
+  lLabelProvider: IRawElementProviderSimple;
+  lRootProvider: IRawElementProviderSimple;
+  lWinEvents: TWinEventRecorder;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lWinEvents := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents); //PALOFF WARN53 test retains the concrete recorder
+  lForm := TForm.Create(nil);
+  try
+    lLabel := TLabel.Create(lForm);
+    lLabel.Parent := lForm;
+    lLabel.Caption := 'Current status';
+    lForm.Show;
+    Application.ProcessMessages;
+    TAccessibilityManager.Install(lForm);
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider));
+    lLabelProvider := SimpleProvider(FirstChildFragment(FragmentFromSimple(lRootProvider)));
+    Assert.AreEqual(0,
+      ProviderIntProperty(FragmentFromSimple(lLabelProvider), UIA_IsOffscreenPropertyId));
+
+    lLabel.Visible := False;
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+
+    Assert.AreNotEqual(0,
+      ProviderIntProperty(FragmentFromSimple(lLabelProvider), UIA_IsOffscreenPropertyId));
+    Assert.AreEqual(2, lApi.PropertyChangedCalls);
+    Assert.AreEqual(UIA_IsOffscreenPropertyId, lApi.LastPropertyChangedPropertyId);
+    Assert.IsFalse(Boolean(lApi.LastPropertyChangedOldValue));
+    Assert.IsTrue(Boolean(lApi.LastPropertyChangedNewValue));
+    Assert.IsTrue(lApi.LastPropertyChangedProvider = lLabelProvider);
+    Assert.AreEqual(2, lWinEvents.Calls);
+    Assert.AreEqual(EVENT_OBJECT_STATECHANGE, lWinEvents.LastEvent);
+    Assert.AreEqual(lForm.Handle, lWinEvents.LastHwnd);
+
+    lLabel.Visible := False;
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.AreEqual(2, lApi.PropertyChangedCalls);
+    Assert.AreEqual(2, lWinEvents.Calls);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.RuntimeMovePublishesBoundingRectangleOnce;
+var
+  lApi: IManagerTestUiaApi;
+  lDone: Boolean;
+  lForm: TForm;
+  lLabel: TLabel;
+  lLabelFragment: IRawElementProviderFragment;
+  lNewRect: UiaRect;
+  lNewValue: OleVariant;
+  lOldRect: UiaRect;
+  lOldValue: OleVariant;
+  lRootProvider: IRawElementProviderSimple;
+  lWinEvents: TWinEventRecorder;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lWinEvents := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents); //PALOFF WARN53 test retains the concrete recorder
+  lForm := TForm.Create(nil);
+  try
+    lLabel := TLabel.Create(lForm);
+    lLabel.Parent := lForm;
+    lLabel.Caption := 'Current status';
+    lLabel.SetBounds(10, 12, 100, 20);
+    lForm.Show;
+    Application.ProcessMessages;
+    TAccessibilityManager.Install(lForm);
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider));
+    lLabelFragment := FirstChildFragment(FragmentFromSimple(lRootProvider));
+    Assert.AreEqual(S_OK, lLabelFragment.Get_BoundingRectangle(lOldRect));
+
+    lLabel.Left := lLabel.Left + 30;
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+
+    Assert.AreEqual(S_OK, lLabelFragment.Get_BoundingRectangle(lNewRect));
+    Assert.AreEqual(Double(lOldRect.Left + 30), Double(lNewRect.Left));
+    Assert.AreEqual(1, lApi.PropertyChangedCalls);
+    Assert.AreEqual(UIA_BoundingRectanglePropertyId, lApi.LastPropertyChangedPropertyId);
+    lOldValue := lApi.LastPropertyChangedOldValue;
+    lNewValue := lApi.LastPropertyChangedNewValue;
+    Assert.IsTrue(VarIsArray(lOldValue));
+    Assert.IsTrue(VarIsArray(lNewValue));
+    Assert.AreEqual(lOldRect.Left, Double(lOldValue[0]));
+    Assert.AreEqual(lOldRect.Top, Double(lOldValue[1]));
+    Assert.AreEqual(lOldRect.Width, Double(lOldValue[2]));
+    Assert.AreEqual(lOldRect.Height, Double(lOldValue[3]));
+    Assert.AreEqual(lNewRect.Left, Double(lNewValue[0]));
+    Assert.AreEqual(lNewRect.Top, Double(lNewValue[1]));
+    Assert.AreEqual(lNewRect.Width, Double(lNewValue[2]));
+    Assert.AreEqual(lNewRect.Height, Double(lNewValue[3]));
+    Assert.AreEqual(1, lWinEvents.Calls);
+    Assert.AreEqual(EVENT_OBJECT_LOCATIONCHANGE, lWinEvents.LastEvent);
+    Assert.AreEqual(lForm.Handle, lWinEvents.LastHwnd);
+
+    lLabel.Left := lLabel.Left;
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.AreEqual(1, lApi.PropertyChangedCalls);
+    Assert.AreEqual(1, lWinEvents.Calls);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.RuntimeSpecializedProvidersPublishChanges;
+var
+  lAdvGrid: TAdvStringGrid;
+  lAdvGridProvider: IRawElementProviderSimple;
+  lApi: IManagerTestUiaApi;
+  lDone: Boolean;
+  lForm: TForm;
+  lGrid: TStringGrid;
+  lGridProvider: IRawElementProviderSimple;
+  lRootFragment: IRawElementProviderFragment;
+  lRootProvider: IRawElementProviderSimple;
+  lStatusBar: TStatusBar;
+  lStatusProvider: IRawElementProviderSimple;
+  lWinEvents: TWinEventRecorder;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lWinEvents := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents); //PALOFF WARN53 test retains the concrete recorder
+  lForm := TForm.Create(nil);
+  try
+    lForm.Caption := 'Runtime properties';
+    lForm.Hint := 'Form|Initial form help';
+    lStatusBar := TStatusBar.Create(lForm);
+    lStatusBar.Parent := lForm;
+    lStatusBar.SimpleText := 'Ready';
+    lStatusBar.Hint := 'Status|Initial status help';
+    lGrid := TStringGrid.Create(lForm);
+    lGrid.Parent := lForm;
+    lGrid.Hint := 'Orders|Initial grid help';
+    lAdvGrid := TAdvStringGrid.Create(lForm);
+    lAdvGrid.Parent := lForm;
+    lAdvGrid.Hint := 'Advanced orders|Initial advanced grid help';
+    lForm.HandleNeeded;
+    lStatusBar.HandleNeeded;
+    lGrid.HandleNeeded;
+    lAdvGrid.HandleNeeded;
+    TAccessibilityManager.Install(lForm, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider));
+    lRootFragment := FragmentFromSimple(lRootProvider);
+    lStatusProvider := SimpleProvider(FirstChildFragment(lRootFragment));
+    lGridProvider := SimpleProvider(NavigateFragment(FragmentFromSimple(lStatusProvider),
+      NavigateDirection_NextSibling));
+    lAdvGridProvider := SimpleProvider(NavigateFragment(FragmentFromSimple(lGridProvider),
+      NavigateDirection_NextSibling));
+    Assert.AreEqual('Ready', ProviderStringProperty(FragmentFromSimple(lStatusProvider),
+      UIA_NamePropertyId));
+    Assert.AreEqual('Orders', ProviderStringProperty(FragmentFromSimple(lGridProvider),
+      UIA_NamePropertyId));
+    Assert.AreEqual('Advanced orders', ProviderStringProperty(FragmentFromSimple(lAdvGridProvider),
+      UIA_NamePropertyId));
+
+    lForm.Hint := 'Form|Updated form help';
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.AreEqual(1, lApi.PropertyChangedCalls);
+    Assert.AreEqual(UIA_HelpTextPropertyId, lApi.LastPropertyChangedPropertyId);
+    Assert.AreEqual('Initial form help', string(lApi.LastPropertyChangedOldValue));
+    Assert.AreEqual('Updated form help', string(lApi.LastPropertyChangedNewValue));
+    Assert.IsTrue(lApi.LastPropertyChangedProvider = lRootProvider);
+    Assert.AreEqual(EVENT_OBJECT_DESCRIPTIONCHANGE, lWinEvents.LastEvent);
+    Assert.AreEqual(lForm.Handle, lWinEvents.LastHwnd);
+
+    lStatusBar.Hint := 'Status|Updated status help';
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.AreEqual(2, lApi.PropertyChangedCalls);
+    Assert.AreEqual(UIA_HelpTextPropertyId, lApi.LastPropertyChangedPropertyId);
+    Assert.IsTrue(lApi.LastPropertyChangedProvider = lStatusProvider);
+    Assert.AreEqual(EVENT_OBJECT_DESCRIPTIONCHANGE, lWinEvents.LastEvent);
+    Assert.AreEqual(lStatusBar.Handle, lWinEvents.LastHwnd);
+
+    lGrid.Hint := 'Orders|Updated grid help';
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.AreEqual(3, lApi.PropertyChangedCalls);
+    Assert.AreEqual(UIA_HelpTextPropertyId, lApi.LastPropertyChangedPropertyId);
+    Assert.IsTrue(lApi.LastPropertyChangedProvider = lGridProvider);
+    Assert.AreEqual(EVENT_OBJECT_DESCRIPTIONCHANGE, lWinEvents.LastEvent);
+    Assert.AreEqual(lGrid.Handle, lWinEvents.LastHwnd);
+
+    lAdvGrid.Hint := 'Advanced orders|Updated advanced grid help';
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.AreEqual(4, lApi.PropertyChangedCalls);
+    Assert.AreEqual(UIA_HelpTextPropertyId, lApi.LastPropertyChangedPropertyId);
+    Assert.IsTrue(lApi.LastPropertyChangedProvider = lAdvGridProvider);
+    Assert.AreEqual(EVENT_OBJECT_DESCRIPTIONCHANGE, lWinEvents.LastEvent);
+    Assert.AreEqual(lAdvGrid.Handle, lWinEvents.LastHwnd);
+
+    lGrid.Hint := 'Current orders|Updated grid help';
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.AreEqual(5, lApi.PropertyChangedCalls);
+    Assert.AreEqual(UIA_NamePropertyId, lApi.LastPropertyChangedPropertyId);
+    Assert.AreEqual('Orders', string(lApi.LastPropertyChangedOldValue));
+    Assert.AreEqual('Current orders', string(lApi.LastPropertyChangedNewValue));
+    Assert.IsTrue(lApi.LastPropertyChangedProvider = lGridProvider);
+    Assert.AreEqual(EVENT_OBJECT_NAMECHANGE, lWinEvents.LastEvent);
+    Assert.AreEqual(lGrid.Handle, lWinEvents.LastHwnd);
+
+    lAdvGrid.Hint := 'Current advanced orders|Updated advanced grid help';
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.AreEqual(6, lApi.PropertyChangedCalls);
+    Assert.AreEqual(UIA_NamePropertyId, lApi.LastPropertyChangedPropertyId);
+    Assert.AreEqual('Advanced orders', string(lApi.LastPropertyChangedOldValue));
+    Assert.AreEqual('Current advanced orders', string(lApi.LastPropertyChangedNewValue));
+    Assert.IsTrue(lApi.LastPropertyChangedProvider = lAdvGridProvider);
+    Assert.AreEqual(EVENT_OBJECT_NAMECHANGE, lWinEvents.LastEvent);
+    Assert.AreEqual(lAdvGrid.Handle, lWinEvents.LastHwnd);
+
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.AreEqual(6, lApi.PropertyChangedCalls);
+    Assert.AreEqual(6, lWinEvents.Calls);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.RuntimeDisconnectedChildPublishesNoPropertyChanges;
+var
+  lApi: IManagerTestUiaApi;
+  lButton: TButton;
+  lButtonProvider: IRawElementProviderSimple;
+  lDone: Boolean;
+  lForm: TForm;
+  lRootProvider: IRawElementProviderSimple;
+  lValue: OleVariant;
+  lWinEvents: TWinEventRecorder;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lWinEvents := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents); //PALOFF WARN53 test retains the concrete recorder
+  lForm := TForm.Create(nil);
+  try
+    lButton := TButton.Create(lForm);
+    lButton.Parent := lForm;
+    lButton.Caption := 'Temporary action';
+    lForm.HandleNeeded;
+    lButton.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider));
+    lButtonProvider := SimpleProvider(FirstChildFragment(FragmentFromSimple(lRootProvider)));
+
+    lButton.Free;
+    Assert.AreEqual(UIA_E_ELEMENTNOTAVAILABLE,
+      lButtonProvider.GetPropertyValue(UIA_NamePropertyId, lValue));
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+
+    Assert.AreEqual(0, lApi.PropertyChangedCalls);
+    Assert.AreEqual(1, lApi.StructureChangedCalls);
+    Assert.AreEqual(StructureChangeType_ChildrenInvalidated, lApi.LastStructureChangeType);
+    Assert.AreEqual(1, lWinEvents.Calls);
+    Assert.AreEqual(EVENT_OBJECT_REORDER, lWinEvents.LastEvent);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.RuntimeIdleReplacementAllowsReinstall;
+var
+  lApi: IManagerTestUiaApi;
+  lButton: TButton;
+  lButtonProvider: IRawElementProviderSimple;
+  lDone: Boolean;
+  lFirstForm: TForm;
+  lOriginalIdle: TIdleEvent;
+  lProbe: TIdleProbe;
+  lRootProvider: IRawElementProviderSimple;
+  lSecondForm: TForm;
+begin
+  ResetManager;
+  lOriginalIdle := Application.OnIdle;
+  lProbe := TIdleProbe.Create;
+  lFirstForm := TForm.Create(nil);
+  lSecondForm := nil;
+  try
+    TAccessibilityManager.Install(lFirstForm);
+    lProbe.Prior := Application.OnIdle;
+    Application.OnIdle := lProbe.HandleIdle;
+    TAccessibilityManager.Uninstall;
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.AreEqual(1, lProbe.Calls, 'External idle handler was not retained after uninstall.');
+
+    lApi := TManagerTestUiaApi.Create;
+    lApi.SetClientsAreListening(True);
+    TAccessibilityManagerInternals.SetUiaApi(lApi);
+    lSecondForm := TForm.Create(nil);
+    lButton := TButton.Create(lSecondForm);
+    lButton.Parent := lSecondForm;
+    lButton.Caption := 'Initial action';
+    lSecondForm.HandleNeeded;
+    lButton.HandleNeeded;
+    TAccessibilityManager.Install(lSecondForm);
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lSecondForm,
+      lRootProvider));
+    lButtonProvider := SimpleProvider(FirstChildFragment(FragmentFromSimple(lRootProvider)));
+
+    lButton.Caption := 'Updated action';
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+
+    Assert.AreEqual(2, lProbe.Calls, 'External idle handler was not chained after reinstall.');
+    Assert.AreEqual(1, lApi.PropertyChangedCalls,
+      'Runtime synchronization was not reattached after reinstall.');
+    Assert.AreEqual(UIA_NamePropertyId, lApi.LastPropertyChangedPropertyId);
+    Assert.IsTrue(lApi.LastPropertyChangedProvider = lButtonProvider);
+
+    TAccessibilityManager.Uninstall;
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.AreEqual(3, lProbe.Calls, 'External idle handler was not restored after final uninstall.');
+  finally
+    ResetManager;
+    Application.OnIdle := lOriginalIdle;
+    lSecondForm.Free;
+    lFirstForm.Free;
+    lProbe.Free;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.RuntimeGenericSnapshotSkipsSyntheticGridCells;
+var
+  lApi: IManagerTestUiaApi;
+  lDone: Boolean;
+  lForm: TForm;
+  lGrid: TStringGrid;
+  lWinEvents: TWinEventRecorder;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lWinEvents := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents); //PALOFF WARN53 test retains the concrete recorder
+  lForm := TForm.Create(nil);
+  try
+    lGrid := TStringGrid.Create(lForm);
+    lGrid.Parent := lForm;
+    lGrid.ColCount := 2;
+    lGrid.RowCount := 2;
+    lGrid.Cells[0, 0] := 'Initial cell';
+    lForm.HandleNeeded;
+    lGrid.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+
+    lGrid.Cells[0, 0] := 'Updated cell';
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+
+    Assert.AreEqual(0, lApi.PropertyChangedCalls,
+      'T-131 owns synthetic grid-cell synchronization and cache lifecycle.');
+    Assert.AreEqual(0, lWinEvents.Calls);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.RuntimeAddedControlJoinsProviderHierarchy;
+var
+  lAddedProvider: IRawElementProviderSimple;
+  lApi: IManagerTestUiaApi;
+  lDone: Boolean;
+  lFirstChild: IRawElementProviderFragment;
+  lForm: TForm;
+  lHit: IRawElementProviderFragment;
+  lLabel: TLabel;
+  lLookup: IAccessibilityVclProviderLookup;
+  lRootProvider: IRawElementProviderSimple;
+  lRoot: IRawElementProviderFragmentRoot;
+  lPoint: TPoint;
+  lWinEvents: TWinEventRecorder;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lWinEvents := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents); //PALOFF WARN53 test retains the concrete recorder
+  lForm := TForm.Create(nil);
+  try
+    lForm.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider));
+    Assert.IsTrue(Supports(lRootProvider, IAccessibilityVclProviderLookup, lLookup));
+
+    lLabel := TLabel.Create(lForm);
+    lLabel.Caption := 'Runtime status';
+    lLabel.Parent := lForm;
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lLabel, lAddedProvider));
+    Assert.AreEqual('Runtime status',
+      ProviderStringProperty(FragmentFromSimple(lAddedProvider), UIA_NamePropertyId));
+    lFirstChild := FirstChildFragment(FragmentFromSimple(lRootProvider));
+    Assert.IsTrue(SimpleProvider(lFirstChild) = lAddedProvider);
+    Assert.IsTrue(Supports(lRootProvider, IRawElementProviderFragmentRoot, lRoot));
+    lPoint := ControlScreenCenter(lLabel);
+    Assert.AreEqual(S_OK, lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit));
+    Assert.IsTrue(SimpleProvider(lHit) = lAddedProvider);
+    Assert.AreEqual(1, lApi.StructureChangedCalls);
+    Assert.AreEqual(StructureChangeType_ChildrenInvalidated, lApi.LastStructureChangeType);
+    Assert.IsTrue(lApi.LastStructureChangeProvider = lRootProvider);
+    Assert.AreEqual(1, lWinEvents.Calls);
+    Assert.AreEqual(EVENT_OBJECT_REORDER, lWinEvents.LastEvent);
+    Assert.AreEqual(lForm.Handle, lWinEvents.LastHwnd);
+
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.AreEqual(1, lApi.StructureChangedCalls);
+    Assert.AreEqual(1, lWinEvents.Calls);
+
+    TAccessibilityManager.Uninstall;
+    lLabel.Free;
+    lDone := True;
+    if Assigned(Application.OnIdle) then
+    begin
+      Application.OnIdle(Application, lDone);
+    end;
+    Assert.AreEqual(1, lApi.StructureChangedCalls);
+    Assert.AreEqual(1, lWinEvents.Calls);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.RuntimeRemovedControlLeavesProviderHierarchy;
+var
+  lApi: IManagerTestUiaApi;
+  lCurrentProvider: IRawElementProviderSimple;
+  lDone: Boolean;
+  lFirstChild: IRawElementProviderFragment;
+  lForm: TForm;
+  lLookup: IAccessibilityVclProviderLookup;
+  lRemovedLabel: TLabel;
+  lRemovedNode: IAccessibilityProviderNode;
+  lRemovedProvider: IRawElementProviderSimple;
+  lRootProvider: IRawElementProviderSimple;
+  lSiblingLabel: TLabel;
+  lSiblingProvider: IRawElementProviderSimple;
+  lWinEvents: TWinEventRecorder;
+  lValue: OleVariant;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lWinEvents := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents); //PALOFF WARN53 test retains the concrete recorder
+  lForm := TForm.Create(nil);
+  try
+    lRemovedLabel := TLabel.Create(lForm);
+    lRemovedLabel.Caption := 'Temporary status';
+    lRemovedLabel.Parent := lForm;
+    lSiblingLabel := TLabel.Create(lForm);
+    lSiblingLabel.Caption := 'Persistent status';
+    lSiblingLabel.Parent := lForm;
+    lForm.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider));
+    Assert.IsTrue(Supports(lRootProvider, IAccessibilityVclProviderLookup, lLookup));
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lRemovedLabel, lRemovedProvider));
+    Assert.IsTrue(Supports(lRemovedProvider, IAccessibilityProviderNode, lRemovedNode));
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lSiblingLabel, lSiblingProvider));
+
+    lRemovedLabel.Parent := nil;
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+
+    Assert.IsFalse(lLookup.TryFindProviderForControl(lRemovedLabel, lRemovedProvider));
+    Assert.IsTrue(lRemovedNode.IsDisconnected);
+    Assert.AreEqual(UIA_E_ELEMENTNOTAVAILABLE,
+      lRemovedNode.RawElementProvider.GetPropertyValue(UIA_NamePropertyId, lValue));
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lSiblingLabel, lCurrentProvider));
+    Assert.IsTrue(lCurrentProvider = lSiblingProvider);
+    lFirstChild := FirstChildFragment(FragmentFromSimple(lRootProvider));
+    Assert.IsTrue(SimpleProvider(lFirstChild) = lSiblingProvider);
+    Assert.AreEqual(1, lApi.StructureChangedCalls);
+    Assert.AreEqual(1, lWinEvents.Calls);
+    lRemovedLabel.Free;
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.RuntimeReparentedControlPreservesProviderIdentity;
+var
+  lApi: IManagerTestUiaApi;
+  lCurrentProvider: IRawElementProviderSimple;
+  lDone: Boolean;
+  lExistingLabel: TLabel;
+  lExistingProvider: IRawElementProviderSimple;
+  lFirstTargetChild: IRawElementProviderFragment;
+  lForm: TForm;
+  lGroupA: TGroupBox;
+  lGroupAProvider: IRawElementProviderSimple;
+  lGroupB: TGroupBox;
+  lGroupBProvider: IRawElementProviderSimple;
+  lLabel: TLabel;
+  lLabelFragment: IRawElementProviderFragment;
+  lLabelProvider: IRawElementProviderSimple;
+  lLookup: IAccessibilityVclProviderLookup;
+  lOldFirstChild: IRawElementProviderFragment;
+  lParentFragment: IRawElementProviderFragment;
+  lSecondTargetChild: IRawElementProviderFragment;
+  lRootProvider: IRawElementProviderSimple;
+  lWinEvents: TWinEventRecorder;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lWinEvents := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents); //PALOFF WARN53 test retains the concrete recorder
+  lForm := TForm.Create(nil);
+  try
+    lGroupA := TGroupBox.Create(lForm);
+    lGroupA.Caption := 'First group';
+    lGroupA.Parent := lForm;
+    lGroupB := TGroupBox.Create(lForm);
+    lGroupB.Caption := 'Second group';
+    lGroupB.Parent := lForm;
+    lLabel := TLabel.Create(lForm);
+    lLabel.Caption := 'Movable status';
+    lLabel.Parent := lGroupA;
+    lExistingLabel := TLabel.Create(lForm);
+    lExistingLabel.Caption := 'Existing target status';
+    lExistingLabel.Parent := lGroupB;
+    lForm.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider), 'root lookup');
+    Assert.IsTrue(Supports(lRootProvider, IAccessibilityVclProviderLookup, lLookup), 'lookup interface');
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lGroupA, lGroupAProvider), 'first group provider');
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lGroupB, lGroupBProvider), 'second group provider');
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lLabel, lLabelProvider), 'label provider');
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lExistingLabel, lExistingProvider), 'existing target provider');
+
+    lLabel.Parent := lGroupB;
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lLabel, lCurrentProvider), 'label remains in lookup');
+    Assert.IsTrue(lCurrentProvider = lLabelProvider, 'label identity');
+    Assert.IsTrue(Supports(lLabelProvider, IRawElementProviderFragment, lLabelFragment), 'label fragment');
+    Assert.AreEqual(S_OK, lLabelFragment.Navigate(NavigateDirection_Parent, lParentFragment));
+    Assert.IsTrue(SimpleProvider(lParentFragment) = lGroupBProvider, 'new provider parent');
+    Assert.IsFalse(SimpleProvider(lParentFragment) = lGroupAProvider);
+    lFirstTargetChild := FirstChildFragment(FragmentFromSimple(lGroupBProvider));
+    Assert.IsTrue(SimpleProvider(lFirstTargetChild) = lLabelProvider, 'first target child follows scan order');
+    lSecondTargetChild := NavigateFragment(lFirstTargetChild, NavigateDirection_NextSibling);
+    Assert.IsTrue(SimpleProvider(lSecondTargetChild) = lExistingProvider, 'second target child follows scan order');
+    Assert.AreEqual(S_OK, FragmentFromSimple(lGroupAProvider).Navigate(
+      NavigateDirection_FirstChild, lOldFirstChild));
+    Assert.IsNull(lOldFirstChild);
+    Assert.AreEqual(1, lApi.StructureChangedCalls);
+    Assert.AreEqual(1, lWinEvents.Calls);
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.AreEqual(1, lApi.StructureChangedCalls);
+    Assert.AreEqual(1, lWinEvents.Calls);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.RuntimeReparentedControlSurvivesOldParentRemoval;
+var
+  lApi: IManagerTestUiaApi;
+  lCurrentProvider: IRawElementProviderSimple;
+  lDone: Boolean;
+  lForm: TForm;
+  lGroupA: TGroupBox;
+  lGroupB: TGroupBox;
+  lGroupBProvider: IRawElementProviderSimple;
+  lLabel: TLabel;
+  lLabelFragment: IRawElementProviderFragment;
+  lLabelProvider: IRawElementProviderSimple;
+  lLookup: IAccessibilityVclProviderLookup;
+  lParentFragment: IRawElementProviderFragment;
+  lRootProvider: IRawElementProviderSimple;
+  lWinEvents: TWinEventRecorder;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lWinEvents := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents); //PALOFF WARN53 test retains the concrete recorder
+  lForm := TForm.Create(nil);
+  try
+    lGroupA := TGroupBox.Create(lForm);
+    lGroupA.Caption := 'Temporary group';
+    lGroupA.Parent := lForm;
+    lGroupB := TGroupBox.Create(lForm);
+    lGroupB.Caption := 'Persistent group';
+    lGroupB.Parent := lForm;
+    lLabel := TLabel.Create(lForm);
+    lLabel.Caption := 'Surviving status';
+    lLabel.Parent := lGroupA;
+    lForm.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider));
+    Assert.IsTrue(Supports(lRootProvider, IAccessibilityVclProviderLookup, lLookup));
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lGroupB, lGroupBProvider));
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lLabel, lLabelProvider));
+
+    lLabel.Parent := lGroupB;
+    lGroupA.Free;
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lLabel, lCurrentProvider));
+    Assert.IsTrue(lCurrentProvider = lLabelProvider, 'reparented provider identity');
+    Assert.IsTrue(Supports(lLabelProvider, IRawElementProviderFragment, lLabelFragment));
+    Assert.AreEqual(S_OK, lLabelFragment.Navigate(NavigateDirection_Parent, lParentFragment));
+    Assert.IsTrue(SimpleProvider(lParentFragment) = lGroupBProvider);
+    Assert.AreEqual(1, lApi.StructureChangedCalls);
+    Assert.AreEqual(1, lWinEvents.Calls);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.RuntimeNestedReparentSurvivesOldAncestorRemoval;
+var
+  lApi: IManagerTestUiaApi;
+  lCurrentProvider: IRawElementProviderSimple;
+  lDone: Boolean;
+  lForm: TForm;
+  lGroupA: TGroupBox;
+  lGroupB: TGroupBox;
+  lLabel: TLabel;
+  lLabelProvider: IRawElementProviderSimple;
+  lLookup: IAccessibilityVclProviderLookup;
+  lPanel: TPanel;
+  lRootProvider: IRawElementProviderSimple;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lGroupA := TGroupBox.Create(lForm);
+    lGroupA.Caption := 'Temporary ancestor';
+    lGroupA.Parent := lForm;
+    lGroupB := TGroupBox.Create(lForm);
+    lGroupB.Caption := 'Persistent group';
+    lGroupB.Parent := lForm;
+    lPanel := TPanel.Create(lForm);
+    lPanel.Caption := 'Nested panel';
+    lPanel.Parent := lGroupA;
+    lLabel := TLabel.Create(lForm);
+    lLabel.Caption := 'Nested survivor';
+    lLabel.Parent := lPanel;
+    lForm.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider));
+    Assert.IsTrue(Supports(lRootProvider, IAccessibilityVclProviderLookup, lLookup));
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lLabel, lLabelProvider));
+
+    lLabel.Parent := lGroupB;
+    lGroupA.Free;
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lLabel, lCurrentProvider));
+    Assert.IsTrue(lCurrentProvider = lLabelProvider, 'nested reparented provider identity');
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.RuntimeStatusBarChildSurvivesOldParentRemoval;
+var
+  lApi: IManagerTestUiaApi;
+  lCurrentProvider: IRawElementProviderSimple;
+  lDone: Boolean;
+  lForm: TForm;
+  lGroup: TGroupBox;
+  lGroupProvider: IRawElementProviderSimple;
+  lLabel: TLabel;
+  lLabelFragment: IRawElementProviderFragment;
+  lLabelProvider: IRawElementProviderSimple;
+  lLookup: IAccessibilityVclProviderLookup;
+  lParentFragment: IRawElementProviderFragment;
+  lRootProvider: IRawElementProviderSimple;
+  lStatusBar: TStatusBar;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lGroup := TGroupBox.Create(lForm);
+    lGroup.Caption := 'Persistent group';
+    lGroup.Parent := lForm;
+    lStatusBar := TStatusBar.Create(lForm);
+    lStatusBar.SimplePanel := True;
+    lStatusBar.SimpleText := 'Temporary status';
+    lStatusBar.Parent := lForm;
+    lLabel := TLabel.Create(lForm);
+    lLabel.Caption := 'Moved status child';
+    lLabel.Parent := lStatusBar;
+    lForm.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider));
+    Assert.IsTrue(Supports(lRootProvider, IAccessibilityVclProviderLookup, lLookup));
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lGroup, lGroupProvider));
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lLabel, lLabelProvider));
+
+    lLabel.Parent := lGroup;
+    lStatusBar.Free;
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lLabel, lCurrentProvider));
+    Assert.IsTrue(lCurrentProvider = lLabelProvider, 'reparented status child provider identity');
+    Assert.IsTrue(Supports(lLabelProvider, IRawElementProviderFragment, lLabelFragment));
+    Assert.AreEqual(S_OK, lLabelFragment.Navigate(NavigateDirection_Parent, lParentFragment));
+    Assert.IsTrue(SimpleProvider(lParentFragment) = lGroupProvider);
+    Assert.AreEqual(1, lApi.StructureChangedCalls);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.RuntimeNestedRemovalAndUninstallAreSafe;
+var
+  lApi: IManagerTestUiaApi;
+  lDone: Boolean;
+  lForm: TForm;
+  lLabel: TLabel;
+  lLabelNode: IAccessibilityProviderNode;
+  lLabelProvider: IRawElementProviderSimple;
+  lLookup: IAccessibilityVclProviderLookup;
+  lPanel: TPanel;
+  lRootProvider: IRawElementProviderSimple;
+  lWinEvents: TWinEventRecorder;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lWinEvents := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents); //PALOFF WARN53 test retains the concrete recorder
+  lForm := TForm.Create(nil);
+  try
+    lForm.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider));
+    Assert.IsTrue(Supports(lRootProvider, IAccessibilityVclProviderLookup, lLookup));
+
+    lPanel := TPanel.Create(lForm);
+    lPanel.Caption := 'Runtime panel';
+    lPanel.Parent := lForm;
+    lLabel := TLabel.Create(lPanel);
+    lLabel.Caption := 'Nested runtime status';
+    lLabel.Parent := lPanel;
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lLabel, lLabelProvider));
+    Assert.IsTrue(Supports(lLabelProvider, IAccessibilityProviderNode, lLabelNode));
+    Assert.AreEqual(1, lApi.StructureChangedCalls);
+
+    lPanel.Free;
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.IsTrue(lLabelNode.IsDisconnected);
+    Assert.AreEqual(2, lApi.StructureChangedCalls);
+    Assert.AreEqual(2, lWinEvents.Calls);
+
+    TAccessibilityManager.Uninstall;
+    lDone := True;
+    if Assigned(Application.OnIdle) then
+    begin
+      Application.OnIdle(Application, lDone);
+    end;
+    Assert.AreEqual(2, lApi.StructureChangedCalls);
+    Assert.AreEqual(2, lWinEvents.Calls);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.RuntimeWindowedControlReaddRebindsProviderHook;
+var
+  lApi: IManagerTestUiaApi;
+  lDone: Boolean;
+  lEdit: TEdit;
+  lForm: TForm;
+  lLookup: IAccessibilityVclProviderLookup;
+  lMessage: TMessage;
+  lNewProvider: IRawElementProviderSimple;
+  lOldNode: IAccessibilityProviderNode;
+  lOldProvider: IRawElementProviderSimple;
+  lRootProvider: IRawElementProviderSimple;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lEdit := TEdit.Create(lForm);
+    lEdit.Parent := lForm;
+    lEdit.Text := 'Runtime ready';
+    lEdit.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider));
+    Assert.IsTrue(Supports(lRootProvider, IAccessibilityVclProviderLookup, lLookup));
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lEdit, lOldProvider));
+    Assert.IsTrue(Supports(lOldProvider, IAccessibilityProviderNode, lOldNode));
+
+    lEdit.Parent := nil;
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.IsTrue(lOldNode.IsDisconnected, 'old provider disconnected after unparent');
+    Assert.IsFalse(lLookup.TryFindProviderForControl(lEdit, lNewProvider), 'unparented lookup removed');
+
+    lEdit.Parent := lForm;
+    lEdit.HandleNeeded;
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.AreEqual(2, lApi.StructureChangedCalls, 're-add reconciliation event');
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lEdit, lNewProvider), 're-added lookup');
+    Assert.IsFalse(lNewProvider = lOldProvider, 'replacement provider identity');
+
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_SETFOCUS;
+    lEdit.WindowProc(lMessage);
+    Assert.AreEqual(UIA_AutomationFocusChangedEventId, lApi.LastEventId);
+    Assert.IsTrue(lApi.LastEventProvider = lNewProvider, 'window hook must publish from the replacement provider');
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.RuntimeDisconnectedMappedProviderLeavesNoStaleSibling;
+var
+  lApi: IManagerTestUiaApi;
+  lButton: TButton;
+  lCurrentProvider: IRawElementProviderSimple;
+  lDone: Boolean;
+  lFirstChild: IRawElementProviderFragment;
+  lForm: TForm;
+  lLabel: TLabel;
+  lLabelProvider: IRawElementProviderSimple;
+  lLookup: IAccessibilityVclProviderLookup;
+  lOldNode: IAccessibilityProviderNode;
+  lOldProvider: IRawElementProviderSimple;
+  lRootProvider: IRawElementProviderSimple;
+  lSecondChild: IRawElementProviderFragment;
+  lThirdChild: IRawElementProviderFragment;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lButton := TButton.Create(lForm);
+    lButton.Caption := 'Persistent action';
+    lButton.Parent := lForm;
+    lForm.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider));
+    Assert.IsTrue(Supports(lRootProvider, IAccessibilityVclProviderLookup, lLookup));
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lButton, lOldProvider));
+    Assert.IsTrue(Supports(lOldProvider, IAccessibilityProviderNode, lOldNode));
+
+    lOldNode.Disconnect;
+    lLabel := TLabel.Create(lForm);
+    lLabel.Caption := 'Added sibling';
+    lLabel.Parent := lForm;
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+
+    Assert.AreEqual(1, lApi.StructureChangedCalls, 'hierarchy reconciliation event');
+    lFirstChild := FirstChildFragment(FragmentFromSimple(lRootProvider));
+    Assert.IsNotNull(lFirstChild, 'reconciled root first child');
+    Assert.IsFalse(SimpleProvider(lFirstChild) = lOldProvider, 'disconnected provider detached from root');
+    Assert.AreEqual('Persistent action', ProviderStringProperty(lFirstChild, UIA_NamePropertyId),
+      'replacement button is present in the reconciled root');
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lButton, lCurrentProvider), 'replacement button lookup');
+    Assert.IsFalse(lCurrentProvider = lOldProvider, 'replacement button identity');
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lLabel, lLabelProvider), 'added label lookup');
+    Assert.IsTrue(SimpleProvider(lFirstChild) = lCurrentProvider, 'replacement button is first child');
+    lSecondChild := NavigateFragment(lFirstChild, NavigateDirection_NextSibling);
+    Assert.IsTrue(SimpleProvider(lSecondChild) = lLabelProvider, 'stale disconnected sibling omitted');
+    lThirdChild := NavigateFragment(lSecondChild, NavigateDirection_NextSibling);
+    Assert.IsNull(lThirdChild, 'only replacement button and added label remain');
   finally
     lForm.Free;
     ResetManager;

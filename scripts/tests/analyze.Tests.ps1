@@ -25,8 +25,8 @@ Describe 'Repository static-analysis wrapper contract' {
         $script:lScriptText | Should -Match 'static-analysis-baseline\.json'
     }
 
-    It 'enables the real DAK gate and restores process environment state' {
-        $script:lScriptText | Should -Match '\$env:DAK_GATE\s*=\s*''1'''
+    It 'gates normal runs but allows an intentional baseline refresh' {
+        $script:lScriptText | Should -Match '\$env:DAK_GATE\s*=\s*if\s*\(\$UpdateBaseline\)\s*\{\s*''0''\s*\}\s*else\s*\{\s*''1''\s*\}'
         $script:lScriptText | Should -Match '\$env:DAK_BASELINE\s*='
         $script:lScriptText | Should -Match '\$env:DAK_UPDATE_BASELINE\s*='
         $script:lScriptText | Should -Match 'finally\s*\{'
@@ -39,12 +39,13 @@ Describe 'Repository static-analysis wrapper contract' {
 
     It 'consumes schema v3 projections without duplicating ownership resolution' {
         $script:lScriptText | Should -Match '& python \$lPostprocess \$lOutPath'
-        $script:lScriptText | Should -Match '& python \$lPostprocess --verify \$lOutPath'
+        $script:lScriptText | Should -Match 'if\s*\(-not \$UpdateBaseline\)\s*\{\s*\$lVerifyOutput\s*=\s*& python \$lPostprocess --verify \$lOutPath'
         $script:lScriptText | Should -Match '\$lSummary\.schema_version\s*-ne\s*3'
         $script:lScriptText | Should -Match '\$lSummary\.counts\.actionable\.fixinsight'
         $script:lScriptText | Should -Match '\$lSummary\.counts\.external\.pascal_analyzer'
         $script:lScriptText | Should -Match '\$lSummary\.counts\.unknown\.total'
-        $script:lScriptText | Should -Match '\$lSummary\.status\.policy\s*-ne\s*''pass'''
+        $script:lScriptText | Should -Match '\$lExpectedPolicy\s*=\s*if\s*\(\$UpdateBaseline\)\s*\{\s*''not_evaluated''\s*\}\s*else\s*\{\s*''pass''\s*\}'
+        $script:lScriptText | Should -Match '\$lSummary\.status\.policy\s*-ne\s*\$lExpectedPolicy'
         $script:lScriptText | Should -Not -Match 'Modules\.xml'
         $script:lScriptText | Should -Not -Match '\$lDUnitXFindings'
     }

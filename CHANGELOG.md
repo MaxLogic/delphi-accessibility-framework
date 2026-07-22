@@ -3,6 +3,8 @@
 ## 2026-07-22
 ### Fixed
 - Installed VCL form providers now synchronize their UIA name when `TCustomForm.Caption` changes at runtime and publish one UIA property-change event plus the corresponding MSAA name-change event.
+- Installed VCL providers now publish runtime Name, HelpText, Value, enabled, offscreen, and bounding-rectangle changes for supported forms and controls, including status bars and VCL/TMS grid roots, without duplicate or teardown events.
+- Installed VCL form providers now reconcile controls added, removed, or reparented at runtime, preserving retained provider identity and publishing one coalesced UIA structure-change and MSAA reorder notification.
 
 ## 2026-07-18
 ### Added

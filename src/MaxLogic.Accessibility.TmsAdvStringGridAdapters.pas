@@ -63,6 +63,10 @@ type
   private
     fCells: TDictionary<Int64, IAccessibilityProviderNode>;
     fGrid: TAdvStringGrid;
+    fHelpText: string;
+    fLiveHelpText: Boolean;
+    fLiveName: Boolean;
+    fName: string;
     fPreparedClientHeight: Integer;
     fPreparedClientWidth: Integer;
     fPreparedColCount: Integer;
@@ -494,17 +498,22 @@ end;
 
 constructor TAccessibilityAdvStringGridProvider.Create(aGrid: TAdvStringGrid; aRuntimeId: Integer;
   const aName: string; const aHelpText: string; const aApi: IAccessibilityUiaApi);
+var
+  lTextInfo: TAccessibilityTextInfo;
 begin
   inherited CreateNode([aRuntimeId], aGrid.Handle, aApi, aGrid);
   SetPublishNativeWindowHandle(True);
   fCells := TDictionary<Int64, IAccessibilityProviderNode>.Create;
   fGrid := aGrid;
+  fHelpText := aHelpText;
+  fName := aName;
+  lTextInfo := TAccessibilityTextExtractor.Extract(aGrid);
+  fLiveHelpText := SameText(fHelpText, lTextInfo.HelpText);
+  fLiveName := SameText(fName, lTextInfo.Name);
   fProviderRuntimeId := aRuntimeId;
   fUiaApi := aApi;
-  SetProperty(UIA_NamePropertyId, aName);
   SetProperty(UIA_ControlTypePropertyId, UIA_DataGridControlTypeId);
   SetProperty(UIA_ClassNamePropertyId, aGrid.ClassName);
-  SetProperty(UIA_HelpTextPropertyId, aHelpText);
   RefreshVisibleCells;
   RememberChildrenPreparation;
 end;
@@ -656,6 +665,13 @@ function TAccessibilityAdvStringGridProvider.DoGetPropertyValue(aPropertyId: PRO
 begin
   Result := True;
   case aPropertyId of
+    UIA_HelpTextPropertyId:
+      if fLiveHelpText then
+      begin
+        aValue := TAccessibilityTextExtractor.Extract(fGrid).HelpText;
+      end else begin
+        aValue := fHelpText;
+      end;
     UIA_HasKeyboardFocusPropertyId:
       aValue := GridOwnsFocus;
     UIA_IsEnabledPropertyId:
@@ -664,6 +680,13 @@ begin
       aValue := fGrid.TabStop;
     UIA_IsOffscreenPropertyId:
       aValue := not ControlIsInActiveVisibleTree(fGrid);
+    UIA_NamePropertyId:
+      if fLiveName then
+      begin
+        aValue := TAccessibilityTextExtractor.Extract(fGrid).Name;
+      end else begin
+        aValue := fName;
+      end;
   else
     Result := inherited DoGetPropertyValue(aPropertyId, aValue);
   end;

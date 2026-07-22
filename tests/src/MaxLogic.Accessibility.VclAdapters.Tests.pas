@@ -59,39 +59,39 @@ type
     [Test]
     procedure TextInputsRejectInvalidLabeledByRelationships;
     [Test]
-    [Category('Memo')]
+    [Category('VclAdapters,Memo')]
     procedure MemoProviderCacheRemainsBoundedAcrossScrollHistory;
     [Test]
-    [Category('Memo')]
+    [Category('VclAdapters,Memo')]
     procedure MemoHitTestingPrunesScrolledProviders;
     [Test]
     procedure MemoProviderHitTestingReturnsLineUnderPointer;
     [Test]
-    [Category('ListBox')]
+    [Category('VclAdapters,ListBox')]
     procedure ListBoxProviderCacheRemainsBoundedAcrossScrollHistory;
     [Test]
-    [Category('ListBox')]
+    [Category('VclAdapters,ListBox')]
     procedure ListBoxSelectionCollapseScalesLinearly;
     [Test]
-    [Category('ListBox')]
+    [Category('VclAdapters,ListBox')]
     procedure ListBoxPartialSelectionPruneUsesBoundedNativeQueries;
     [Test]
-    [Category('ListBox')]
+    [Category('VclAdapters,ListBox')]
     procedure ListBoxHitTestingPrunesScrolledProviders;
     [Test]
-    [Category('ListBox')]
+    [Category('VclAdapters,ListBox')]
     procedure ListBoxSingleSelectionPrunesOldProviders;
     [Test]
-    [Category('ListBox')]
+    [Category('VclAdapters,ListBox')]
     procedure ListBoxSiblingNavigationReconcilesSelectionOnlyChanges;
     [Test]
-    [Category('ListBox')]
+    [Category('VclAdapters,ListBox')]
     procedure ListBoxSiblingNavigationRevalidatesResumedTraversal;
     [Test]
-    [Category('ListBox')]
+    [Category('VclAdapters,ListBox')]
     procedure ListBoxGetFocusPrunesScrolledProviders;
     [Test]
-    [Category('ListBox')]
+    [Category('VclAdapters,ListBox')]
     procedure ListBoxRetainedItemDisconnectsWhenControlIsDestroyed;
     [Test]
     procedure ListBoxProviderHitTestingAndFocusReturnItems;
@@ -107,6 +107,15 @@ type
     procedure ListBoxProviderStopsReturningFocusItemWhenCachedTextBecomesEmpty;
     [Test]
     procedure StatusBarProviderUsesVisibleStatusText;
+    [Test]
+    [Category('VclAdapters,RuntimePropertySynchronization')]
+    procedure StatusBarProviderUsesCurrentHelpText;
+    [Test]
+    [Category('VclAdapters,RuntimePropertySynchronization')]
+    procedure StringGridProviderUsesCurrentNameAndHelpText;
+    [Test]
+    [Category('VclAdapters,RuntimePropertySynchronization')]
+    procedure FormProviderUsesCurrentHelpText;
     [Test]
     procedure RootHitTestingReturnsDeepestNonWindowedLabel;
     [Test]
@@ -2510,6 +2519,93 @@ begin
     Assert.IsNotNull(lHit);
     Assert.AreEqual('Ready. High severity checks: 4', ProviderStringProperty(lHit, UIA_NamePropertyId));
     Assert.AreEqual(UIA_StatusBarControlTypeId, ProviderIntProperty(lHit, UIA_ControlTypePropertyId));
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityVclAdaptersTests.StatusBarProviderUsesCurrentHelpText;
+var
+  lForm: TForm;
+  lHit: IRawElementProviderFragment;
+  lPoint: TPoint;
+  lProvider: IAccessibilityProviderNode;
+  lRoot: IRawElementProviderFragmentRoot;
+  lStatusBar: TStatusBar;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 420, 220);
+
+    lStatusBar := TStatusBar.Create(lForm);
+    lStatusBar.Parent := lForm;
+    lStatusBar.Hint := 'Initial status help';
+    lStatusBar.SetBounds(0, 170, 420, 24);
+
+    lForm.HandleNeeded;
+    lStatusBar.HandleNeeded;
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lRoot := FragmentRoot(lProvider);
+    lPoint := ControlScreenCenter(lStatusBar);
+    Assert.AreEqual(S_OK, lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit));
+    Assert.AreEqual('Initial status help', ProviderStringProperty(lHit, UIA_HelpTextPropertyId));
+
+    lStatusBar.Hint := 'Updated status help';
+
+    Assert.AreEqual('Updated status help', ProviderStringProperty(lHit, UIA_HelpTextPropertyId));
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityVclAdaptersTests.StringGridProviderUsesCurrentNameAndHelpText;
+var
+  lForm: TForm;
+  lGrid: TStringGrid;
+  lGridFragment: IRawElementProviderFragment;
+  lProvider: IAccessibilityProviderNode;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lGrid := TStringGrid.Create(lForm);
+    lGrid.Name := 'InitialGrid';
+    lGrid.Parent := lForm;
+    lGrid.Hint := 'Initial grid help';
+    lForm.HandleNeeded;
+    lGrid.HandleNeeded;
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lGridFragment := FirstChildFragment(lProvider);
+    Assert.AreEqual('Initial grid help', ProviderStringProperty(lGridFragment, UIA_NamePropertyId));
+    Assert.AreEqual('Initial grid help', ProviderStringProperty(lGridFragment, UIA_HelpTextPropertyId));
+
+    lGrid.Name := 'UpdatedGrid';
+    lGrid.Hint := 'Updated grid help';
+
+    Assert.AreEqual('Updated grid help', ProviderStringProperty(lGridFragment, UIA_NamePropertyId));
+    Assert.AreEqual('Updated grid help', ProviderStringProperty(lGridFragment, UIA_HelpTextPropertyId));
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityVclAdaptersTests.FormProviderUsesCurrentHelpText;
+var
+  lForm: TForm;
+  lProvider: IAccessibilityProviderNode;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lForm.Caption := 'Runtime form';
+    lForm.Hint := 'Initial form help';
+    lForm.HandleNeeded;
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    Assert.AreEqual('Initial form help',
+      ProviderStringProperty(lProvider.FragmentProvider, UIA_HelpTextPropertyId));
+
+    lForm.Hint := 'Updated form help';
+
+    Assert.AreEqual('Updated form help',
+      ProviderStringProperty(lProvider.FragmentProvider, UIA_HelpTextPropertyId));
   finally
     lForm.Free;
   end;

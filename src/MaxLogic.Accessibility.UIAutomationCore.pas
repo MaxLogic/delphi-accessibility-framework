@@ -182,6 +182,7 @@ const
   UIA_IsOffscreenPropertyId = 30022;
   UIA_FrameworkIdPropertyId = 30024;
   UIA_ItemStatusPropertyId = 30026;
+  UIA_ValueValuePropertyId = 30045;
   UIA_SelectionItemIsSelectedPropertyId = 30079;
   UIA_SelectionItemSelectionContainerPropertyId = 30080;
   UIA_ToggleToggleStatePropertyId = 30086;

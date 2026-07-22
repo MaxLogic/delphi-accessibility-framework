@@ -62,6 +62,22 @@ type
     ToggleState: ToggleState;
   end;
 
+  TRuntimeProviderSnapshot = record
+    Bounds: UiaRect;
+    Enabled: Boolean;
+    HasBounds: Boolean;
+    HasEnabled: Boolean;
+    HasHelpText: Boolean;
+    HasName: Boolean;
+    HasOffscreen: Boolean;
+    HasValue: Boolean;
+    HelpText: string;
+    Name: string;
+    Offscreen: Boolean;
+    Provider: IRawElementProviderSimple;
+    Value: string;
+  end;
+
   THoverChildGeometry = record
     Bounds: TRect;
     Control: TControl;
@@ -118,10 +134,13 @@ type
     fForm: TCustomForm;
     fHoverCache: THoverCache;
     fMsaaAccessible: IAccessible;
+    fObservedRevision: Integer;
+    fObservedScan: IAccessibilityObservedFormScan;
     fOriginalWindowProc: TWndMethod;
     fPassive: Boolean;
     fProvider: IAccessibilityProviderNode;
     fRetained: Boolean;
+    fRuntimeProperties: TDictionary<TObject, TRuntimeProviderSnapshot>;
     function ControlIsHooked(aControl: TWinControl): Boolean;
     procedure Detach;
     procedure DisconnectProvider;
@@ -132,15 +151,23 @@ type
     procedure HookProviderWindow(const aProvider: IRawElementProviderSimple);
     procedure HookRadioGroupButtonWindows(aRadioGroup: TRadioGroup; const aProvider: IRawElementProviderSimple);
     procedure MaybeRaiseProviderHover(aLParam: LPARAM; aClientsKnown: Boolean; aClientsListening: Boolean);
+    procedure NotifyProviderWinEvent(const aProvider: IRawElementProviderSimple; aEvent: DWORD);
+    procedure PruneRuntimePropertySnapshots(const aTree: IAccessibilityScanTree);
+    procedure ReconcileRuntimeHierarchy;
     function Passivate: Boolean;
     procedure ReleaseChildHooks;
+    procedure ReleaseObsoleteChildHooks;
+    procedure RefreshRuntimeProperties(aPublishChanges: Boolean);
+    procedure SynchronizeProviderProperties(const aProvider: IRawElementProviderSimple; aIsRoot: Boolean;
+      aPublishChanges: Boolean);
     procedure SynchronizeFormName;
+    procedure SynchronizeRuntimeProperties;
   protected
     procedure Notification(aComponent: TComponent; aOperation: TOperation); override;
   public
     class procedure ReleaseRetainedHooks; static;
     constructor Create(aForm: TCustomForm; const aProvider: IAccessibilityProviderNode;
-      const aApi: IAccessibilityUiaApi); reintroduce;
+      const aRegistry: IAccessibilityAdapterRegistry; const aApi: IAccessibilityUiaApi); reintroduce;
     destructor Destroy; override;
     procedure WindowProc(var aMessage: TMessage);
   end;
@@ -211,20 +238,26 @@ type
     fApplicationRegistry: IAccessibilityAdapterRegistry;
     fHintController: TAccessibilityHintController;
     fHintControllerAppWide: Boolean;
+    fIdleDispatching: Boolean;
+    fIdleHookInstalled: Boolean;
     fFormInstaller: IAccessibilityFormInstaller;
+    fPreviousIdle: TIdleEvent;
     fPreviousActiveFormChange: TNotifyEvent;
     fScreenHookInstalled: Boolean;
     fUiaApi: IAccessibilityUiaApi;
     procedure ActiveFormChanged(aSender: TObject);
+    procedure ApplicationIdle(aSender: TObject; var aDone: Boolean);
     procedure EnsureApplicationRegistry(const aRegistry: IAccessibilityAdapterRegistry);
     procedure EnsureFormRegistryAllowed(const aRegistry: IAccessibilityAdapterRegistry);
     procedure EnsureInstalledFormsRegistry(const aRegistry: IAccessibilityAdapterRegistry);
     procedure HookScreen;
+    procedure HookApplicationIdle;
     procedure InstallHintController(aApplication: TApplication; aAppWide: Boolean);
     procedure InstallFormWithRegistry(aForm: TCustomForm; const aRegistry: IAccessibilityAdapterRegistry);
     procedure RemoveInstalledMarkers;
     procedure ReleaseHintController;
     procedure RestoreScreenHook;
+    procedure RestoreApplicationIdleHook;
     procedure ScanCurrentForms;
   public
     constructor Create;
@@ -257,6 +290,11 @@ begin
 end;
 
 function SameNotifyEvent(const aLeft: TNotifyEvent; const aRight: TNotifyEvent): Boolean;
+begin
+  Result := (TMethod(aLeft).Code = TMethod(aRight).Code) and (TMethod(aLeft).Data = TMethod(aRight).Data);
+end;
+
+function SameIdleEvent(const aLeft: TIdleEvent; const aRight: TIdleEvent): Boolean;
 begin
   Result := (TMethod(aLeft).Code = TMethod(aRight).Code) and (TMethod(aLeft).Data = TMethod(aRight).Data);
 end;
@@ -1652,6 +1690,7 @@ end;
 procedure TAccessibilityInstalledFormMarker.InstallProvider(aForm: TCustomForm;
   const aRegistry: IAccessibilityAdapterRegistry; const aApi: IAccessibilityUiaApi);
 var
+  lEffectiveRegistry: IAccessibilityAdapterRegistry;
   lProvider: IAccessibilityProviderNode;
 begin
   if fHook <> nil then
@@ -1660,8 +1699,13 @@ begin
   end;
 
   fRegistry := aRegistry;
-  lProvider := TAccessibilityVclProviderBuilder.BuildForm(aForm, aRegistry, aApi);
-  fHook := TAccessibilityFormWindowHook.Create(aForm, lProvider, aApi);
+  lEffectiveRegistry := aRegistry;
+  if lEffectiveRegistry = nil then
+  begin
+    lEffectiveRegistry := TAccessibilityVclAdapters.CreateDefaultRegistry;
+  end;
+  lProvider := TAccessibilityVclProviderBuilder.BuildForm(aForm, lEffectiveRegistry, aApi);
+  fHook := TAccessibilityFormWindowHook.Create(aForm, lProvider, lEffectiveRegistry, aApi);
 end;
 
 procedure TAccessibilityInstalledFormMarker.RememberRegistry(const aRegistry: IAccessibilityAdapterRegistry);
@@ -1676,7 +1720,7 @@ begin
 end;
 
 constructor TAccessibilityFormWindowHook.Create(aForm: TCustomForm; const aProvider: IAccessibilityProviderNode;
-  const aApi: IAccessibilityUiaApi);
+  const aRegistry: IAccessibilityAdapterRegistry; const aApi: IAccessibilityUiaApi);
 begin
   inherited Create(nil);
   if aForm = nil then
@@ -1689,8 +1733,12 @@ begin
   fChildHooksByControl := TDictionary<TWinControl, TAccessibilityControlWindowHook>.Create;
   fForm := aForm;
   fProvider := aProvider;
+  fRuntimeProperties := TDictionary<TObject, TRuntimeProviderSnapshot>.Create;
+  fObservedScan := TAccessibilityScanner.ObserveForm(aForm, aRegistry);
+  fObservedRevision := fObservedScan.Revision;
   fOriginalWindowProc := aForm.WindowProc;
   HookChildProviderWindows;
+  RefreshRuntimeProperties(False);
   fForm.FreeNotification(Self);
   fForm.WindowProc := WindowProc;
   if TAccessibilityDiagnostics.Enabled then
@@ -1707,8 +1755,10 @@ begin
     Detach;
   end;
 
+  fObservedScan := nil;
   DisconnectProvider;
   ReleaseChildHooks;
+  fRuntimeProperties.Free;
   fChildHooksByControl.Free;
   fChildHooks.Free;
   inherited Destroy;
@@ -1723,6 +1773,7 @@ begin
       fForm.WindowProc := fOriginalWindowProc;
     end;
 
+    fObservedScan := nil;
     fForm.RemoveFreeNotification(Self);
     fForm := nil;
   end;
@@ -1979,6 +2030,7 @@ begin
     end;
 
     fForm := nil;
+    fObservedScan := nil;
     DisconnectProvider;
   end;
 end;
@@ -1998,6 +2050,7 @@ begin
   begin
     Detach;
   end else begin
+    fObservedScan := nil;
     fPassive := True;
     Result := True;
     if gRetainedFormHooks = nil then
@@ -2073,7 +2126,7 @@ begin
 
   lRawProvider := fProvider.RawElementProvider;
   lOldName := ProviderName(lRawProvider);
-  lNewName := fForm.Caption;
+  lNewName := TAccessibilityText.Clean(fForm.Caption);
   if lOldName = lNewName then
   begin
     Exit;
@@ -2092,6 +2145,321 @@ begin
   begin
     NotifyAccessibilityWinEvent(EVENT_OBJECT_NAMECHANGE, lHwnd, cMsaaObjIdClient, CHILDID_SELF);
   end;
+end;
+
+function SameUiaRect(const aLeft: UiaRect; const aRight: UiaRect): Boolean;
+begin
+  Result := (aLeft.Left = aRight.Left) and (aLeft.Top = aRight.Top) and
+    (aLeft.Width = aRight.Width) and (aLeft.Height = aRight.Height);
+end;
+
+function UiaRectVariant(const aBounds: UiaRect): OleVariant;
+begin
+  Result := VarArrayCreate([0, 3], varDouble);
+  Result[0] := aBounds.Left;
+  Result[1] := aBounds.Top;
+  Result[2] := aBounds.Width;
+  Result[3] := aBounds.Height;
+end;
+
+procedure TAccessibilityFormWindowHook.NotifyProviderWinEvent(
+  const aProvider: IRawElementProviderSimple; aEvent: DWORD);
+var
+  lHwnd: HWND;
+begin
+  lHwnd := ProviderNativeWindowHandle(aProvider);
+  if (lHwnd = 0) and (fForm <> nil) and fForm.HandleAllocated then
+  begin
+    lHwnd := fForm.Handle;
+  end;
+  if lHwnd <> 0 then
+  begin
+    NotifyAccessibilityWinEvent(aEvent, lHwnd, cMsaaObjIdClient, CHILDID_SELF);
+  end;
+end;
+
+procedure TAccessibilityFormWindowHook.ReleaseObsoleteChildHooks;
+var
+  i: Integer;
+  lControl: TWinControl;
+  lHook: TAccessibilityControlWindowHook;
+  lNode: IAccessibilityProviderNode;
+  lParent: TWinControl;
+begin
+  for i := Pred(fChildHooks.Count) downto 0 do
+  begin
+    lHook := fChildHooks[i];
+    lControl := lHook.fControl;
+    lParent := lControl;
+    while (lParent <> nil) and (lParent <> fForm) do
+    begin
+      lParent := lParent.Parent;
+    end;
+    if (lControl <> nil) and (lParent = fForm) and
+      (not Supports(lHook.fProvider, IAccessibilityProviderNode, lNode) or not lNode.IsDisconnected) then
+    begin
+      Continue;
+    end;
+
+    fChildHooks.Delete(i);
+    if lControl <> nil then
+    begin
+      fChildHooksByControl.Remove(lControl);
+    end;
+    if not lHook.Passivate then
+    begin
+      lHook.Free;
+    end;
+  end;
+end;
+
+procedure TAccessibilityFormWindowHook.PruneRuntimePropertySnapshots(
+  const aTree: IAccessibilityScanTree);
+var
+  i: Integer;
+  lControl: TControl;
+  lObject: TObject;
+  lStaleObjects: TList<TObject>;
+begin
+  if aTree = nil then
+  begin
+    Exit;
+  end;
+
+  lStaleObjects := TList<TObject>.Create;
+  try
+    for lObject in fRuntimeProperties.Keys do
+    begin
+      if lObject = fForm then
+      begin
+        Continue;
+      end;
+      lControl := nil;
+      if lObject is TControl then
+      begin
+        lControl := lObject as TControl;
+      end;
+      if (lControl = nil) or (aTree.FindNode(lControl) = nil) then
+      begin
+        lStaleObjects.Add(lObject);
+      end;
+    end;
+    for i := 0 to Pred(lStaleObjects.Count) do
+    begin
+      fRuntimeProperties.Remove(lStaleObjects[i]);
+    end;
+  finally
+    lStaleObjects.Free;
+  end;
+end;
+
+procedure TAccessibilityFormWindowHook.ReconcileRuntimeHierarchy;
+var
+  lRevision: Integer;
+  lRuntime: IAccessibilityVclProviderRuntimeInternal;
+  lTree: IAccessibilityScanTree;
+begin
+  if (fObservedScan = nil) or (fProvider = nil) or fProvider.IsDisconnected or
+    not Supports(fProvider, IAccessibilityVclProviderRuntimeInternal, lRuntime) then
+  begin
+    Exit;
+  end;
+
+  lRevision := fObservedScan.Revision;
+  if lRevision = fObservedRevision then
+  begin
+    Exit;
+  end;
+
+  lTree := fObservedScan.Tree;
+  if lRuntime.ReconcileProviderHierarchy(lTree) then
+  begin
+    PruneRuntimePropertySnapshots(lTree);
+    ReleaseObsoleteChildHooks;
+    HookChildProviderWindows;
+    fHoverCache.Clear;
+    TAccessibilityProviderEvents.RaiseStructureChanged(fProvider.RawElementProvider,
+      StructureChangeType_ChildrenInvalidated, [], fApi);
+    if (fForm <> nil) and fForm.HandleAllocated then
+    begin
+      NotifyAccessibilityWinEvent(EVENT_OBJECT_REORDER, fForm.Handle, cMsaaObjIdClient, CHILDID_SELF);
+    end;
+  end;
+  fObservedRevision := lRevision;
+end;
+
+procedure TAccessibilityFormWindowHook.RefreshRuntimeProperties(aPublishChanges: Boolean);
+begin
+  if fPassive or (fForm = nil) or (fProvider = nil) or fProvider.IsDisconnected then
+  begin
+    Exit;
+  end;
+
+  ReconcileRuntimeHierarchy;
+  if aPublishChanges then
+  begin
+    TAccessibilityProviderEvents.BeginEventBatch;
+  end;
+  try
+    SynchronizeProviderProperties(fProvider.RawElementProvider, True, aPublishChanges);
+  finally
+    if aPublishChanges then
+    begin
+      TAccessibilityProviderEvents.EndEventBatch;
+    end;
+  end;
+end;
+
+procedure TAccessibilityFormWindowHook.SynchronizeProviderProperties(
+  const aProvider: IRawElementProviderSimple; aIsRoot: Boolean; aPublishChanges: Boolean);
+var
+  i: Integer;
+  lChild: IRawElementProviderSimple;
+  lChildAccess: IAccessibilityProviderChildAccess;
+  lChildCount: Integer;
+  lControlInfo: IAccessibilityVclControlProviderInfo;
+  lDirectAccess: IAccessibilityProviderDirectAccess;
+  lGeometryAccess: IAccessibilityProviderGeometryAccess;
+  lIntegerValue: Integer;
+  lNewSnapshot: TRuntimeProviderSnapshot;
+  lNode: IAccessibilityProviderNode;
+  lObject: TObject;
+  lOldHelpText: string;
+  lOldName: string;
+  lOldSnapshot: TRuntimeProviderSnapshot;
+  lOldValue: string;
+begin
+  if (aProvider = nil) or not Supports(aProvider, IAccessibilityProviderDirectAccess, lDirectAccess) then
+  begin
+    Exit;
+  end;
+
+  if aIsRoot then
+  begin
+    lObject := fForm;
+  end else if Supports(aProvider, IAccessibilityVclControlProviderInfo, lControlInfo) then
+  begin
+    lObject := lControlInfo.Control;
+  end else begin
+    Exit;
+  end;
+  if lObject = nil then
+  begin
+    Exit;
+  end;
+  if Supports(aProvider, IAccessibilityProviderNode, lNode) and lNode.IsDisconnected then
+  begin
+    fRuntimeProperties.Remove(lObject);
+    Exit;
+  end;
+  lNewSnapshot := Default(TRuntimeProviderSnapshot);
+  lNewSnapshot.Provider := aProvider;
+  lNewSnapshot.HasBounds := Supports(aProvider, IAccessibilityProviderGeometryAccess, lGeometryAccess) and
+    lGeometryAccess.TryGetBoundingRectangle(lNewSnapshot.Bounds);
+  lNewSnapshot.HasEnabled := lDirectAccess.TryGetIntegerProperty(UIA_IsEnabledPropertyId,
+    lIntegerValue);
+  if lNewSnapshot.HasEnabled then
+  begin
+    lNewSnapshot.Enabled := lIntegerValue <> 0;
+  end;
+  lNewSnapshot.HasOffscreen := lDirectAccess.TryGetIntegerProperty(UIA_IsOffscreenPropertyId,
+    lIntegerValue);
+  if lNewSnapshot.HasOffscreen then
+  begin
+    lNewSnapshot.Offscreen := lIntegerValue <> 0;
+  end;
+  lNewSnapshot.HasHelpText := lDirectAccess.TryGetStringProperty(UIA_HelpTextPropertyId,
+    lNewSnapshot.HelpText);
+  lNewSnapshot.HasName := lDirectAccess.TryGetStringProperty(UIA_NamePropertyId, lNewSnapshot.Name);
+  lNewSnapshot.HasValue := lDirectAccess.TryGetValueText(lNewSnapshot.Value);
+  if fRuntimeProperties.TryGetValue(lObject, lOldSnapshot) and aPublishChanges and
+    ProvidersAreSame(lOldSnapshot.Provider, aProvider) then
+  begin
+    if (lOldSnapshot.HasBounds <> lNewSnapshot.HasBounds) or
+      (lNewSnapshot.HasBounds and not SameUiaRect(lOldSnapshot.Bounds, lNewSnapshot.Bounds)) then
+    begin
+      TAccessibilityProviderEvents.RaiseAutomationPropertyChanged(aProvider,
+        UIA_BoundingRectanglePropertyId, UiaRectVariant(lOldSnapshot.Bounds),
+        UiaRectVariant(lNewSnapshot.Bounds), fApi);
+      NotifyProviderWinEvent(aProvider, EVENT_OBJECT_LOCATIONCHANGE);
+    end;
+
+    if (lOldSnapshot.HasEnabled <> lNewSnapshot.HasEnabled) or
+      (lNewSnapshot.HasEnabled and (lOldSnapshot.Enabled <> lNewSnapshot.Enabled)) then
+    begin
+      TAccessibilityProviderEvents.RaiseAutomationPropertyChanged(aProvider, UIA_IsEnabledPropertyId,
+        lOldSnapshot.Enabled, lNewSnapshot.Enabled, fApi);
+      NotifyProviderWinEvent(aProvider, EVENT_OBJECT_STATECHANGE);
+    end;
+
+    if (lOldSnapshot.HasOffscreen <> lNewSnapshot.HasOffscreen) or
+      (lNewSnapshot.HasOffscreen and (lOldSnapshot.Offscreen <> lNewSnapshot.Offscreen)) then
+    begin
+      TAccessibilityProviderEvents.RaiseAutomationPropertyChanged(aProvider, UIA_IsOffscreenPropertyId,
+        lOldSnapshot.Offscreen, lNewSnapshot.Offscreen, fApi);
+      NotifyProviderWinEvent(aProvider, EVENT_OBJECT_STATECHANGE);
+    end;
+
+    if not aIsRoot and ((lOldSnapshot.HasName <> lNewSnapshot.HasName) or
+      (lNewSnapshot.HasName and (lOldSnapshot.Name <> lNewSnapshot.Name))) then
+    begin
+      lOldName := '';
+      if lOldSnapshot.HasName then
+      begin
+        lOldName := lOldSnapshot.Name;
+      end;
+      TAccessibilityProviderEvents.RaiseAutomationPropertyChanged(aProvider, UIA_NamePropertyId,
+        lOldName, lNewSnapshot.Name, fApi);
+      NotifyProviderWinEvent(aProvider, EVENT_OBJECT_NAMECHANGE);
+    end;
+
+    if (lOldSnapshot.HasHelpText <> lNewSnapshot.HasHelpText) or
+      (lNewSnapshot.HasHelpText and (lOldSnapshot.HelpText <> lNewSnapshot.HelpText)) then
+    begin
+      lOldHelpText := '';
+      if lOldSnapshot.HasHelpText then
+      begin
+        lOldHelpText := lOldSnapshot.HelpText;
+      end;
+      TAccessibilityProviderEvents.RaiseAutomationPropertyChanged(aProvider, UIA_HelpTextPropertyId,
+        lOldHelpText, lNewSnapshot.HelpText, fApi);
+      NotifyProviderWinEvent(aProvider, EVENT_OBJECT_DESCRIPTIONCHANGE);
+    end;
+
+    if (lOldSnapshot.HasValue <> lNewSnapshot.HasValue) or
+      (lNewSnapshot.HasValue and (lOldSnapshot.Value <> lNewSnapshot.Value)) then
+    begin
+      lOldValue := '';
+      if lOldSnapshot.HasValue then
+      begin
+        lOldValue := lOldSnapshot.Value;
+      end;
+      TAccessibilityProviderEvents.RaiseAutomationPropertyChanged(aProvider, UIA_ValueValuePropertyId,
+        lOldValue, lNewSnapshot.Value, fApi);
+      NotifyProviderWinEvent(aProvider, EVENT_OBJECT_VALUECHANGE);
+    end;
+  end;
+  fRuntimeProperties.AddOrSetValue(lObject, lNewSnapshot);
+
+  if not Supports(aProvider, IAccessibilityProviderChildAccess, lChildAccess) or
+    (lChildAccess.DirectChildCount(lChildCount) <> S_OK) then
+  begin
+    Exit;
+  end;
+
+  for i := 0 to Pred(lChildCount) do
+  begin
+    lChild := nil;
+    if lChildAccess.DirectChildAt(i, lChild) = S_OK then
+    begin
+      SynchronizeProviderProperties(lChild, False, aPublishChanges);
+    end;
+  end;
+end;
+
+procedure TAccessibilityFormWindowHook.SynchronizeRuntimeProperties;
+begin
+  RefreshRuntimeProperties(True);
 end;
 
 procedure TAccessibilityFormWindowHook.WindowProc(var aMessage: TMessage);
@@ -3073,6 +3441,36 @@ begin
   end;
 end;
 
+procedure TAccessibilityManagerState.ApplicationIdle(aSender: TObject; var aDone: Boolean);
+var
+  i: Integer;
+  lMarker: TAccessibilityInstalledFormMarker;
+begin
+  if fIdleDispatching then
+  begin
+    Exit;
+  end;
+
+  fIdleDispatching := True;
+  try
+    if Assigned(fPreviousIdle) then
+    begin
+      fPreviousIdle(aSender, aDone);
+    end;
+
+    for i := 0 to Pred(Screen.CustomFormCount) do
+    begin
+      lMarker := TAccessibilityInstalledFormMarker.FindOn(Screen.CustomForms[i]);
+      if (lMarker <> nil) and (lMarker.fHook <> nil) then
+      begin
+        lMarker.fHook.SynchronizeRuntimeProperties;
+      end;
+    end;
+  finally
+    fIdleDispatching := False;
+  end;
+end;
+
 procedure TAccessibilityManagerState.EnsureApplicationRegistry(const aRegistry: IAccessibilityAdapterRegistry);
 begin
   if fAppInstalled and not SameRegistry(fApplicationRegistry, aRegistry) then
@@ -3125,6 +3523,24 @@ begin
   fPreviousActiveFormChange := Screen.OnActiveFormChange;
   Screen.OnActiveFormChange := ActiveFormChanged;
   fScreenHookInstalled := True;
+end;
+
+procedure TAccessibilityManagerState.HookApplicationIdle;
+begin
+  if fIdleHookInstalled then
+  begin
+    if SameIdleEvent(Application.OnIdle, ApplicationIdle) then
+    begin
+      Exit;
+    end;
+
+    fPreviousIdle := nil;
+    fIdleHookInstalled := False;
+  end;
+
+  fPreviousIdle := Application.OnIdle;
+  Application.OnIdle := ApplicationIdle;
+  fIdleHookInstalled := True;
 end;
 
 procedure TAccessibilityManagerState.InstallHintController(aApplication: TApplication; aAppWide: Boolean);
@@ -3261,6 +3677,7 @@ begin
   begin
     fHintController.ObserveForm(aForm);
   end;
+  HookApplicationIdle;
 end;
 
 procedure TAccessibilityManagerState.RemoveInstalledMarkers;
@@ -3315,6 +3732,21 @@ begin
   end;
 end;
 
+procedure TAccessibilityManagerState.RestoreApplicationIdleHook;
+begin
+  if not fIdleHookInstalled then
+  begin
+    Exit;
+  end;
+
+  if SameIdleEvent(Application.OnIdle, ApplicationIdle) then
+  begin
+    Application.OnIdle := fPreviousIdle;
+  end;
+  fPreviousIdle := nil;
+  fIdleHookInstalled := False;
+end;
+
 procedure TAccessibilityManagerState.ScanCurrentForms;
 var
   i: Integer;
@@ -3342,6 +3774,7 @@ procedure TAccessibilityManagerState.Uninstall;
 begin
   fAppInstalled := False;
   fApplicationRegistry := nil;
+  RestoreApplicationIdleHook;
   ReleaseHintController;
   RemoveInstalledMarkers;
   RestoreScreenHook;

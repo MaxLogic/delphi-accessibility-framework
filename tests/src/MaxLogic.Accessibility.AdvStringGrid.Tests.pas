@@ -42,6 +42,9 @@ type
     procedure OptInProviderFindsScrolledCellsAndPrunesStaleChildren;
     [Test]
     procedure OptInProviderPrunesScrolledCellsWithoutUiaDisconnect;
+    [Test]
+    [Category('AdvStringGridAccessibility,RuntimePropertySynchronization')]
+    procedure OptInProviderUsesCurrentNameAndHelpText;
   end;
 
 implementation
@@ -1278,6 +1281,30 @@ begin
     Assert.AreEqual(S_OK, lRoot.ElementProviderFromPoint(lPoint.X, lPoint.Y, lHit));
     Assert.IsNotNull(lHit);
     Assert.AreEqual('Visible active tab label', ProviderStringProperty(lHit, UIA_NamePropertyId));
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAdvStringGridAccessibilityTests.OptInProviderUsesCurrentNameAndHelpText;
+var
+  lForm: TForm;
+  lGrid: TAdvStringGrid;
+  lGridFragment: IRawElementProviderFragment;
+  lProvider: IAccessibilityProviderNode;
+begin
+  CreateAdvGridFixture(lForm, lGrid);
+  try
+    lGrid.Hint := 'Initial TMS grid help';
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm, TmsRegistry);
+    lGridFragment := FirstChildFragment(lProvider.FragmentProvider);
+    Assert.AreEqual('Initial TMS grid help', ProviderStringProperty(lGridFragment, UIA_NamePropertyId));
+    Assert.AreEqual('Initial TMS grid help', ProviderStringProperty(lGridFragment, UIA_HelpTextPropertyId));
+
+    lGrid.Hint := 'Updated TMS grid help';
+
+    Assert.AreEqual('Updated TMS grid help', ProviderStringProperty(lGridFragment, UIA_NamePropertyId));
+    Assert.AreEqual('Updated TMS grid help', ProviderStringProperty(lGridFragment, UIA_HelpTextPropertyId));
   finally
     lForm.Free;
   end;

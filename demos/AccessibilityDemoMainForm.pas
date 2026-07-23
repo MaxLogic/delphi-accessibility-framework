@@ -462,7 +462,7 @@ begin
   BalloonHint.Description := rsBalloonDescription;
   BalloonHint.ShowHint(btnShowBalloon);
   BalloonHideTimer.Enabled := False;
-  BalloonHideTimer.Enabled := True;
+  BalloonHideTimer.Enabled := True; // FI:W508 - disabling then enabling intentionally restarts the timeout.
   RefreshStatus(rsBalloonTitle);
 end;
 

@@ -1430,6 +1430,7 @@ var
   lFixedRowCount: Integer;
   lFirstScrollableCol: Integer;
   lFirstScrollableRow: Integer;
+  lGridIsVisible: Boolean;
   lKey: Int64;
   lKeysToRemove: TList<Int64>;
   lLastScrollableCol: Integer;
@@ -1440,12 +1441,12 @@ var
   lStopwatch: TStopwatch;
 begin
   fResolvedCurrentValid := False;
-  if (fGrid = nil) or IsDisconnected or not ControlIsInActiveVisibleTree(fGrid) or (fGrid.ColCount <= 0) or
-    (fGrid.RowCount <= 0) then
+  if (fGrid = nil) or IsDisconnected then
   begin
     Exit;
   end;
 
+  lGridIsVisible := ControlIsInActiveVisibleTree(fGrid);
   lCellProbeCount := 0;
   lCreatedCount := 0;
   lMetricsEnabled := TAccessibilityDiagnostics.ProviderHotspotMetricsEnabled;
@@ -1458,7 +1459,10 @@ begin
   try
     for lPair in fCells do
     begin
-      if lPair.Value.IsDisconnected or not VisibleCellRect(CellKeyCol(lPair.Key), CellKeyRow(lPair.Key), lCellRect) then
+      if lPair.Value.IsDisconnected or (CellKeyCol(lPair.Key) < 0) or
+        (CellKeyCol(lPair.Key) >= fGrid.ColCount) or (CellKeyRow(lPair.Key) < 0) or
+        (CellKeyRow(lPair.Key) >= fGrid.RowCount) or
+        (lGridIsVisible and not VisibleCellRect(CellKeyCol(lPair.Key), CellKeyRow(lPair.Key), lCellRect)) then
       begin
         if lKeysToRemove = nil then
         begin
@@ -1485,6 +1489,11 @@ begin
     end;
   finally
     lKeysToRemove.Free;
+  end;
+
+  if not lGridIsVisible or (fGrid.ColCount <= 0) or (fGrid.RowCount <= 0) then
+  begin
+    Exit;
   end;
 
   lFixedColCount := Min(fGrid.FixedCols, fGrid.ColCount);

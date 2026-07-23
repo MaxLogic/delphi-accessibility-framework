@@ -140,6 +140,7 @@ type
       const aScanNode: IAccessibilityScanNode): Boolean;
     procedure CollectScanControls(const aScanNode: IAccessibilityScanNode;
       aControls: TDictionary<TControl, Byte>);
+    procedure ReconcileLabeledByRelationships(const aTree: IAccessibilityScanTree);
     function CanUseDirectHitTarget(aControl: TControl): Boolean;
     function ControlFromPoint(const aScreenPoint: TPoint): TControl;
     function TryFindControlProvider(aControl: TControl; out aProvider: IRawElementProviderFragment): Boolean;
@@ -185,6 +186,9 @@ type
     function CurrentName: string;
     procedure SetLabeledByProvider(const aProvider: IRawElementProviderSimple);
     function TryGetLabeledByProperty(out aValue: OleVariant): Boolean;
+    function UpdateLabeledByProvider(const aProvider: IRawElementProviderSimple;
+      out aOldProvider: IRawElementProviderSimple): Boolean;
+    procedure UpdateScannerName(const aName: string);
     class function SpeedButtonSupportsToggle(aButton: TSpeedButton): Boolean; static;
     class function SupportsValue(aControl: TControl): Boolean; static;
     class function ToggleCheckBox(aControl: TControl): Boolean; static;
@@ -2274,6 +2278,72 @@ begin
   end;
 end;
 
+procedure TAccessibilityVclFormProviderRoot.ReconcileLabeledByRelationships(
+  const aTree: IAccessibilityScanTree);
+var
+  lControl: TControl;
+  lControlProvider: TAccessibilityVclControlProvider;
+  lLabelControl: TControl;
+  lLabelNode: IAccessibilityProviderNode;
+  lLabelProvider: IRawElementProviderSimple;
+  lNewValue: OleVariant;
+  lNode: IAccessibilityProviderNode;
+  lNodeInternal: IAccessibilityProviderNodeInternal;
+  lOldProvider: IRawElementProviderSimple;
+  lOldValue: OleVariant;
+  lRelationship: IAccessibilityScanNodeLabelRelationship;
+  lScanNode: IAccessibilityScanNode;
+begin
+  if (aTree = nil) or IsDisconnected then
+  begin
+    Exit;
+  end;
+
+  for lControl in fProviderNodesByControl.Keys do
+  begin
+    if not fProviderNodesByControl.TryGetValue(lControl, lNode) or
+      not Supports(lNode, IAccessibilityProviderNodeInternal, lNodeInternal) or
+      not (lNodeInternal.ProviderObject is TAccessibilityVclControlProvider) then
+    begin
+      Continue;
+    end;
+
+    lControlProvider := TAccessibilityVclControlProvider(lNodeInternal.ProviderObject);
+    lScanNode := aTree.FindNode(lControl);
+    if lScanNode = nil then
+    begin
+      Continue;
+    end;
+    lControlProvider.UpdateScannerName(lScanNode.Name);
+    lLabelProvider := nil;
+    if Supports(lScanNode, IAccessibilityScanNodeLabelRelationship, lRelationship) then
+    begin
+      lLabelControl := lRelationship.AssociatedLabelControl;
+      if (lLabelControl <> nil) and fProviderNodesByControl.TryGetValue(lLabelControl, lLabelNode) and
+        not lLabelNode.IsDisconnected then
+      begin
+        lLabelProvider := lLabelNode.RawElementProvider;
+      end;
+    end;
+
+    if lControlProvider.UpdateLabeledByProvider(lLabelProvider, lOldProvider) then
+    begin
+      lOldValue := Unassigned;
+      lNewValue := Unassigned;
+      if lOldProvider <> nil then
+      begin
+        lOldValue := lOldProvider as IUnknown;
+      end;
+      if lLabelProvider <> nil then
+      begin
+        lNewValue := lLabelProvider as IUnknown;
+      end;
+      TAccessibilityProviderEvents.RaiseAutomationPropertyChanged(lNode.RawElementProvider,
+        UIA_LabeledByPropertyId, lOldValue, lNewValue, fRuntimeApi); //PALOFF WARN44 event result is non-actionable
+    end;
+  end;
+end;
+
 function TAccessibilityVclFormProviderRoot.ReconcileProviderHierarchy(
   const aTree: IAccessibilityScanTree): Boolean;
 var
@@ -2328,6 +2398,7 @@ begin
     lControlsToRemove.Free;
     lDesiredControls.Free;
   end;
+  ReconcileLabeledByRelationships(aTree);
 end;
 
 function TAccessibilityVclFormProviderRoot.TryFindProviderForControl(aControl: TControl;
@@ -2611,6 +2682,40 @@ begin
   fLabeledByProvider := aProvider;
   fLabeledByDirectAccess := nil;
   Supports(aProvider, IAccessibilityProviderDirectAccess, fLabeledByDirectAccess);
+end;
+
+function TAccessibilityVclControlProvider.UpdateLabeledByProvider(
+  const aProvider: IRawElementProviderSimple; out aOldProvider: IRawElementProviderSimple): Boolean;
+var
+  lCurrentIdentity: IUnknown;
+  lNewIdentity: IUnknown;
+begin
+  aOldProvider := fLabeledByProvider;
+  lCurrentIdentity := nil;
+  lNewIdentity := nil;
+  if fLabeledByProvider <> nil then
+  begin
+    lCurrentIdentity := fLabeledByProvider as IUnknown;
+  end;
+  if aProvider <> nil then
+  begin
+    lNewIdentity := aProvider as IUnknown;
+  end;
+  Result := lCurrentIdentity <> lNewIdentity;
+  if Result then
+  begin
+    SetLabeledByProvider(aProvider);
+  end;
+end;
+
+procedure TAccessibilityVclControlProvider.UpdateScannerName(const aName: string);
+var
+  lTextInfo: TAccessibilityTextInfo;
+begin
+  fName := aName;
+  lTextInfo := TAccessibilityTextExtractor.Extract(fControl);
+  fLiveName := (ControlHasDirectCaption(fControl) or ControlHasDirectText(fControl)) and
+    SameText(fName, lTextInfo.Name);
 end;
 
 function TAccessibilityVclControlProvider.TryGetLabeledByProperty(out aValue: OleVariant): Boolean;
@@ -5156,18 +5261,19 @@ var
   lKeysToRemove: TList<Int64>;
   lLastScrollableCol: Integer;
   lLastScrollableRow: Integer;
+  lGridIsVisible: Boolean;
   lMetricsEnabled: Boolean;
   lPair: TPair<Int64, IAccessibilityProviderNode>;
   lRow: Integer;
   lCell: IAccessibilityProviderNode;
   lStopwatch: TStopwatch;
 begin
-  if (fGrid = nil) or IsDisconnected or not ControlIsInActiveVisibleTree(fGrid) or (fGrid.ColCount <= 0) or
-    (fGrid.RowCount <= 0) then
+  if (fGrid = nil) or IsDisconnected then
   begin
     Exit;
   end;
 
+  lGridIsVisible := ControlIsInActiveVisibleTree(fGrid);
   lCellProbeCount := 0;
   lCreatedCount := 0;
   lMetricsEnabled := TAccessibilityDiagnostics.ProviderHotspotMetricsEnabled;
@@ -5180,7 +5286,10 @@ begin
   try
     for lPair in fCells do
     begin
-      if lPair.Value.IsDisconnected or not IsVisibleCell(CellKeyCol(lPair.Key), CellKeyRow(lPair.Key)) then
+      if lPair.Value.IsDisconnected or (CellKeyCol(lPair.Key) < 0) or
+        (CellKeyCol(lPair.Key) >= fGrid.ColCount) or (CellKeyRow(lPair.Key) < 0) or
+        (CellKeyRow(lPair.Key) >= fGrid.RowCount) or
+        (lGridIsVisible and not IsVisibleCell(CellKeyCol(lPair.Key), CellKeyRow(lPair.Key))) then
       begin
         if lKeysToRemove = nil then
         begin
@@ -5207,6 +5316,11 @@ begin
     end;
   finally
     lKeysToRemove.Free;
+  end;
+
+  if not lGridIsVisible or (fGrid.ColCount <= 0) or (fGrid.RowCount <= 0) then
+  begin
+    Exit;
   end;
 
   lFixedColCount := Min(fGrid.FixedCols, fGrid.ColCount); //PALOFF WARN52 same-width bounded count

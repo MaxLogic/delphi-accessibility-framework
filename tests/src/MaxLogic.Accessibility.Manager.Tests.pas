@@ -45,6 +45,18 @@ type
     [Category('AccessibilityManager,FormCaptionChangeUpdatesInstalledProviderAndRaisesNameEvents')]
     procedure FormCaptionChangeUpdatesInstalledProviderAndRaisesNameEvents;
     [Test]
+    [Category('AccessibilityManager,WindowHandleRecreation')]
+    procedure FormWindowRecreationRefreshesProviderHandleAndHostCache;
+    [Test]
+    [Category('AccessibilityManager,WindowHandleRecreation,ControlWindowRecreationRetainsProviderBehaviorAndTeardownSafety')]
+    procedure ControlWindowRecreationRetainsProviderBehaviorAndTeardownSafety;
+    [Test]
+    [Category('AccessibilityManager,WindowHandleRecreation')]
+    procedure FormRecreationIsSafeWhenAChildIsDestroyedDuringTheTransaction;
+    [Test]
+    [Category('AccessibilityManager,WindowHandleRecreation,ContainerRecreationDoesNotOverwriteFormRootHandle')]
+    procedure ContainerRecreationDoesNotOverwriteFormRootHandle;
+    [Test]
     [Category('AccessibilityManager,RuntimePropertySynchronization')]
     procedure RuntimeButtonCaptionPublishesNameChangeOnce;
     [Test]
@@ -72,8 +84,17 @@ type
     [Category('AccessibilityManager,RuntimePropertySynchronization,RuntimeIdleReplacementAllowsReinstall')]
     procedure RuntimeIdleReplacementAllowsReinstall;
     [Test]
-    [Category('AccessibilityManager,RuntimePropertySynchronization,RuntimeGenericSnapshotSkipsSyntheticGridCells')]
-    procedure RuntimeGenericSnapshotSkipsSyntheticGridCells;
+    [Category('AccessibilityManager,RuntimeGridMutation')]
+    procedure RuntimeStringGridCellMutationPublishesNameOnce;
+    [Test]
+    [Category('AccessibilityManager,RuntimeGridMutation')]
+    procedure RuntimeAdvStringGridCellMutationPublishesNameOnce;
+    [Test]
+    [Category('AccessibilityManager,RuntimeGridMutation,RuntimeStringGridShapeMutationReconcilesOnce')]
+    procedure RuntimeStringGridShapeMutationReconcilesOnce;
+    [Test]
+    [Category('AccessibilityManager,RuntimeGridMutation')]
+    procedure RuntimeAdvStringGridShapeMutationReconcilesOnce;
     [Test]
     [Category('AccessibilityManager,RuntimeProviderHierarchy,RuntimeAddedControlJoinsProviderHierarchy')]
     procedure RuntimeAddedControlJoinsProviderHierarchy;
@@ -101,6 +122,15 @@ type
     [Test]
     [Category('AccessibilityManager,RuntimeProviderHierarchy,RuntimeDisconnectedMappedProviderLeavesNoStaleSibling')]
     procedure RuntimeDisconnectedMappedProviderLeavesNoStaleSibling;
+    [Test]
+    [Category('AccessibilityManager,DynamicLabeledBy,LabeledBy,RuntimeExplicitLabeledByReassignmentPublishesRelationshipOnce')]
+    procedure RuntimeExplicitLabeledByReassignmentPublishesRelationshipOnce;
+    [Test]
+    [Category('AccessibilityManager,DynamicLabeledBy,LabeledBy,RuntimeLabeledByTracksGeometryAmbiguityAndRemoval')]
+    procedure RuntimeLabeledByTracksGeometryAmbiguityAndRemoval;
+    [Test]
+    [Category('AccessibilityManager,DynamicLabeledBy,LabeledBy,RuntimeLabeledEditAdditionAndReparentingStayCurrent')]
+    procedure RuntimeLabeledEditAdditionAndReparentingStayCurrent;
     [Test]
     procedure FormInstallWithCustomRegistryUsesTmsProviderThroughWmGetObject;
     [Test]
@@ -316,6 +346,8 @@ uses
   MaxLogic.Accessibility.VclAdapters;
 
 type
+  TWinControlAccess = class(TWinControl);
+
   IFormInstallRecorder = interface(IAccessibilityFormInstaller)
     ['{89B798B7-0880-4AE5-B799-58E4EB14DF22}']
     function CountFor(aForm: TCustomForm): Integer;
@@ -327,13 +359,18 @@ type
     function ClientsAreListeningCalls: Integer;
     function DisconnectCalls: Integer;
     function EventCalls: Integer;
+    function HostCalls: Integer;
     function LastHwnd: HWND;
+    function LastHostHwnd: HWND;
     function LastEventId: EVENTID;
     function LastEventProvider: IRawElementProviderSimple;
     function LastLParam: LPARAM;
     function LastNotificationProcessing: NotificationProcessing;
     function LastNotificationProvider: IRawElementProviderSimple;
     function LastNotificationText: string;
+    function LabeledByPropertyChangedCalls: Integer;
+    function LastLabeledByNewValue: OleVariant;
+    function LastLabeledByOldValue: OleVariant;
     function LastPropertyChangedNewValue: OleVariant;
     function LastPropertyChangedOldValue: OleVariant;
     function LastPropertyChangedPropertyId: PROPERTYID;
@@ -355,13 +392,18 @@ type
     fClientsAreListeningCalls: Integer;
     fDisconnectCalls: Integer;
     fEventCalls: Integer;
+    fHostCalls: Integer;
     fLastEventId: EVENTID;
     fLastEventProvider: IRawElementProviderSimple;
     fLastHwnd: HWND;
+    fLastHostHwnd: HWND;
     fLastLParam: LPARAM;
     fLastNotificationProcessing: NotificationProcessing;
     fLastNotificationProvider: IRawElementProviderSimple;
     fLastNotificationText: string;
+    fLabeledByPropertyChangedCalls: Integer;
+    fLastLabeledByNewValue: OleVariant;
+    fLastLabeledByOldValue: OleVariant;
     fLastPropertyChangedNewValue: OleVariant;
     fLastPropertyChangedOldValue: OleVariant;
     fLastPropertyChangedPropertyId: PROPERTYID;
@@ -380,13 +422,18 @@ type
     function DisconnectCalls: Integer;
     function EventCalls: Integer;
     function HostProviderFromHwnd(aHwnd: HWND; out aProvider: IRawElementProviderSimple): HRESULT;
+    function HostCalls: Integer;
     function LastEventId: EVENTID;
     function LastEventProvider: IRawElementProviderSimple;
     function LastHwnd: HWND;
+    function LastHostHwnd: HWND;
     function LastLParam: LPARAM;
     function LastNotificationProcessing: NotificationProcessing;
     function LastNotificationProvider: IRawElementProviderSimple;
     function LastNotificationText: string;
+    function LabeledByPropertyChangedCalls: Integer;
+    function LastLabeledByNewValue: OleVariant;
+    function LastLabeledByOldValue: OleVariant;
     function LastPropertyChangedNewValue: OleVariant;
     function LastPropertyChangedOldValue: OleVariant;
     function LastPropertyChangedPropertyId: PROPERTYID;
@@ -486,6 +533,27 @@ type
     procedure WindowProc(var aMessage: TMessage);
     property Calls: Integer read fCalls;
     property Prior: TWndMethod read fPrior write fPrior;
+  end;
+
+  TDestroyControlOnRecreateProbe = class
+  private
+    fControl: TControl;
+    fPrior: TWndMethod;
+  public
+    procedure WindowProc(var aMessage: TMessage);
+    property Control: TControl read fControl write fControl;
+    property Prior: TWndMethod read fPrior write fPrior;
+  end;
+
+  TRecreateHandleProbeStringGrid = class(TStringGrid)
+  private
+    fObservedCreateHwnd: HWND;
+    fProvider: IRawElementProviderSimple;
+  protected
+    procedure WndProc(var aMessage: TMessage); override;
+  public
+    property ObservedCreateHwnd: HWND read fObservedCreateHwnd;
+    property Provider: IRawElementProviderSimple read fProvider write fProvider;
   end;
 
   TNativeAccessibleProbeControl = class(TCustomControl)
@@ -699,6 +767,29 @@ begin
   begin
     fPrior(aMessage);
   end;
+end;
+
+procedure TDestroyControlOnRecreateProbe.WindowProc(var aMessage: TMessage);
+begin
+  if (aMessage.Msg = CM_RECREATEWND) and (fControl <> nil) then
+  begin
+    FreeAndNil(fControl);
+  end;
+  if Assigned(fPrior) then
+  begin
+    fPrior(aMessage);
+  end;
+end;
+
+procedure TRecreateHandleProbeStringGrid.WndProc(var aMessage: TMessage);
+var
+  lNativeWindow: IAccessibilityProviderNativeWindow;
+begin
+  if (aMessage.Msg = WM_NCCREATE) and Supports(fProvider, IAccessibilityProviderNativeWindow, lNativeWindow) then
+  begin
+    fObservedCreateHwnd := lNativeWindow.NativeWindowHandle;
+  end;
+  inherited WndProc(aMessage);
 end;
 
 procedure TNativeAccessibleProbeControl.WndProc(var aMessage: TMessage);
@@ -1207,8 +1298,15 @@ end;
 
 function TManagerTestUiaApi.HostProviderFromHwnd(aHwnd: HWND; out aProvider: IRawElementProviderSimple): HRESULT;
 begin
+  Inc(fHostCalls);
+  fLastHostHwnd := aHwnd;
   aProvider := nil;
   Result := S_FALSE;
+end;
+
+function TManagerTestUiaApi.HostCalls: Integer;
+begin
+  Result := fHostCalls;
 end;
 
 function TManagerTestUiaApi.LastEventId: EVENTID;
@@ -1224,6 +1322,11 @@ end;
 function TManagerTestUiaApi.LastHwnd: HWND;
 begin
   Result := fLastHwnd;
+end;
+
+function TManagerTestUiaApi.LastHostHwnd: HWND;
+begin
+  Result := fLastHostHwnd;
 end;
 
 function TManagerTestUiaApi.LastLParam: LPARAM;
@@ -1244,6 +1347,21 @@ end;
 function TManagerTestUiaApi.LastNotificationText: string;
 begin
   Result := fLastNotificationText;
+end;
+
+function TManagerTestUiaApi.LabeledByPropertyChangedCalls: Integer;
+begin
+  Result := fLabeledByPropertyChangedCalls;
+end;
+
+function TManagerTestUiaApi.LastLabeledByNewValue: OleVariant;
+begin
+  Result := fLastLabeledByNewValue;
+end;
+
+function TManagerTestUiaApi.LastLabeledByOldValue: OleVariant;
+begin
+  Result := fLastLabeledByOldValue;
 end;
 
 function TManagerTestUiaApi.LastPropertyChangedNewValue: OleVariant;
@@ -1304,6 +1422,12 @@ function TManagerTestUiaApi.RaiseAutomationPropertyChanged(const aProvider: IRaw
   aPropertyId: PROPERTYID; const aOldValue: OleVariant; const aNewValue: OleVariant): HRESULT;
 begin
   Inc(fPropertyChangedCalls);
+  if aPropertyId = UIA_LabeledByPropertyId then
+  begin
+    Inc(fLabeledByPropertyChangedCalls);
+    fLastLabeledByOldValue := aOldValue;
+    fLastLabeledByNewValue := aNewValue;
+  end;
   fLastPropertyChangedProvider := aProvider;
   fLastPropertyChangedPropertyId := aPropertyId;
   fLastPropertyChangedOldValue := aOldValue;
@@ -1454,6 +1578,23 @@ var
 begin
   Assert.AreEqual(S_OK, SimpleProvider(aFragment).GetPropertyValue(aPropertyId, lValue));
   Result := string(lValue);
+end;
+
+function ElementProviderProperty(const aProvider: IRawElementProviderSimple;
+  aPropertyId: PROPERTYID): IRawElementProviderSimple;
+var
+  lUnknown: IUnknown;
+  lValue: OleVariant;
+begin
+  Result := nil;
+  Assert.AreEqual(S_OK, aProvider.GetPropertyValue(aPropertyId, lValue));
+  if VarType(lValue) <> varUnknown then
+  begin
+    Exit;
+  end;
+
+  lUnknown := IUnknown(lValue);
+  Supports(lUnknown, IRawElementProviderSimple, Result);
 end;
 
 function ProviderPattern(const aFragment: IRawElementProviderFragment; aPatternId: PATTERNID): IUnknown;
@@ -1760,6 +1901,62 @@ begin
   Assert.IsTrue(Supports(lPattern, IGridProvider, lGridPattern));
   Assert.AreEqual(S_OK, lGridPattern.GetItem(1, 1, lCellProvider));
   Assert.AreEqual(aExpectedName, ProviderStringProperty(FragmentFromSimple(lCellProvider), UIA_NamePropertyId));
+end;
+
+procedure AssertManagerGridCurrentCell(const aGridFragment: IRawElementProviderFragment;
+  const aPoint: TPoint; const aExpectedName: string);
+var
+  lFocus: IRawElementProviderFragment;
+  lGridRoot: IRawElementProviderFragmentRoot;
+  lHit: IRawElementProviderFragment;
+  lPattern: IUnknown;
+  lSelectedProvider: IRawElementProviderSimple;
+  lSelectedUnknown: IUnknown;
+  lSelection: PSafeArray;
+  lSelectionIndex: LongInt;
+  lSelectionProvider: ISelectionProvider;
+begin
+  Assert.IsTrue(Supports(aGridFragment, IRawElementProviderFragmentRoot, lGridRoot));
+  Assert.AreEqual(S_OK, lGridRoot.GetFocus(lFocus));
+  Assert.AreEqual(aExpectedName, ProviderStringProperty(lFocus, UIA_NamePropertyId));
+  Assert.AreEqual(S_OK, lGridRoot.ElementProviderFromPoint(aPoint.X, aPoint.Y, lHit));
+  Assert.AreEqual(aExpectedName, ProviderStringProperty(lHit, UIA_NamePropertyId));
+
+  lPattern := ProviderPattern(aGridFragment, UIA_SelectionPatternId);
+  Assert.IsTrue(Supports(lPattern, ISelectionProvider, lSelectionProvider));
+  Assert.AreEqual(S_OK, lSelectionProvider.GetSelection(lSelection));
+  try
+    Assert.IsNotNull(lSelection);
+    lSelectionIndex := 0;
+    Assert.AreEqual(S_OK, SafeArrayGetElement(lSelection, lSelectionIndex, lSelectedUnknown));
+    Assert.IsTrue(Supports(lSelectedUnknown, IRawElementProviderSimple, lSelectedProvider));
+    Assert.AreEqual(aExpectedName,
+      ProviderStringProperty(FragmentFromSimple(lSelectedProvider), UIA_NamePropertyId));
+  finally
+    if lSelection <> nil then
+    begin
+      SafeArrayDestroy(lSelection);
+    end;
+  end;
+end;
+
+function CountManagerGridChildren(const aGridFragment: IRawElementProviderFragment;
+  const aName: string; out aNamedCount: Integer): Integer;
+var
+  lChild: IRawElementProviderFragment;
+begin
+  Result := 0;
+  aNamedCount := 0;
+  lChild := NavigateFragment(aGridFragment, NavigateDirection_FirstChild);
+  while lChild <> nil do
+  begin
+    Inc(Result);
+    if ProviderStringProperty(lChild, UIA_NamePropertyId) = aName then
+    begin
+      Inc(aNamedCount);
+    end;
+    lChild := NavigateFragment(lChild, NavigateDirection_NextSibling);
+  end;
 end;
 
 procedure TAccessibilityManagerTests.ApplicationInstallDiscoversFutureFormsAndChainsActiveFormChange;
@@ -2349,6 +2546,257 @@ begin
     lForm.Caption := 'Stopped tasks';
     Assert.AreEqual(1, lApi.PropertyChangedCalls);
     Assert.AreEqual(1, lWinEvents.Calls);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormWindowRecreationRefreshesProviderHandleAndHostCache;
+var
+  lAfterAccessible: IAccessible;
+  lApi: IManagerTestUiaApi;
+  lBeforeAccessible: IAccessible;
+  lForm: TForm;
+  lGrid: TStringGrid;
+  lGridFragment: IRawElementProviderFragment;
+  lGridProvider: IRawElementProviderSimple;
+  lHostProvider: IRawElementProviderSimple;
+  lMessage: TMessage;
+  lRootProvider: IRawElementProviderSimple;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 320, 180);
+    lGrid := TStringGrid.Create(lForm);
+    lGrid.Parent := lForm;
+    lGrid.SetBounds(8, 8, 240, 100);
+    lForm.HandleNeeded;
+    lGrid.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider),
+      'Installed form provider must remain available.');
+    lGridFragment := FirstChildFragment(FragmentFromSimple(lRootProvider));
+    lGridProvider := SimpleProvider(lGridFragment);
+
+    Assert.AreEqual(S_FALSE, lGridProvider.Get_HostRawElementProvider(lHostProvider));
+    Assert.AreEqual(1, lApi.HostCalls);
+    Assert.AreEqual(Integer(lGrid.Handle), Integer(lApi.LastHostHwnd));
+    lBeforeAccessible := RepeatedMsaaAccessibleFromControl(lForm);
+
+    TWinControlAccess(lForm).RecreateWnd;
+    lForm.HandleNeeded;
+    lGrid.HandleNeeded;
+
+    Assert.IsTrue(lForm.HandleAllocated, 'Real form RecreateWnd must allocate the replacement HWND.');
+    Assert.AreEqual(Integer(lForm.Handle),
+      Integer(ProviderNativeWindowHandle(FragmentFromSimple(lRootProvider))));
+    Assert.AreEqual(Integer(lGrid.Handle), Integer(ProviderNativeWindowHandle(lGridFragment)));
+    Assert.AreEqual(S_FALSE, lGridProvider.Get_HostRawElementProvider(lHostProvider));
+    Assert.AreEqual(2, lApi.HostCalls);
+    Assert.AreEqual(Integer(lGrid.Handle), Integer(lApi.LastHostHwnd));
+
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.LParam := UiaRootObjectId;
+    lForm.WindowProc(lMessage);
+    Assert.AreEqual(2468, lMessage.Result);
+    Assert.IsTrue(lApi.ReturnedProvider = lRootProvider,
+      'WM_GETOBJECT must retain the installed root provider identity.');
+
+    lAfterAccessible := RepeatedMsaaAccessibleFromControl(lForm);
+    Assert.IsTrue(SameAccessibleIdentity(lBeforeAccessible, lAfterAccessible),
+      'MSAA wrapper identity must survive form HWND recreation.');
+
+    TWinControlAccess(lForm).RecreateWnd;
+    lForm.HandleNeeded;
+    lGrid.HandleNeeded;
+    Assert.AreEqual(S_FALSE, lGridProvider.Get_HostRawElementProvider(lHostProvider));
+    Assert.AreEqual(3, lApi.HostCalls);
+    Assert.AreEqual(Integer(lGrid.Handle), Integer(lApi.LastHostHwnd));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.ControlWindowRecreationRetainsProviderBehaviorAndTeardownSafety;
+var
+  lAfterAccessible: IAccessible;
+  lApi: IManagerTestUiaApi;
+  lBeforeAccessible: IAccessible;
+  lCellRect: TRect;
+  lForm: TForm;
+  lGrid: TRecreateHandleProbeStringGrid;
+  lGridFragment: IRawElementProviderFragment;
+  lGridProvider: IRawElementProviderSimple;
+  lHostProvider: IRawElementProviderSimple;
+  lMessage: TMessage;
+  lPoint: TPoint;
+  lReturnCalls: Integer;
+  lRootProvider: IRawElementProviderSimple;
+  lValue: OleVariant;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.SetBounds(100, 100, 320, 180);
+    lGrid := TRecreateHandleProbeStringGrid.Create(lForm);
+    lGrid.Parent := lForm;
+    lGrid.SetBounds(8, 8, 240, 100);
+    lGrid.Cells[1, 1] := 'Current cell';
+    lGrid.Col := 1;
+    lGrid.Row := 1;
+    lForm.HandleNeeded;
+    lGrid.HandleNeeded;
+    lForm.ActiveControl := lGrid;
+    TAccessibilityManager.Install(lForm);
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider));
+    lGridFragment := FirstChildFragment(FragmentFromSimple(lRootProvider));
+    lGridProvider := SimpleProvider(lGridFragment);
+    lGrid.Provider := lGridProvider;
+
+    Assert.AreEqual(S_FALSE, lGridProvider.Get_HostRawElementProvider(lHostProvider));
+    Assert.AreEqual(1, lApi.HostCalls);
+    lBeforeAccessible := RepeatedMsaaAccessibleFromControl(lGrid);
+
+    TWinControlAccess(lGrid).RecreateWnd;
+    lGrid.HandleNeeded;
+
+    Assert.AreEqual(Integer(lGrid.Handle), Integer(lGrid.ObservedCreateHwnd));
+    Assert.AreEqual(Integer(lGrid.Handle), Integer(ProviderNativeWindowHandle(lGridFragment)));
+    Assert.AreEqual(S_FALSE, lGridProvider.Get_HostRawElementProvider(lHostProvider));
+    Assert.AreEqual(2, lApi.HostCalls);
+    Assert.AreEqual(Integer(lGrid.Handle), Integer(lApi.LastHostHwnd));
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.LParam := UiaRootObjectId;
+    lGrid.WindowProc(lMessage);
+    Assert.AreEqual(2468, lMessage.Result);
+    Assert.IsTrue(lApi.ReturnedProvider = lGridProvider);
+    lAfterAccessible := RepeatedMsaaAccessibleFromControl(lGrid);
+    Assert.IsTrue(SameAccessibleIdentity(lBeforeAccessible, lAfterAccessible));
+    lCellRect := lGrid.CellRect(1, 1);
+    lPoint := lGrid.ClientToScreen(Point((lCellRect.Left + lCellRect.Right) div 2,
+      (lCellRect.Top + lCellRect.Bottom) div 2));
+    AssertManagerGridCurrentCell(lGridFragment, lPoint, 'Current cell');
+
+    TWinControlAccess(lGrid).RecreateWnd;
+    lGrid.HandleNeeded;
+    Assert.AreEqual(S_FALSE, lGridProvider.Get_HostRawElementProvider(lHostProvider));
+    Assert.AreEqual(3, lApi.HostCalls);
+
+    TAccessibilityManager.Uninstall;
+    lReturnCalls := lApi.ReturnCalls;
+    TWinControlAccess(lGrid).RecreateWnd;
+    lGrid.HandleNeeded;
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.LParam := UiaRootObjectId;
+    lGrid.WindowProc(lMessage);
+    Assert.AreEqual(lReturnCalls, lApi.ReturnCalls);
+    Assert.AreEqual(UIA_E_ELEMENTNOTAVAILABLE,
+      lGridProvider.GetPropertyValue(UIA_NamePropertyId, lValue));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormRecreationIsSafeWhenAChildIsDestroyedDuringTheTransaction;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lGrid: TStringGrid;
+  lGridProvider: IRawElementProviderSimple;
+  lMessage: TMessage;
+  lProbe: TDestroyControlOnRecreateProbe;
+  lRootProvider: IRawElementProviderSimple;
+  lValue: OleVariant;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  lProbe := TDestroyControlOnRecreateProbe.Create;
+  try
+    lGrid := TStringGrid.Create(lForm);
+    lGrid.Parent := lForm;
+    lForm.HandleNeeded;
+    lGrid.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider));
+    lGridProvider := SimpleProvider(FirstChildFragment(FragmentFromSimple(lRootProvider)));
+    lProbe.Control := lGrid;
+    lProbe.Prior := lForm.WindowProc;
+    lForm.WindowProc := lProbe.WindowProc;
+
+    TWinControlAccess(lForm).RecreateWnd;
+    lForm.HandleNeeded;
+
+    Assert.AreEqual(UIA_E_ELEMENTNOTAVAILABLE,
+      lGridProvider.GetPropertyValue(UIA_NamePropertyId, lValue));
+    Assert.AreEqual(Integer(lForm.Handle),
+      Integer(ProviderNativeWindowHandle(FragmentFromSimple(lRootProvider))));
+    lForm.WindowProc := lProbe.Prior;
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.LParam := UiaRootObjectId;
+    lForm.WindowProc(lMessage);
+    Assert.AreEqual(2468, lMessage.Result);
+    Assert.IsTrue(lApi.ReturnedProvider = lRootProvider);
+  finally
+    if (lForm <> nil) and Assigned(lProbe.Prior) then
+    begin
+      lForm.WindowProc := lProbe.Prior;
+    end;
+    lForm.Free;
+    lProbe.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.ContainerRecreationDoesNotOverwriteFormRootHandle;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lLabel: TLabel;
+  lMessage: TMessage;
+  lPanel: TPanel;
+  lRootProvider: IRawElementProviderSimple;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lPanel := TPanel.Create(lForm);
+    lPanel.Parent := lForm;
+    lPanel.TabStop := False;
+    lLabel := TLabel.Create(lForm);
+    lLabel.Parent := lPanel;
+    lLabel.Caption := 'Panel content';
+    lForm.HandleNeeded;
+    lPanel.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider));
+
+    TWinControlAccess(lPanel).RecreateWnd;
+    lPanel.HandleNeeded;
+
+    Assert.AreEqual(Integer(lForm.Handle),
+      Integer(ProviderNativeWindowHandle(FragmentFromSimple(lRootProvider))));
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.LParam := UiaRootObjectId;
+    lForm.WindowProc(lMessage);
+    Assert.AreEqual(2468, lMessage.Result);
+    Assert.IsTrue(lApi.ReturnedProvider = lRootProvider);
   finally
     lForm.Free;
     ResetManager;
@@ -2949,12 +3397,18 @@ begin
   end;
 end;
 
-procedure TAccessibilityManagerTests.RuntimeGenericSnapshotSkipsSyntheticGridCells;
+procedure TAccessibilityManagerTests.RuntimeStringGridCellMutationPublishesNameOnce;
 var
   lApi: IManagerTestUiaApi;
-  lDone: Boolean;
+  lCellProvider: IRawElementProviderSimple;
+  lDone: Boolean; //PALOFF WARN5 var argument exercises the installed idle handler
   lForm: TForm;
   lGrid: TStringGrid;
+  lGridFragment: IRawElementProviderFragment;
+  lGridPattern: IGridProvider;
+  lPattern: IUnknown;
+  lRootProvider: IRawElementProviderSimple;
+  lValue: OleVariant;
   lWinEvents: TWinEventRecorder;
 begin
   ResetManager;
@@ -2970,17 +3424,288 @@ begin
     lGrid.ColCount := 2;
     lGrid.RowCount := 2;
     lGrid.Cells[0, 0] := 'Initial cell';
+    lGrid.Col := 0;
+    lGrid.Row := 0;
+    lForm.ActiveControl := lGrid;
     lForm.HandleNeeded;
     lGrid.HandleNeeded;
     TAccessibilityManager.Install(lForm);
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider));
+    lGridFragment := FirstChildFragment(FragmentFromSimple(lRootProvider));
+    lPattern := ProviderPattern(lGridFragment, UIA_GridPatternId);
+    Assert.IsTrue(Supports(lPattern, IGridProvider, lGridPattern));
+    Assert.AreEqual(S_OK, lGridPattern.GetItem(0, 0, lCellProvider));
+    Assert.AreEqual('Initial cell', ProviderStringProperty(FragmentFromSimple(lCellProvider), UIA_NamePropertyId));
 
     lGrid.Cells[0, 0] := 'Updated cell';
     lDone := True;
     Application.OnIdle(Application, lDone);
 
-    Assert.AreEqual(0, lApi.PropertyChangedCalls,
-      'T-131 owns synthetic grid-cell synchronization and cache lifecycle.');
-    Assert.AreEqual(0, lWinEvents.Calls);
+    Assert.AreEqual('Updated cell', ProviderStringProperty(FragmentFromSimple(lCellProvider), UIA_NamePropertyId));
+    Assert.AreEqual(0, lGrid.Col);
+    Assert.AreEqual(0, lGrid.Row);
+    Assert.AreEqual(1, lApi.PropertyChangedCalls);
+    Assert.AreEqual(UIA_NamePropertyId, lApi.LastPropertyChangedPropertyId);
+    Assert.AreEqual('Initial cell', string(lApi.LastPropertyChangedOldValue));
+    Assert.AreEqual('Updated cell', string(lApi.LastPropertyChangedNewValue));
+    Assert.IsTrue(lApi.LastPropertyChangedProvider = lCellProvider);
+    Assert.AreEqual(1, lWinEvents.Calls);
+    Assert.AreEqual(EVENT_OBJECT_NAMECHANGE, lWinEvents.LastEvent);
+    Assert.AreEqual(lGrid.Handle, lWinEvents.LastHwnd);
+
+    lGrid.Cells[0, 0] := 'Updated cell';
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.AreEqual(1, lApi.PropertyChangedCalls);
+    Assert.AreEqual(1, lWinEvents.Calls);
+
+    TAccessibilityManager.Uninstall;
+    lGrid.Cells[0, 0] := 'After uninstall';
+    Assert.AreEqual(UIA_E_ELEMENTNOTAVAILABLE,
+      lCellProvider.GetPropertyValue(UIA_NamePropertyId, lValue));
+    Assert.AreEqual(1, lApi.PropertyChangedCalls);
+    Assert.AreEqual(1, lWinEvents.Calls);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.RuntimeAdvStringGridCellMutationPublishesNameOnce;
+var
+  lApi: IManagerTestUiaApi;
+  lCellProvider: IRawElementProviderSimple;
+  lDone: Boolean; //PALOFF WARN5 var argument exercises the installed idle handler
+  lForm: TForm;
+  lGrid: TAdvStringGrid;
+  lGridFragment: IRawElementProviderFragment;
+  lGridPattern: IGridProvider;
+  lPattern: IUnknown;
+  lRootProvider: IRawElementProviderSimple;
+  lValue: OleVariant;
+  lWinEvents: TWinEventRecorder;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lWinEvents := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents); //PALOFF WARN53 test retains the concrete recorder
+  CreateManagerTmsGridFixture(lForm, lGrid);
+  try
+    lGrid.GotoCell(1, 1);
+    lForm.ActiveControl := lGrid;
+    TAccessibilityManager.Install(lForm, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider));
+    lGridFragment := FirstChildFragment(FragmentFromSimple(lRootProvider));
+    lPattern := ProviderPattern(lGridFragment, UIA_GridPatternId);
+    Assert.IsTrue(Supports(lPattern, IGridProvider, lGridPattern));
+    Assert.AreEqual(S_OK, lGridPattern.GetItem(1, 1, lCellProvider));
+    Assert.AreEqual('Alice', ProviderStringProperty(FragmentFromSimple(lCellProvider), UIA_NamePropertyId));
+
+    lGrid.Cells[1, 1] := '<i>Bob</i>';
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+
+    Assert.AreEqual('Bob', ProviderStringProperty(FragmentFromSimple(lCellProvider), UIA_NamePropertyId));
+    Assert.AreEqual(1, lGrid.Col);
+    Assert.AreEqual(1, lGrid.Row);
+    Assert.AreEqual(1, lApi.PropertyChangedCalls);
+    Assert.AreEqual(UIA_NamePropertyId, lApi.LastPropertyChangedPropertyId);
+    Assert.AreEqual('Alice', string(lApi.LastPropertyChangedOldValue));
+    Assert.AreEqual('Bob', string(lApi.LastPropertyChangedNewValue));
+    Assert.IsTrue(lApi.LastPropertyChangedProvider = lCellProvider);
+    Assert.AreEqual(1, lWinEvents.Calls);
+    Assert.AreEqual(EVENT_OBJECT_NAMECHANGE, lWinEvents.LastEvent);
+    Assert.AreEqual(lGrid.Handle, lWinEvents.LastHwnd);
+
+    lGrid.Cells[1, 1] := '<b>Bob</b>';
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.AreEqual(1, lApi.PropertyChangedCalls);
+    Assert.AreEqual(1, lWinEvents.Calls);
+
+    TAccessibilityManager.Uninstall;
+    lGrid.Cells[1, 1] := 'After uninstall';
+    Assert.AreEqual(UIA_E_ELEMENTNOTAVAILABLE,
+      lCellProvider.GetPropertyValue(UIA_NamePropertyId, lValue));
+    Assert.AreEqual(1, lApi.PropertyChangedCalls);
+    Assert.AreEqual(1, lWinEvents.Calls);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.RuntimeStringGridShapeMutationReconcilesOnce;
+var
+  lApi: IManagerTestUiaApi;
+  lCellRect: TRect;
+  lCellProvider: IRawElementProviderSimple;
+  lColumnCount: Integer;
+  lDone: Boolean; //PALOFF WARN5 var argument exercises the installed idle handler
+  lForm: TForm;
+  lGrid: TStringGrid;
+  lGridFragment: IRawElementProviderFragment;
+  lGridPattern: IGridProvider;
+  lNamedCount: Integer;
+  lPattern: IUnknown;
+  lPoint: TPoint;
+  lRootProvider: IRawElementProviderSimple;
+  lRowCount: Integer;
+  lValue: OleVariant;
+  lWinEvents: TWinEventRecorder;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lWinEvents := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents); //PALOFF WARN53 test retains the concrete recorder
+  lForm := TForm.Create(nil);
+  try
+    lGrid := TStringGrid.Create(lForm);
+    lGrid.Parent := lForm;
+    lGrid.SetBounds(8, 8, 220, 90);
+    lGrid.ColCount := 3;
+    lGrid.RowCount := 3;
+    lGrid.Cells[2, 2] := 'Removed cell';
+    lForm.HandleNeeded;
+    lGrid.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider));
+    lGridFragment := FirstChildFragment(FragmentFromSimple(lRootProvider));
+    lPattern := ProviderPattern(lGridFragment, UIA_GridPatternId);
+    Assert.IsTrue(Supports(lPattern, IGridProvider, lGridPattern));
+    Assert.AreEqual(S_OK, lGridPattern.GetItem(2, 2, lCellProvider));
+
+    lGrid.ColCount := 2;
+    lGrid.RowCount := 2;
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+
+    Assert.AreEqual(S_OK, lGridPattern.Get_ColumnCount(lColumnCount));
+    Assert.AreEqual(2, lColumnCount);
+    Assert.AreEqual(S_OK, lGridPattern.Get_RowCount(lRowCount));
+    Assert.AreEqual(2, lRowCount);
+    Assert.AreEqual(UIA_E_ELEMENTNOTAVAILABLE,
+      lCellProvider.GetPropertyValue(UIA_NamePropertyId, lValue));
+    Assert.AreEqual(4, CountManagerGridChildren(lGridFragment, 'Removed cell', lNamedCount));
+    Assert.AreEqual(0, lNamedCount);
+    Assert.AreEqual(1, lApi.StructureChangedCalls);
+    Assert.AreEqual(StructureChangeType_ChildrenInvalidated, lApi.LastStructureChangeType);
+    Assert.IsTrue(lApi.LastStructureChangeProvider = SimpleProvider(lGridFragment));
+    Assert.AreEqual(1, lWinEvents.Calls);
+    Assert.AreEqual(EVENT_OBJECT_REORDER, lWinEvents.LastEvent);
+    Assert.AreEqual(lGrid.Handle, lWinEvents.LastHwnd);
+
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.AreEqual(1, lApi.StructureChangedCalls);
+    Assert.AreEqual(1, lWinEvents.Calls);
+
+    lGrid.ColCount := 3;
+    lGrid.RowCount := 3;
+    lGrid.Cells[2, 2] := 'Added cell';
+    lGrid.Col := 2;
+    lGrid.Row := 2;
+    lForm.ActiveControl := lGrid;
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.AreEqual(2, lApi.StructureChangedCalls);
+    Assert.AreEqual(2, lWinEvents.Calls);
+    Assert.AreEqual(S_OK, lGridPattern.GetItem(2, 2, lCellProvider));
+    Assert.AreEqual('Added cell', ProviderStringProperty(FragmentFromSimple(lCellProvider), UIA_NamePropertyId));
+    Assert.AreEqual(6, CountManagerGridChildren(lGridFragment, 'Added cell', lNamedCount));
+    Assert.AreEqual(1, lNamedCount);
+    lCellRect := lGrid.CellRect(2, 2);
+    lPoint := lGrid.ClientToScreen(Point((lCellRect.Left + lCellRect.Right) div 2,
+      (lCellRect.Top + lCellRect.Bottom) div 2));
+    AssertManagerGridCurrentCell(lGridFragment, lPoint, 'Added cell');
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.RuntimeAdvStringGridShapeMutationReconcilesOnce;
+var
+  lApi: IManagerTestUiaApi;
+  lCellRect: TRect;
+  lCellProvider: IRawElementProviderSimple;
+  lColumnCount: Integer;
+  lDone: Boolean; //PALOFF WARN5 var argument exercises the installed idle handler
+  lForm: TForm;
+  lGrid: TAdvStringGrid;
+  lGridFragment: IRawElementProviderFragment;
+  lGridPattern: IGridProvider;
+  lNamedCount: Integer;
+  lPattern: IUnknown;
+  lPoint: TPoint;
+  lRootProvider: IRawElementProviderSimple;
+  lRowCount: Integer;
+  lValue: OleVariant;
+  lWinEvents: TWinEventRecorder;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lWinEvents := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents); //PALOFF WARN53 test retains the concrete recorder
+  CreateManagerTmsGridFixture(lForm, lGrid);
+  try
+    lGrid.Cells[2, 2] := 'Removed TMS cell';
+    TAccessibilityManager.Install(lForm, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider));
+    lGridFragment := FirstChildFragment(FragmentFromSimple(lRootProvider));
+    lPattern := ProviderPattern(lGridFragment, UIA_GridPatternId);
+    Assert.IsTrue(Supports(lPattern, IGridProvider, lGridPattern));
+    Assert.AreEqual(S_OK, lGridPattern.GetItem(2, 2, lCellProvider));
+
+    lGrid.ColCount := 2;
+    lGrid.RowCount := 2;
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+
+    Assert.AreEqual(S_OK, lGridPattern.Get_ColumnCount(lColumnCount));
+    Assert.AreEqual(2, lColumnCount);
+    Assert.AreEqual(S_OK, lGridPattern.Get_RowCount(lRowCount));
+    Assert.AreEqual(2, lRowCount);
+    Assert.AreEqual(UIA_E_ELEMENTNOTAVAILABLE,
+      lCellProvider.GetPropertyValue(UIA_NamePropertyId, lValue));
+    Assert.AreEqual(4, CountManagerGridChildren(lGridFragment, 'Removed TMS cell', lNamedCount));
+    Assert.AreEqual(0, lNamedCount);
+    Assert.AreEqual(1, lApi.StructureChangedCalls);
+    Assert.AreEqual(StructureChangeType_ChildrenInvalidated, lApi.LastStructureChangeType);
+    Assert.IsTrue(lApi.LastStructureChangeProvider = SimpleProvider(lGridFragment));
+    Assert.AreEqual(1, lWinEvents.Calls);
+    Assert.AreEqual(EVENT_OBJECT_REORDER, lWinEvents.LastEvent);
+    Assert.AreEqual(lGrid.Handle, lWinEvents.LastHwnd);
+
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.AreEqual(1, lApi.StructureChangedCalls);
+    Assert.AreEqual(1, lWinEvents.Calls);
+
+    lGrid.ColCount := 3;
+    lGrid.RowCount := 3;
+    lGrid.Cells[2, 2] := 'Added TMS cell';
+    lGrid.GotoCell(2, 2);
+    lForm.ActiveControl := lGrid;
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.AreEqual(2, lApi.StructureChangedCalls);
+    Assert.AreEqual(2, lWinEvents.Calls);
+    Assert.AreEqual(S_OK, lGridPattern.GetItem(2, 2, lCellProvider));
+    Assert.AreEqual('Added TMS cell',
+      ProviderStringProperty(FragmentFromSimple(lCellProvider), UIA_NamePropertyId));
+    Assert.AreEqual(9, CountManagerGridChildren(lGridFragment, 'Added TMS cell', lNamedCount));
+    Assert.AreEqual(1, lNamedCount);
+    lCellRect := lGrid.CellRect(2, 2);
+    lPoint := lGrid.ClientToScreen(Point((lCellRect.Left + lCellRect.Right) div 2,
+      (lCellRect.Top + lCellRect.Bottom) div 2));
+    AssertManagerGridCurrentCell(lGridFragment, lPoint, 'Added TMS cell');
   finally
     lForm.Free;
     ResetManager;
@@ -3531,6 +4256,243 @@ begin
     Assert.IsTrue(SimpleProvider(lSecondChild) = lLabelProvider, 'stale disconnected sibling omitted');
     lThirdChild := NavigateFragment(lSecondChild, NavigateDirection_NextSibling);
     Assert.IsNull(lThirdChild, 'only replacement button and added label remain');
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.RuntimeExplicitLabeledByReassignmentPublishesRelationshipOnce;
+var
+  lApi: IManagerTestUiaApi;
+  lDone: Boolean; //PALOFF WARN5 var argument exercises the installed idle handler
+  lEdit: TEdit;
+  lEditProvider: IRawElementProviderSimple;
+  lFirstLabel: TLabel;
+  lFirstLabelProvider: IRawElementProviderSimple;
+  lForm: TForm;
+  lLabeledBy: IRawElementProviderSimple;
+  lLookup: IAccessibilityVclProviderLookup;
+  lRootProvider: IRawElementProviderSimple;
+  lSecondLabel: TLabel;
+  lSecondLabelProvider: IRawElementProviderSimple;
+  lUnknown: IUnknown;
+  lValue: OleVariant;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lFirstLabel := TLabel.Create(lForm);
+    lFirstLabel.Caption := 'Field';
+    lFirstLabel.Parent := lForm;
+    lFirstLabel.SetBounds(16, 20, 80, 17);
+    lSecondLabel := TLabel.Create(lForm);
+    lSecondLabel.Caption := 'Field';
+    lSecondLabel.Parent := lForm;
+    lSecondLabel.SetBounds(16, 52, 80, 17);
+    lEdit := TEdit.Create(lForm);
+    lEdit.Parent := lForm;
+    lEdit.SetBounds(112, 16, 160, 23);
+    lFirstLabel.FocusControl := lEdit;
+    lForm.HandleNeeded;
+    lEdit.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider));
+    Assert.IsTrue(Supports(lRootProvider, IAccessibilityVclProviderLookup, lLookup));
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lEdit, lEditProvider));
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lFirstLabel, lFirstLabelProvider));
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lSecondLabel, lSecondLabelProvider));
+    Assert.AreEqual(S_OK, lEditProvider.GetPropertyValue(UIA_LabeledByPropertyId, lValue));
+    lUnknown := IUnknown(lValue);
+    Assert.IsTrue(Supports(lUnknown, IRawElementProviderSimple, lLabeledBy));
+    Assert.IsTrue(lLabeledBy = lFirstLabelProvider, 'initial explicit relationship');
+
+    lFirstLabel.FocusControl := nil;
+    lSecondLabel.FocusControl := lEdit;
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+
+    Assert.AreEqual(S_OK, lEditProvider.GetPropertyValue(UIA_LabeledByPropertyId, lValue));
+    lUnknown := IUnknown(lValue);
+    Assert.IsTrue(Supports(lUnknown, IRawElementProviderSimple, lLabeledBy));
+    Assert.IsTrue(lLabeledBy = lSecondLabelProvider, 'runtime explicit relationship');
+    Assert.AreEqual(1, lApi.PropertyChangedCalls);
+    Assert.AreEqual(UIA_LabeledByPropertyId, lApi.LastPropertyChangedPropertyId);
+    lUnknown := IUnknown(lApi.LastPropertyChangedOldValue);
+    Assert.IsTrue(lUnknown = (lFirstLabelProvider as IUnknown), 'old relationship provider');
+    lUnknown := IUnknown(lApi.LastPropertyChangedNewValue);
+    Assert.IsTrue(lUnknown = (lSecondLabelProvider as IUnknown), 'new relationship provider');
+
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.AreEqual(1, lApi.PropertyChangedCalls, 'unchanged relationship must not publish twice');
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.RuntimeLabeledByTracksGeometryAmbiguityAndRemoval;
+var
+  lApi: IManagerTestUiaApi;
+  lDone: Boolean; //PALOFF WARN5 var argument exercises the installed idle handler
+  lEdit: TEdit;
+  lEditProvider: IRawElementProviderSimple;
+  lFirstLabel: TStaticText;
+  lFirstLabelProvider: IRawElementProviderSimple;
+  lForm: TForm;
+  lLookup: IAccessibilityVclProviderLookup;
+  lRootProvider: IRawElementProviderSimple;
+  lSecondLabel: TStaticText;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lFirstLabel := TStaticText.Create(lForm);
+    lFirstLabel.Caption := 'Field';
+    lFirstLabel.Parent := lForm;
+    lFirstLabel.SetBounds(400, 20, 80, 17);
+    lSecondLabel := TStaticText.Create(lForm);
+    lSecondLabel.Caption := 'Field';
+    lSecondLabel.Parent := lForm;
+    lSecondLabel.SetBounds(400, 52, 80, 17);
+    lEdit := TEdit.Create(lForm);
+    lEdit.Parent := lForm;
+    lEdit.SetBounds(112, 16, 160, 23);
+    lEdit.Text := 'Fallback value';
+    lForm.HandleNeeded;
+    lFirstLabel.HandleNeeded;
+    lSecondLabel.HandleNeeded;
+    lEdit.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider));
+    Assert.IsTrue(Supports(lRootProvider, IAccessibilityVclProviderLookup, lLookup));
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lEdit, lEditProvider));
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lFirstLabel, lFirstLabelProvider));
+    Assert.IsNull(ElementProviderProperty(lEditProvider, UIA_LabeledByPropertyId));
+
+    lFirstLabel.SetBounds(16, 20, 80, 17);
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.IsTrue(ElementProviderProperty(lEditProvider, UIA_LabeledByPropertyId) = lFirstLabelProvider,
+      'moving one label into range establishes the inferred relationship');
+    Assert.AreEqual(1, lApi.LabeledByPropertyChangedCalls);
+    Assert.IsTrue(VarIsEmpty(lApi.LastLabeledByOldValue));
+
+    lSecondLabel.SetBounds(lFirstLabel.Left, lFirstLabel.Top, lFirstLabel.Width, lFirstLabel.Height);
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.IsNull(ElementProviderProperty(lEditProvider, UIA_LabeledByPropertyId),
+      'equal geometric candidates are ambiguous');
+    Assert.AreEqual(2, lApi.LabeledByPropertyChangedCalls);
+    Assert.IsTrue(VarIsEmpty(lApi.LastLabeledByNewValue));
+
+    lSecondLabel.SetBounds(400, 52, 80, 17);
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.IsTrue(ElementProviderProperty(lEditProvider, UIA_LabeledByPropertyId) = lFirstLabelProvider,
+      'removing the ambiguity restores the inferred relationship');
+    Assert.AreEqual(3, lApi.LabeledByPropertyChangedCalls);
+
+    lFirstLabel.Free;
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.IsNull(ElementProviderProperty(lEditProvider, UIA_LabeledByPropertyId),
+      'removing the label clears the relationship');
+    Assert.AreEqual('Fallback value', ProviderStringProperty(FragmentFromSimple(lEditProvider),
+      UIA_NamePropertyId));
+    Assert.AreEqual(4, lApi.LabeledByPropertyChangedCalls);
+    Assert.IsTrue(VarIsEmpty(lApi.LastLabeledByNewValue));
+
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.AreEqual(4, lApi.LabeledByPropertyChangedCalls,
+      'unchanged absent relationship must not publish twice');
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.RuntimeLabeledEditAdditionAndReparentingStayCurrent;
+var
+  lApi: IManagerTestUiaApi;
+  lDone: Boolean; //PALOFF WARN5 var argument exercises the installed idle handler
+  lEditProvider: IRawElementProviderSimple;
+  lForm: TForm;
+  lLabelProvider: IRawElementProviderSimple;
+  lLabeledEdit: TLabeledEdit;
+  lLookup: IAccessibilityVclProviderLookup;
+  lPanelA: TPanel;
+  lPanelB: TPanel;
+  lRootProvider: IRawElementProviderSimple;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lPanelA := TPanel.Create(lForm);
+    lPanelA.Caption := 'First group';
+    lPanelA.Parent := lForm;
+    lPanelA.SetBounds(8, 8, 280, 80);
+    lPanelB := TPanel.Create(lForm);
+    lPanelB.Caption := 'Second group';
+    lPanelB.Parent := lForm;
+    lPanelB.SetBounds(8, 96, 280, 80);
+    lForm.HandleNeeded;
+    TAccessibilityManager.Install(lForm);
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider));
+    Assert.IsTrue(Supports(lRootProvider, IAccessibilityVclProviderLookup, lLookup));
+
+    lLabeledEdit := TLabeledEdit.Create(lForm);
+    lLabeledEdit.Parent := lPanelA;
+    lLabeledEdit.SetBounds(112, 24, 152, 23);
+    lLabeledEdit.EditLabel.Caption := 'Reference';
+    lLabeledEdit.Text := 'REF-1042';
+    lLabeledEdit.HandleNeeded;
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lLabeledEdit, lEditProvider));
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lLabeledEdit.EditLabel, lLabelProvider));
+    Assert.IsTrue(ElementProviderProperty(lEditProvider, UIA_LabeledByPropertyId) = lLabelProvider,
+      'runtime TLabeledEdit relationship');
+    Assert.AreEqual(1, lApi.LabeledByPropertyChangedCalls);
+
+    lLabeledEdit.Parent := lPanelB;
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lLabeledEdit, lEditProvider));
+    Assert.IsTrue(ElementProviderProperty(lEditProvider, UIA_LabeledByPropertyId) = lLabelProvider,
+      'reparented TLabeledEdit relationship');
+    Assert.AreEqual(1, lApi.LabeledByPropertyChangedCalls,
+      'provider-preserving reparent must not republish an unchanged relationship');
+
+    lLabeledEdit.EditLabel.Caption := 'Current reference';
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.AreEqual('Current reference', ProviderStringProperty(FragmentFromSimple(
+      ElementProviderProperty(lEditProvider, UIA_LabeledByPropertyId)), UIA_NamePropertyId));
+    Assert.AreEqual(1, lApi.LabeledByPropertyChangedCalls,
+      'label text changes do not change provider identity');
+
+    TAccessibilityManager.Uninstall;
+    lLabeledEdit.EditLabel.Caption := 'After uninstall';
+    lDone := True;
+    if Assigned(Application.OnIdle) then
+    begin
+      Application.OnIdle(Application, lDone);
+    end;
+    Assert.AreEqual(1, lApi.LabeledByPropertyChangedCalls,
+      'uninstalled providers must not publish relationship changes');
   finally
     lForm.Free;
     ResetManager;

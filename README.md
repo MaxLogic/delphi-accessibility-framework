@@ -49,7 +49,7 @@ end;
 
 `TAccessibilityManager.Install(Form)` installs accessibility for that form and its controls without enabling app-wide form discovery.
 
-Installed VCL form providers automatically reconcile controls added, removed, or reparented at runtime. Lookup, navigation, and hit testing reflect the current hierarchy without reinstalling the form, and retained providers for removed controls become unavailable.
+Installed VCL form providers automatically reconcile controls added, removed, or reparented at runtime. Lookup, navigation, and hit testing reflect the current hierarchy without reinstalling the form, retained providers for removed controls become unavailable, and retained form/control providers follow replacement HWNDs created by VCL window recreation.
 
 Call `TAccessibilityManager.Uninstall` to remove the framework hooks, hint observers, and installed form providers. The complex demo exposes this as an `Accessibility enabled` checkbox so manual NVDA testing can compare the framework-on and framework-off behavior in the same process.
 
@@ -82,7 +82,7 @@ The default VCL adapter registry covers:
 - `TLabel`: UIA text fragment with caption-derived name and hint-derived help text.
 - `TButton`: UIA button fragment with caption-derived name, hint-derived help text, native window handle, and Invoke support.
 - `TSpeedButton`: UIA button fragment with Invoke and toggle support when the button has toggle semantics.
-- `TEdit`, `TLabeledEdit`, and `TComboBox`: UIA input fragments with associated label/name, value text, help text, and native window handles where applicable. `UIA_LabeledByPropertyId` returns the exact visible label provider for explicit `TCustomLabel.FocusControl` and `TLabeledEdit.EditLabel` relationships, or for one unambiguous adjacent same-parent label above or beside the input. The existing accessible Name fallback remains available.
+- `TEdit`, `TLabeledEdit`, and `TComboBox`: UIA input fragments with associated label/name, value text, help text, and native window handles where applicable. `UIA_LabeledByPropertyId` returns the exact visible label provider for explicit `TCustomLabel.FocusControl` and `TLabeledEdit.EditLabel` relationships, or for one unambiguous adjacent same-parent label above or beside the input. Installed providers refresh that relationship after runtime association, movement, addition, removal, or reparenting, and the existing accessible Name fallback remains available.
 - `TCheckBox`: UIA checkbox fragment with caption-derived name, hint-derived help text, native window handle, Toggle support, and MSAA checkbutton state when reached through the framework tree. The manager preserves the real checkbox HWND accessibility path. On hover it also raises a UIA focus event from the framework provider and emits native HWND focus/state WinEvents, so screen readers can query state without framework-injected English state text.
 - `TRadioButton`: UIA radio-button fragment with caption-derived name, hint-derived help text, native window handle, SelectionItem support, and MSAA radio-button selected state when reached through the framework tree. The manager preserves the real standalone radio-button HWND accessibility path. On hover it also raises a UIA focus event from the framework provider and emits native HWND focus/state WinEvents. Radio buttons intentionally do not expose TogglePattern.
 - `TGroupBox` and `TRadioGroup`: UIA group fragments for named option regions. `TRadioGroup` internal button hover is routed to the framework radio-item provider instead of treating the private child buttons as standalone radio controls.
@@ -96,7 +96,7 @@ The default VCL adapter registry covers:
 - `TMemo`: UIA edit provider with per-line mouse hit testing while keyboard caret navigation remains with the native edit behavior.
 - `TListBox`: UIA list/list-item providers remain available in the framework form tree for mouse hit testing and selection queries, while the real listbox HWND keeps the native accessibility path for fast arrow-key item focus speech.
 - `TStatusBar`: UIA status-bar provider using the visible simple-panel or panel text.
-- `TStringGrid`: UIA DataGrid/DataItem providers for visible cells, per-cell hit testing, current-cell focus, and hidden-cell omission.
+- `TStringGrid`: UIA DataGrid/DataItem providers for visible cells, per-cell hit testing, current-cell focus, hidden-cell omission, and runtime cell-value and row/column reconciliation.
 
 TMS `TAdvStringGrid` support is available in the opt-in unit `MaxLogic.Accessibility.TmsAdvStringGridAdapters`. It keeps ordinary applications from compiling TMS units unless they explicitly include the adapter.
 
@@ -143,7 +143,7 @@ lProvider := TAccessibilityVclProviderBuilder.BuildForm(
   TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
 ```
 
-The opt-in TMS registry includes the default VCL adapters plus `TAdvStringGrid` DataGrid/DataItem support for stripped HTML text, wide text fallback, per-cell hit testing, current-cell focus, hidden column and hidden row remapping, visible representatives for merged ranges whose base row or column is hidden, merged-cell spans that count visible coordinates, fully hidden merge omission, and scrolled-cell pruning.
+The opt-in TMS registry includes the default VCL adapters plus `TAdvStringGrid` DataGrid/DataItem support for stripped HTML text, wide text fallback, per-cell hit testing, current-cell focus, hidden column and hidden row remapping, visible representatives for merged ranges whose base row or column is hidden, merged-cell spans that count visible coordinates, fully hidden merge omission, scrolled-cell pruning, and runtime cell-value and row/column reconciliation.
 
 MaxLogicFoundation remains independent. The framework can be used without MaxLogicFoundation, and MaxLogicFoundation does not depend on this framework.
 
@@ -184,6 +184,8 @@ UIA probe scenarios:
 - `TAdvStringGridCells`: opt-in TMS `TAdvStringGrid` DataGrid provider, stripped HTML text, wide text fallback, hidden-base merged-cell text and spans, GridItem coordinates, per-cell hit testing, focus, fully hidden merge omission, hidden row/column remapping, hidden-cell omission, and scrolled-cell pruning.
 
 The smoke app lives in `projects\MaxLogicAccessibilityFrameworkSmoke.dpr`. The probe script builds it before executing each scenario and expects `UIA_PROBE_OK` output for success.
+
+The complex demo's `Dynamic content` tab also provides a deterministic `Next runtime sync step` walkthrough for live NVDA correlation. Its isolated steps cover runtime form/control properties, control add/reparent/remove, explicit/inferred/`TLabeledEdit` relationship changes, `TStringGrid` and `TAdvStringGrid` value/shape changes, and control/form HWND recreation. See `docs\nvda-checklist.md` for the expected sequence.
 
 See also:
 

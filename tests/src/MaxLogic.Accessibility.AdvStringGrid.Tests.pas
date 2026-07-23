@@ -17,6 +17,9 @@ type
     [Test]
     procedure OptInProviderGridPatternGetItemReturnsValidOffscreenCells;
     [Test]
+    [Category('AdvStringGridAccessibility,RuntimeGridMutation,RetainedAdvStringGridCellIsUnavailableAfterShapeRefresh')]
+    procedure RetainedAdvStringGridCellIsUnavailableAfterShapeRefresh;
+    [Test]
     procedure OptInProviderSelectionReturnsCurrentCell;
     [Test]
     procedure OptInProviderColumnSpanCountsOnlyVisibleMergedColumns;
@@ -701,6 +704,40 @@ begin
     Assert.AreEqual(S_OK, lGridPattern.GetItem(1, 1, lCellSimple));
     lCellFragment := FragmentFromSimple(lCellSimple);
     Assert.AreEqual('<b>Alice</b>', ProviderStringProperty(lCellFragment, UIA_NamePropertyId));
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAdvStringGridAccessibilityTests.RetainedAdvStringGridCellIsUnavailableAfterShapeRefresh;
+var
+  lCellSimple: IRawElementProviderSimple;
+  lChildAccess: IAccessibilityProviderChildAccess;
+  lChildCount: Integer;
+  lForm: TForm;
+  lGrid: TAdvStringGrid;
+  lGridFragment: IRawElementProviderFragment;
+  lGridPattern: IGridProvider;
+  lPattern: IUnknown;
+  lProvider: IAccessibilityProviderNode;
+  lValue: OleVariant;
+begin
+  CreateScrollableAdvGridFixture(lForm, lGrid);
+  try
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm, TmsRegistry);
+    lGridFragment := FirstChildFragment(lProvider.FragmentProvider);
+    lPattern := ProviderPattern(lGridFragment, UIA_GridPatternId);
+    Assert.IsTrue(Supports(lPattern, IGridProvider, lGridPattern));
+    Assert.AreEqual(S_OK, lGridPattern.GetItem(6, 6, lCellSimple));
+
+    lGrid.Visible := False;
+    lGrid.ColCount := 2;
+    lGrid.RowCount := 2;
+    Assert.IsTrue(Supports(SimpleProvider(lGridFragment), IAccessibilityProviderChildAccess, lChildAccess));
+    Assert.AreEqual(S_OK, lChildAccess.DirectChildCount(lChildCount));
+
+    Assert.AreEqual(UIA_E_ELEMENTNOTAVAILABLE,
+      lCellSimple.GetPropertyValue(UIA_NamePropertyId, lValue));
   finally
     lForm.Free;
   end;

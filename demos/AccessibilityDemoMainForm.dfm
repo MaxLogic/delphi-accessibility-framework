@@ -1187,6 +1187,46 @@ object AccessibilityDemoMainForm: TAccessibilityDemoMainForm
               TabOrder = 0
             end
           end
+          object staticRuntimeSyncState: TStaticText
+            AlignWithMargins = True
+            Left = 20
+            Top = 370
+            Width = 506
+            Height = 44
+            Margins.Left = 0
+            Margins.Top = 10
+            Margins.Right = 0
+            Margins.Bottom = 10
+            Align = alTop
+            AutoSize = False
+            Caption = 'Step 00: ready'
+            TabStop = False
+          end
+          object pnlRuntimeSyncActionRow: TPanel
+            AlignWithMargins = True
+            Left = 20
+            Top = 424
+            Width = 506
+            Height = 44
+            Margins.Left = 0
+            Margins.Top = 0
+            Margins.Right = 0
+            Margins.Bottom = 0
+            Align = alTop
+            BevelOuter = bvNone
+            Caption = ''
+            TabOrder = 5
+            object btnRuntimeSyncStep: TButton
+              Left = 0
+              Top = 0
+              Width = 320
+              Height = 44
+              Align = alLeft
+              Caption = 'Next runtime sync step (1)'
+              TabOrder = 0
+              OnClick = btnRuntimeSyncStepClick
+            end
+          end
         end
       end
     end

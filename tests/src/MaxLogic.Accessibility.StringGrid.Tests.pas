@@ -15,6 +15,9 @@ type
     [Test]
     procedure GridPatternGetItemReturnsValidOffscreenCells;
     [Test]
+    [Category('StringGridAccessibility,RuntimeGridMutation,RetainedStringGridCellIsUnavailableAfterShapeRefresh')]
+    procedure RetainedStringGridCellIsUnavailableAfterShapeRefresh;
+    [Test]
     procedure GridProviderHitTestingReturnsTheCellUnderThePointer;
     [Test]
     procedure GridProviderHitTestingIgnoresPointsOutsideTheGrid;
@@ -317,6 +320,40 @@ begin
     lCellFragment := FragmentFromSimple(lCellSimple);
     Assert.AreEqual('Scrolled cell', ProviderStringProperty(lCellFragment, UIA_NamePropertyId));
     Assert.AreEqual(UIA_DataItemControlTypeId, ProviderIntProperty(lCellFragment, UIA_ControlTypePropertyId));
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TStringGridAccessibilityTests.RetainedStringGridCellIsUnavailableAfterShapeRefresh;
+var
+  lChildAccess: IAccessibilityProviderChildAccess;
+  lChildCount: Integer;
+  lCellSimple: IRawElementProviderSimple;
+  lForm: TForm;
+  lGrid: TStringGrid;
+  lGridFragment: IRawElementProviderFragment;
+  lGridPattern: IGridProvider;
+  lPattern: IUnknown;
+  lProvider: IAccessibilityProviderNode;
+  lValue: OleVariant;
+begin
+  CreateGridFixture(lForm, lGrid);
+  try
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    lGridFragment := FirstChildFragment(lProvider.FragmentProvider);
+    lPattern := ProviderPattern(lGridFragment, UIA_GridPatternId);
+    Assert.IsTrue(Supports(lPattern, IGridProvider, lGridPattern));
+    Assert.AreEqual(S_OK, lGridPattern.GetItem(2, 2, lCellSimple));
+
+    lGrid.Visible := False;
+    lGrid.ColCount := 2;
+    lGrid.RowCount := 2;
+    Assert.IsTrue(Supports(SimpleProvider(lGridFragment), IAccessibilityProviderChildAccess, lChildAccess));
+    Assert.AreEqual(S_OK, lChildAccess.DirectChildCount(lChildCount));
+
+    Assert.AreEqual(UIA_E_ELEMENTNOTAVAILABLE,
+      lCellSimple.GetPropertyValue(UIA_NamePropertyId, lValue));
   finally
     lForm.Free;
   end;

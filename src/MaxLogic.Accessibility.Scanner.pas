@@ -105,6 +105,16 @@ type
     Text: string;
   end;
 
+  TScannerLabelRelationshipState = record
+    ActiveVisible: Boolean;
+    Bounds: TRect;
+    Control: TControl;
+    FocusControl: TControl;
+    IsLabel: Boolean;
+    Parent: TWinControl;
+    Text: string;
+  end;
+
   TScannerControlAccess = class(TControl);
   TScannerLabelAccess = class(TCustomLabel);
 
@@ -183,6 +193,7 @@ type
   private
     fForm: TCustomForm;
     fHooks: TObjectDictionary<TWinControl, TAccessibilityControlHook>;
+    fLabelRelationshipState: TArray<TScannerLabelRelationshipState>;
     fRegistry: IAccessibilityAdapterRegistry;
     fRefreshPending: Boolean;
     fRevision: Integer;
@@ -190,6 +201,7 @@ type
     procedure EnsureFresh;
     procedure HookWinControls(aControl: TWinControl);
     procedure Rebuild;
+    procedure RefreshLabelRelationshipState;
   public
     constructor Create(aForm: TCustomForm; const aRegistry: IAccessibilityAdapterRegistry);
     destructor Destroy; override;
@@ -415,6 +427,89 @@ begin
     lControl := lControl.Parent;
   end;
 
+  Result := True;
+end;
+
+function SortedChildren(aParent: TWinControl): TArray<TControl>; forward;
+
+procedure CollectLabelRelationshipState(aParent: TWinControl; //PALOFF WARN19 bounded VCL parent/child tree walk
+  aState: TList<TScannerLabelRelationshipState>);
+var
+  i: Integer;
+  lChild: TControl;
+  lChildren: TArray<TControl>;
+  lFocusControl: TObject;
+  lState: TScannerLabelRelationshipState;
+begin
+  lChildren := SortedChildren(aParent);
+  for i := 0 to High(lChildren) do
+  begin
+    lChild := lChildren[i];
+    if IsLabelControl(lChild) or IsTextInputControl(lChild) then
+    begin
+      lState := Default(TScannerLabelRelationshipState);
+      lState.ActiveVisible := ControlIsInActiveVisibleTree(lChild);
+      lState.Bounds := lChild.BoundsRect;
+      lState.Control := lChild;
+      lState.IsLabel := IsLabelControl(lChild);
+      lState.Parent := lChild.Parent;
+      if lState.IsLabel then
+      begin
+        lState.Text := TAccessibilityTextExtractor.Extract(lChild).Name;
+        lFocusControl := ReadObjectProperty(lChild, 'FocusControl');
+        if lFocusControl is TControl then
+        begin
+          lState.FocusControl := TControl(lFocusControl); //PALOFF STWA6 guarded by is TControl
+        end;
+      end;
+      aState.Add(lState);
+    end;
+
+    if lChild is TWinControl then
+    begin
+      CollectLabelRelationshipState(TWinControl(lChild), aState); //PALOFF STWA6 guarded by is TWinControl
+    end;
+  end;
+end;
+
+function CaptureLabelRelationshipState(aForm: TCustomForm): TArray<TScannerLabelRelationshipState>;
+var
+  lState: TList<TScannerLabelRelationshipState>;
+begin
+  lState := TList<TScannerLabelRelationshipState>.Create;
+  try
+    CollectLabelRelationshipState(aForm, lState);
+    Result := lState.ToArray;
+  finally
+    lState.Free;
+  end;
+end;
+
+function SameLabelRelationshipState(const aLeft, aRight: TArray<TScannerLabelRelationshipState>): Boolean;
+var
+  i: Integer;
+begin
+  if Length(aLeft) <> Length(aRight) then
+  begin
+    Exit(False);
+  end;
+
+  for i := 0 to High(aLeft) do
+  begin
+    if (aLeft[i].ActiveVisible <> aRight[i].ActiveVisible) or
+      (aLeft[i].Bounds.Left <> aRight[i].Bounds.Left) or
+      (aLeft[i].Bounds.Top <> aRight[i].Bounds.Top) or
+      (aLeft[i].Bounds.Right <> aRight[i].Bounds.Right) or
+      (aLeft[i].Bounds.Bottom <> aRight[i].Bounds.Bottom) or
+      (aLeft[i].Control <> aRight[i].Control) or
+      (aLeft[i].FocusControl <> aRight[i].FocusControl) or
+      (aLeft[i].IsLabel <> aRight[i].IsLabel) or
+      (aLeft[i].Parent <> aRight[i].Parent) or
+      (aLeft[i].Text <> aRight[i].Text) then
+    begin
+      Exit(False);
+    end;
+  end;
   Result := True;
 end;
 
@@ -1131,7 +1226,14 @@ begin
 end;
 
 procedure TAccessibilityObservedFormScan.EnsureFresh;
+var
+  lState: TArray<TScannerLabelRelationshipState>; //PALOFF OPTI10 explicit snapshot lifetime aids comparison
 begin
+  if not fRefreshPending then
+  begin
+    lState := CaptureLabelRelationshipState(fForm);
+    fRefreshPending := not SameLabelRelationshipState(fLabelRelationshipState, lState);
+  end;
   if fRefreshPending then
   begin
     Refresh;
@@ -1169,6 +1271,12 @@ begin
   Inc(fRevision);
   fTree := TAccessibilityScanner.ScanForm(fForm, fRegistry);
   fTree := TAccessibilityScanTree.Create(fTree.Root, fRevision);
+  RefreshLabelRelationshipState;
+end;
+
+procedure TAccessibilityObservedFormScan.RefreshLabelRelationshipState;
+begin
+  fLabelRelationshipState := CaptureLabelRelationshipState(fForm);
 end;
 
 procedure TAccessibilityObservedFormScan.Refresh;

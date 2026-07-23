@@ -71,7 +71,7 @@ type
 implementation
 
 uses
-  System.Diagnostics, System.Generics.Collections, System.IOUtils, System.JSON, System.SyncObjs, System.SysUtils,
+  System.Classes, System.Diagnostics, System.Generics.Collections, System.IOUtils, System.JSON, System.SyncObjs, System.SysUtils,
   System.Types, System.TypInfo, System.Variants, Winapi.Windows, Vcl.ComCtrls, Vcl.Controls, Vcl.ExtCtrls, Vcl.Forms,
   Vcl.Grids, Vcl.StdCtrls, MaxLogic.Accessibility.AgentBridge, MaxLogic.Accessibility.Diagnostics,
   MaxLogic.Accessibility.Framework, MaxLogic.Accessibility.Manager, MaxLogic.Accessibility.ProviderCore,
@@ -91,6 +91,16 @@ type
     fFallbackText: string;
   published
     property Text: string read fFallbackText write fFallbackText;
+  end;
+
+  TAgentBridgeTabOrderProbeEdit = class(TEdit)
+  private
+    class var fTabOrderListCalls: Integer;
+  protected
+    procedure GetTabOrderList(aList: System.Classes.TList); override;
+  public
+    class function TabOrderListCalls: Integer; static;
+    class procedure ResetTabOrderListCalls; static;
   end;
 
   TAgentBridgeProviderQueryMetrics = record
@@ -137,6 +147,22 @@ type
 procedure TAgentBridgeClickRecorder.Click(aSender: TObject);
 begin
   Inc(fClicks);
+end;
+
+procedure TAgentBridgeTabOrderProbeEdit.GetTabOrderList(aList: System.Classes.TList);
+begin
+  Inc(fTabOrderListCalls);
+  inherited GetTabOrderList(aList);
+end;
+
+class procedure TAgentBridgeTabOrderProbeEdit.ResetTabOrderListCalls;
+begin
+  fTabOrderListCalls := 0;
+end;
+
+class function TAgentBridgeTabOrderProbeEdit.TabOrderListCalls: Integer;
+begin
+  Result := fTabOrderListCalls;
 end;
 
 constructor TAgentBridgeCountingProvider.Create(aMetrics: PAgentBridgeProviderQueryMetrics;
@@ -403,7 +429,7 @@ end;
 function BuildTabOrderStressForm(aControlCount: Integer): TForm;
 var
   i: Integer;
-  lEdit: TEdit;
+  lEdit: TAgentBridgeTabOrderProbeEdit;
 begin
   Result := TForm.Create(nil);
   Result.Name := 'BridgeTabStressForm';
@@ -412,7 +438,7 @@ begin
 
   for i := 0 to Pred(aControlCount) do
   begin
-    lEdit := TEdit.Create(Result);
+    lEdit := TAgentBridgeTabOrderProbeEdit.Create(Result);
     lEdit.Parent := Result;
     lEdit.TabOrder := Pred(aControlCount) - i;
     lEdit.SetBounds(8, 8, 120, 22);
@@ -818,64 +844,6 @@ end;
 procedure AssertOk(aResponse: TJSONObject);
 begin
   Assert.AreEqual('true', JsonText(aResponse, 'ok'), aResponse.ToJSON);
-end;
-
-function MeasureKeyboardTabTicks(aControlCount: Integer): Int64;
-var
-  lForm: TForm;
-  lMap: TJSONObject;
-  lResponse: TJSONObject;
-  lStopwatch: TStopwatch;
-begin
-  lForm := BuildTabOrderStressForm(aControlCount);
-  try
-    lForm.Show;
-    Application.ProcessMessages;
-    lMap := MapForm(lForm, False, True, 'geometry');
-    try
-      AssertOk(lMap);
-    finally
-      lMap.Free;
-    end;
-
-    TAccessibilityAgentBridge.SetMutationEnabled(True);
-    try
-      lStopwatch := TStopwatch.StartNew;
-      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute('{"cmd":"keyboard.tab"}'));
-      lStopwatch.Stop;
-      try
-        AssertOk(lResponse);
-      finally
-        lResponse.Free;
-      end;
-    finally
-      TAccessibilityAgentBridge.SetMutationEnabled(False);
-    end;
-
-    Result := lStopwatch.ElapsedTicks;
-    if Result < 1 then
-    begin
-      Result := 1;
-    end;
-  finally
-    lForm.Free;
-  end;
-end;
-
-function MeasureBestKeyboardTabTicks(aControlCount: Integer; aSamples: Integer): Int64;
-var
-  i: Integer;
-  lTicks: Int64;
-begin
-  Result := High(Int64);
-  for i := 1 to aSamples do
-  begin
-    lTicks := MeasureKeyboardTabTicks(aControlCount);
-    if lTicks < Result then
-    begin
-      Result := lTicks;
-    end;
-  end;
 end;
 
 function MeasureBestGeometryMapTicks(aDepth: Integer; aSamples: Integer): Int64;
@@ -2085,20 +2053,51 @@ end;
 
 procedure TAccessibilityAgentBridgeTests.KeyboardTabScalesWithTabStopCount;
 const
-  cSmallControlCount = 160;
-  cLargeControlCount = 400;
-  cMaxTickGrowth = 4;
-  cSampleCount = 3;
+  cControlCount = 400;
 var
-  lLargeTicks: Int64;
-  lSmallTicks: Int64;
+  lExpectedTabOrder: Integer;
+  lForm: TForm;
+  lMap: TJSONObject;
+  lResponse: TJSONObject;
 begin
-  lSmallTicks := MeasureBestKeyboardTabTicks(cSmallControlCount, cSampleCount);
-  lLargeTicks := MeasureBestKeyboardTabTicks(cLargeControlCount, cSampleCount);
+  lForm := BuildTabOrderStressForm(cControlCount);
+  try
+    lForm.Show;
+    Application.ProcessMessages;
+    lMap := MapForm(lForm, False, True, 'geometry');
+    try
+      AssertOk(lMap);
+    finally
+      lMap.Free;
+    end;
 
-  Assert.IsTrue(lLargeTicks <= lSmallTicks * cMaxTickGrowth,
-    Format('keyboard.tab should not rescan tab siblings quadratically; %d controls=%d ticks, %d controls=%d ticks.',
-    [cSmallControlCount, lSmallTicks, cLargeControlCount, lLargeTicks]));
+    if lForm.ActiveControl = nil then
+    begin
+      lExpectedTabOrder := 0;
+    end else begin
+      lExpectedTabOrder := (lForm.ActiveControl.TabOrder + 1) mod cControlCount;
+    end;
+    TAgentBridgeTabOrderProbeEdit.ResetTabOrderListCalls;
+    TAccessibilityAgentBridge.SetMutationEnabled(True);
+    try
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute('{"cmd":"keyboard.tab"}'));
+      try
+        AssertOk(lResponse);
+      finally
+        lResponse.Free;
+      end;
+    finally
+      TAccessibilityAgentBridge.SetMutationEnabled(False);
+    end;
+
+    Assert.AreEqual(cControlCount, TAgentBridgeTabOrderProbeEdit.TabOrderListCalls,
+      'keyboard.tab must traverse the flat tab-order list exactly once.');
+    Assert.IsNotNull(lForm.ActiveControl);
+    Assert.AreEqual(lExpectedTabOrder, Integer(lForm.ActiveControl.TabOrder),
+      'keyboard.tab must focus the next control in VCL tab order.');
+  finally
+    lForm.Free;
+  end;
 end;
 
 procedure TAccessibilityAgentBridgeTests.MutationsAreGatedAndOperateOnLastSnapshotRefs;

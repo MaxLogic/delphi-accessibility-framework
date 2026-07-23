@@ -23,6 +23,8 @@ type
     [Test]
     procedure DemoFileDiagnosticsAreOptIn;
     [Test]
+    procedure DemoBuildIsReproducibleForExactCandidateCertification;
+    [Test]
     procedure AgentBridgeDocumentationSeparatesAccessibilityControlAndAgentModes;
     [Test]
     procedure DemoShutdownDisarmsAccessibilityHooksAndTimers;
@@ -82,6 +84,16 @@ begin
     'begin' + sLineBreak + '  BalloonHideTimer.Enabled := False;' + sLineBreak +
     '  DynamicContentTimer.Enabled := False;' + sLineBreak + '  BalloonHint.HideHint;' + sLineBreak + 'end;',
     'demo form shutdown');
+end;
+
+procedure TAccessibilityDocumentationTests.DemoBuildIsReproducibleForExactCandidateCertification;
+var
+  lProjectText: string;
+begin
+  lProjectText := ReadRepoText('demos\AccessibilityComplexDemo.dproj');
+
+  RequireText(lProjectText, '<VerInfo_AutoIncVersion>false</VerInfo_AutoIncVersion>',
+    'demo exact-candidate build');
 end;
 
 procedure TAccessibilityDocumentationTests.TmsAdvStringGridSelectionArrayAvoidsPerElementSafeArrayPutElement;
@@ -217,6 +229,9 @@ begin
   RequireText(lText, 'balloon hint', 'NVDA checklist');
   RequireText(lText, 'TStringGrid', 'NVDA checklist');
   RequireText(lText, 'TAdvStringGrid', 'NVDA checklist');
+  RequireText(lText, 'Next runtime sync step', 'NVDA checklist');
+  RequireText(lText, 'add an explicitly labeled edit', 'NVDA checklist');
+  RequireText(lText, 'recreate the `TStringGrid` and form HWNDs', 'NVDA checklist');
   RequireText(lText, 'TAccessibilityTmsAdvStringGridAdapters.CreateRegistry', 'NVDA checklist');
   RequireText(lText, 'cell text only', 'NVDA checklist');
   RequireText(lText, 'TAccessibilityScreenReaderDetector', 'NVDA checklist');

@@ -1,10 +1,17 @@
 # Changelog
 
+## 2026-07-23
+### Added
+- The complex demo now includes a deterministic runtime-synchronization walkthrough for live NVDA verification of property, hierarchy, `LabeledBy`, grid value/shape, and HWND-recreation changes.
+
 ## 2026-07-22
 ### Fixed
 - Installed VCL form providers now synchronize their UIA name when `TCustomForm.Caption` changes at runtime and publish one UIA property-change event plus the corresponding MSAA name-change event.
 - Installed VCL providers now publish runtime Name, HelpText, Value, enabled, offscreen, and bounding-rectangle changes for supported forms and controls, including status bars and VCL/TMS grid roots, without duplicate or teardown events.
 - Installed VCL form providers now reconcile controls added, removed, or reparented at runtime, preserving retained provider identity and publishing one coalesced UIA structure-change and MSAA reorder notification.
+- Installed VCL text-input providers now refresh explicit, `TLabeledEdit`, and unambiguous inferred UIA `LabeledBy` relationships after runtime association, movement, addition, removal, or reparenting without stale providers or duplicate relationship events.
+- `TStringGrid` and opt-in `TAdvStringGrid` providers now publish runtime cell-name and shape changes, keep visible navigation and GridItem lookup current, and safely invalidate retained cells removed while a grid is hidden.
+- Installed form and control providers now refresh native HWND and host-provider caches after VCL window recreation while preserving provider identity, UIA/MSAA routing, focus, hit testing, and teardown safety.
 
 ## 2026-07-18
 ### Added

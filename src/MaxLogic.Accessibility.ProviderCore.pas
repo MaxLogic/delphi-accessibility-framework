@@ -174,6 +174,7 @@ type
     function DoGetPropertyValue(aPropertyId: PROPERTYID; out aValue: OleVariant): Boolean; virtual;
     function DoSetFocus: HResult; virtual;
     function ExistingChildCount: Integer;
+    procedure RefreshNativeWindowHandle(aHwnd: HWND);
     function ExistingChildProviderAt(aIndex: Integer): IAccessibilityProviderNode;
     function FindDescendantFromPoint(aX: Double; aY: Double; out aProvider: IRawElementProviderFragment): Boolean;
     function HasCurrentChildIndex(aChild: TAccessibilityProviderNode): Boolean;
@@ -1333,6 +1334,17 @@ end;
 function TAccessibilityProviderNode.ProviderObject: TObject;
 begin
   Result := Self;
+end;
+
+procedure TAccessibilityProviderNode.RefreshNativeWindowHandle(aHwnd: HWND);
+begin
+  if fDisconnected or (fHwnd = aHwnd) then
+  begin
+    Exit;
+  end;
+
+  fHwnd := aHwnd;
+  ClearHostProviderCache;
 end;
 
 procedure TAccessibilityProviderNode.PrepareForOwnerDisconnect;

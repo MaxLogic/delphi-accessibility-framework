@@ -23,8 +23,12 @@ type
     [Test]
     procedure DemoDynamicContentTimerUpdatesAllSamples;
     [Test]
+    [Category('VclAdapters,RuntimeSyncDemo')]
+    procedure DemoRuntimeSynchronizationWalkthroughCoversEveryPath;
+    [Test]
     procedure DemoTmsHiddenBaseMergesStayWithinGridBounds;
     [Test]
+    [Category('VclAdapters,LabeledBy')]
     procedure DemoLabeledBySamplesExposeExpectedRelationships;
     [Test]
     procedure FormRootProviderUsesWindowControlType;
@@ -53,10 +57,13 @@ type
     [Test]
     procedure DemoRadioGroupItemHitTestingReturnsItemProvider;
     [Test]
+    [Category('VclAdapters,LabeledBy')]
     procedure TextInputsExposeAssociatedLabelsAndValues;
     [Test]
+    [Category('VclAdapters,LabeledBy')]
     procedure TextInputsExposeExactLabeledByProviders;
     [Test]
+    [Category('VclAdapters,LabeledBy')]
     procedure TextInputsRejectInvalidLabeledByRelationships;
     [Test]
     [Category('VclAdapters,Memo')]
@@ -1228,6 +1235,121 @@ begin
     AssertDemoDynamicControlUpdates(lForm, 'edtDynamicText', TEdit);
     AssertDemoDynamicControlUpdates(lForm, 'btnDynamicCaption', TButton);
     AssertDemoDynamicControlUpdates(lForm, 'bitBtnDynamicCaption', TBitBtn);
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityVclAdaptersTests.DemoRuntimeSynchronizationWalkthroughCoversEveryPath;
+var
+  lButton: TButton;
+  lForm: TAccessibilityDemoMainForm;
+  lInitialAdvColCount: Integer;
+  lInitialAdvRowCount: Integer;
+  lInitialCandidateLeft: Integer;
+  lInitialCaption: string;
+  lInitialGridColCount: Integer;
+  lInitialGridRowCount: Integer;
+  lRuntimeChild: TEdit;
+  lStatus: TStaticText;
+begin
+  lForm := TAccessibilityDemoMainForm.Create(nil);
+  try
+    lForm.HandleNeeded;
+    lForm.StringGridOrderCells.HandleNeeded;
+    lInitialCaption := lForm.Caption;
+    lInitialCandidateLeft := lForm.staticAmbiguousCandidateB.Left;
+    lInitialGridColCount := lForm.StringGridOrderCells.ColCount;
+    lInitialGridRowCount := lForm.StringGridOrderCells.RowCount;
+    lInitialAdvColCount := lForm.AdvStringGridAudit.ColCount;
+    lInitialAdvRowCount := lForm.AdvStringGridAudit.RowCount;
+
+    Assert.IsTrue(lForm.FindComponent('btnRuntimeSyncStep') is TButton,
+      'The demo must expose the deterministic runtime synchronization walkthrough.');
+    Assert.IsTrue(lForm.FindComponent('staticRuntimeSyncState') is TStaticText,
+      'The demo must expose the current runtime synchronization step.');
+    lButton := TButton(lForm.FindComponent('btnRuntimeSyncStep'));
+    lStatus := TStaticText(lForm.FindComponent('staticRuntimeSyncState'));
+
+    lButton.Click;
+    Assert.Contains(lStatus.Caption, 'Step 01');
+    Assert.IsFalse(lForm.DynamicContentTimer.Enabled);
+    Assert.IsFalse(lForm.btnDynamicCaption.Enabled);
+    Assert.IsFalse(lForm.bitBtnDynamicCaption.Visible);
+    Assert.AreNotEqual(lInitialCaption, lForm.Caption);
+
+    lButton.Click;
+    Assert.Contains(lStatus.Caption, 'Step 02');
+    Assert.IsTrue(lForm.btnDynamicCaption.Enabled);
+    Assert.IsTrue(lForm.bitBtnDynamicCaption.Visible);
+
+    lButton.Click;
+    Assert.Contains(lStatus.Caption, 'Step 03');
+    Assert.IsTrue(lForm.FindComponent('edtRuntimeSyncChild') is TEdit);
+    lRuntimeChild := TEdit(lForm.FindComponent('edtRuntimeSyncChild'));
+    Assert.AreSame(lForm.pnlFilterQueueRow, lRuntimeChild.Parent);
+    Assert.AreSame(lRuntimeChild, lForm.StaticTextQueue.FocusControl);
+    Assert.IsFalse(lForm.cmbQueue.Visible);
+
+    lButton.Click;
+    Assert.Contains(lStatus.Caption, 'Step 04');
+    Assert.AreSame(lForm.pnlDynamicButtonRow, lRuntimeChild.Parent);
+    Assert.AreSame(lForm.cmbQueue, lForm.StaticTextQueue.FocusControl);
+    Assert.IsTrue(lForm.cmbQueue.Visible);
+
+    lButton.Click;
+    Assert.Contains(lStatus.Caption, 'Step 05');
+    Assert.IsNull(lForm.FindComponent('edtRuntimeSyncChild'));
+
+    lButton.Click;
+    Assert.Contains(lStatus.Caption, 'Step 06');
+    Assert.IsTrue(lForm.staticAmbiguousCandidateB.Left > lForm.pnlFilterAmbiguousRow.Width);
+
+    lButton.Click;
+    Assert.Contains(lStatus.Caption, 'Step 07');
+    Assert.AreEqual(lInitialCandidateLeft, lForm.staticAmbiguousCandidateB.Left);
+
+    lButton.Click;
+    Assert.Contains(lStatus.Caption, 'Step 08');
+    Assert.IsFalse(lForm.labeledEditReference.EditLabel.Visible);
+
+    lButton.Click;
+    Assert.Contains(lStatus.Caption, 'Step 09');
+    Assert.IsTrue(lForm.labeledEditReference.EditLabel.Visible);
+    Assert.Contains(lForm.labeledEditReference.EditLabel.Caption, 'runtime');
+
+    lButton.Click;
+    Assert.Contains(lStatus.Caption, 'Step 10');
+    Assert.AreEqual(lInitialGridColCount + 1, lForm.StringGridOrderCells.ColCount);
+    Assert.AreEqual(lInitialGridRowCount + 1, lForm.StringGridOrderCells.RowCount);
+    Assert.IsTrue(lForm.AdvStringGridAudit.ColCount > lInitialAdvColCount);
+    Assert.IsTrue(lForm.AdvStringGridAudit.RowCount > lInitialAdvRowCount);
+    Assert.Contains(lForm.StringGridOrderCells.Cells[1, 1], 'runtime');
+    Assert.Contains(lForm.AdvStringGridAudit.Cells[2, 2], 'runtime');
+
+    lButton.Click;
+    Assert.Contains(lStatus.Caption, 'Step 11');
+    Assert.AreEqual(lInitialGridColCount, lForm.StringGridOrderCells.ColCount);
+    Assert.AreEqual(lInitialGridRowCount, lForm.StringGridOrderCells.RowCount);
+    Assert.AreEqual(lInitialAdvColCount, lForm.AdvStringGridAudit.ColCount);
+    Assert.AreEqual(lInitialAdvRowCount, lForm.AdvStringGridAudit.RowCount);
+
+    lButton.Click;
+    Assert.Contains(lStatus.Caption, 'Step 12');
+    Assert.Contains(lStatus.Caption, 'control HWND recreated from');
+    Assert.IsTrue(lForm.StringGridOrderCells.HandleAllocated);
+
+    lButton.Click;
+    Assert.Contains(lStatus.Caption, 'Step 13');
+    Assert.Contains(lStatus.Caption, 'form HWND recreated from');
+    Assert.IsTrue(lForm.HandleAllocated);
+
+    lButton.Click;
+    Assert.Contains(lStatus.Caption, 'Step 00');
+    Assert.AreEqual(lInitialCaption, lForm.Caption);
+    Assert.AreEqual(lInitialCandidateLeft, lForm.staticAmbiguousCandidateB.Left);
+    Assert.IsTrue(lForm.DynamicContentTimer.Enabled);
+    Assert.AreEqual('TLabeledEdit reference', lForm.labeledEditReference.EditLabel.Caption);
   finally
     lForm.Free;
   end;

@@ -4,6 +4,7 @@ interface
 
 uses
   System.Classes, System.SysUtils, System.Types,
+  Winapi.Windows,
   Vcl.Buttons, Vcl.ComCtrls, Vcl.Controls, Vcl.Dialogs, Vcl.ExtCtrls, Vcl.Forms, Vcl.Graphics, Vcl.Grids,
   Vcl.StdCtrls,
   AdvGrid;
@@ -19,6 +20,7 @@ type
     btnDynamicCaption: TButton;
     btnNewWindow: TSpeedButton;
     btnRefresh: TSpeedButton;
+    btnRuntimeSyncStep: TButton;
     btnSave: TSpeedButton;
     btnGlyphInfo: TSpeedButton;
     btnGlyphWarn: TSpeedButton;
@@ -74,6 +76,7 @@ type
     pnlInspectorButtons: TFlowPanel;
     pnlInspectorEventsRow: TPanel;
     pnlInspectorMetrics: TPanel;
+    pnlRuntimeSyncActionRow: TPanel;
     pnlWrappedMemoRow: TPanel;
     pnlOrdersHeader: TPanel;
     pnlTmsHeader: TPanel;
@@ -90,6 +93,7 @@ type
     staticDynamicEditLabel: TStaticText;
     StaticTextEvents: TStaticText;
     StaticTextQueue: TLabel;
+    staticRuntimeSyncState: TStaticText;
     StaticTextSearch: TStaticText;
     StatusBar: TStatusBar;
     StringGridOrderCells: TStringGrid;
@@ -110,6 +114,7 @@ type
     procedure btnCloseClick(aSender: TObject);
     procedure btnNewWindowClick(aSender: TObject);
     procedure btnRefreshClick(aSender: TObject);
+    procedure btnRuntimeSyncStepClick(aSender: TObject);
     procedure btnSaveClick(aSender: TObject);
     procedure btnShowBalloonClick(aSender: TObject);
     procedure btnShowRegularHintClick(aSender: TObject);
@@ -121,6 +126,12 @@ type
     procedure ToolButtonClick(aSender: TObject);
   private
     fDynamicContentRevision: Integer;
+    fRuntimeSyncAmbiguousCandidateLeft: Integer;
+    fRuntimeSyncChild: TEdit;
+    fRuntimeSyncInitialCaption: string;
+    fRuntimeSyncInitialLabeledEditCaption: string;
+    fRuntimeSyncStep: Integer;
+    procedure AdvanceRuntimeSyncScenario;
     procedure FillAdvStringGrid;
     procedure FillEventList;
     procedure FillMemo;
@@ -129,6 +140,7 @@ type
     procedure RefreshStatus(const aAction: string);
     procedure SyncAccessibilityToggle;
     procedure UpdateDynamicContent;
+    procedure UpdateRuntimeSyncStatus(const aDescription: string);
   end;
 
 var
@@ -144,6 +156,9 @@ uses
   MaxLogic.Accessibility.TmsAdvStringGridAdapters;
 
 {$R *.dfm}
+
+type
+  TWinControlAccess = class(TWinControl);
 
 resourcestring
   rsActionApplied = 'Filters applied';
@@ -166,6 +181,41 @@ resourcestring
   rsDynamicLabelHintFormat = 'TLabel hint updated for cycle %d';
   rsDynamicStaticTextCaptionFormat = 'TStaticText caption %d';
   rsDynamicStaticTextHintFormat = 'TStaticText hint updated for cycle %d';
+  rsRuntimeChildHint = 'Control added and reparented by the runtime synchronization walkthrough';
+  rsRuntimeChildText = 'Runtime hierarchy child';
+  rsRuntimeControlRecreatedFormat = 'control HWND recreated from %d to %d';
+  rsRuntimeEditHint = 'TEdit runtime hint';
+  rsRuntimeEditValue = 'TEdit runtime value';
+  rsRuntimeExplicitAdded = 'control added and explicit label reassigned';
+  rsRuntimeAdvStringGridEdge = 'runtime TAdvStringGrid edge';
+  rsRuntimeBitButtonCaption = 'TBitBtn runtime caption';
+  rsRuntimeBitButtonHint = 'TBitBtn runtime hint';
+  rsRuntimeButtonCaption = 'TButton runtime caption';
+  rsRuntimeButtonHint = 'TButton runtime hint';
+  rsRuntimeFormCaption = 'Accessibility Framework Demo - runtime properties';
+  rsRuntimeFormRecreatedCaption = 'Accessibility Framework Demo - runtime properties - recreated';
+  rsRuntimeFormRecreatedFormat = 'form HWND recreated from %d to %d';
+  rsRuntimeGridText = 'runtime grid value';
+  rsRuntimeGridsGrown = 'grid values changed and shapes grown';
+  rsRuntimeGridsReset = 'grid shapes shrunk to their original bounds';
+  rsRuntimeHierarchyRemoved = 'runtime control removed';
+  rsRuntimeHierarchyReparented = 'runtime control reparented and explicit label restored';
+  rsRuntimeInferredAmbiguous = 'inferred label returned to the ambiguous state';
+  rsRuntimeInferredResolved = 'ambiguous input now has one inferred label';
+  rsRuntimeLabelCaption = 'TLabel runtime caption';
+  rsRuntimeLabelHint = 'TLabel runtime hint';
+  rsRuntimeLabeledEditHidden = 'TLabeledEdit label hidden and relationship removed';
+  rsRuntimeLabeledEditRestored = 'TLabeledEdit label restored with current text';
+  rsRuntimeLabeledEditText = 'TLabeledEdit runtime label';
+  rsRuntimeNextStepFormat = 'Next runtime sync step (%d)';
+  rsRuntimePropertiesChanged = 'form and control properties changed';
+  rsRuntimePropertiesRestored = 'control visibility, enabled state, and bounds restored';
+  rsRuntimeReady = 'ready';
+  rsRuntimeReset = 'Reset runtime sync walkthrough';
+  rsRuntimeStaticCaption = 'TStaticText runtime caption';
+  rsRuntimeStaticHint = 'TStaticText runtime hint';
+  rsRuntimeStatusFormat = 'Step %.2d: %s';
+  rsRuntimeStringGridEdge = 'runtime TStringGrid edge';
   rsStatusFormat = '%s at %s';
   rsWindowCaptionFormat = 'Accessibility Framework Demo - Window %d';
 
@@ -224,6 +274,150 @@ begin
   BalloonHint.HideHint;
 end;
 
+procedure TAccessibilityDemoMainForm.AdvanceRuntimeSyncScenario;
+var
+  lDescription: string;
+  lOldHandle: HWND;
+begin
+  lDescription := '';
+  case fRuntimeSyncStep of
+    1:
+      begin
+        DynamicContentTimer.Enabled := False;
+        Caption := rsRuntimeFormCaption;
+        staticDynamicCaption.Caption := rsRuntimeStaticCaption;
+        staticDynamicCaption.Hint := rsRuntimeStaticHint;
+        staticDynamicCaption.Align := alLeft;
+        staticDynamicCaption.Width := ScaleValue(300);
+        lblDynamicCaption.Caption := rsRuntimeLabelCaption;
+        lblDynamicCaption.Hint := rsRuntimeLabelHint;
+        edtDynamicText.Text := rsRuntimeEditValue;
+        edtDynamicText.Hint := rsRuntimeEditHint;
+        btnDynamicCaption.Caption := rsRuntimeButtonCaption;
+        btnDynamicCaption.Hint := rsRuntimeButtonHint;
+        btnDynamicCaption.Enabled := False;
+        bitBtnDynamicCaption.Caption := rsRuntimeBitButtonCaption;
+        bitBtnDynamicCaption.Hint := rsRuntimeBitButtonHint;
+        bitBtnDynamicCaption.Visible := False;
+        lDescription := rsRuntimePropertiesChanged;
+      end;
+    2:
+      begin
+        btnDynamicCaption.Enabled := True;
+        bitBtnDynamicCaption.Visible := True;
+        staticDynamicCaption.Align := alClient;
+        UpdateDynamicContent;
+        lDescription := rsRuntimePropertiesRestored;
+      end;
+    3:
+      begin
+        cmbQueue.Visible := False;
+        fRuntimeSyncChild := TEdit.Create(Self);
+        fRuntimeSyncChild.Name := 'edtRuntimeSyncChild';
+        fRuntimeSyncChild.Text := rsRuntimeChildText;
+        fRuntimeSyncChild.Hint := rsRuntimeChildHint;
+        fRuntimeSyncChild.ShowHint := True;
+        fRuntimeSyncChild.Parent := pnlFilterQueueRow;
+        fRuntimeSyncChild.Align := alBottom;
+        fRuntimeSyncChild.TabOrder := 0;
+        StaticTextQueue.FocusControl := fRuntimeSyncChild;
+        lDescription := rsRuntimeExplicitAdded;
+      end;
+    4:
+      begin
+        StaticTextQueue.FocusControl := cmbQueue;
+        cmbQueue.Visible := True;
+        fRuntimeSyncChild.Parent := pnlDynamicButtonRow;
+        fRuntimeSyncChild.Align := alRight;
+        fRuntimeSyncChild.Width := ScaleValue(240);
+        lDescription := rsRuntimeHierarchyReparented;
+      end;
+    5:
+      begin
+        FreeAndNil(fRuntimeSyncChild);
+        lDescription := rsRuntimeHierarchyRemoved;
+      end;
+    6:
+      begin
+        staticAmbiguousCandidateB.Left := pnlFilterAmbiguousRow.Width + ScaleValue(32);
+        lDescription := rsRuntimeInferredResolved;
+      end;
+    7:
+      begin
+        staticAmbiguousCandidateB.Left := fRuntimeSyncAmbiguousCandidateLeft;
+        lDescription := rsRuntimeInferredAmbiguous;
+      end;
+    8:
+      begin
+        labeledEditReference.EditLabel.Visible := False;
+        lDescription := rsRuntimeLabeledEditHidden;
+      end;
+    9:
+      begin
+        labeledEditReference.EditLabel.Caption := rsRuntimeLabeledEditText;
+        labeledEditReference.EditLabel.Visible := True;
+        lDescription := rsRuntimeLabeledEditRestored;
+      end;
+    10:
+      begin
+        StringGridOrderCells.ColCount := StringGridOrderCells.ColCount + 1;
+        StringGridOrderCells.RowCount := StringGridOrderCells.RowCount + 1;
+        StringGridOrderCells.Cells[1, 1] := rsRuntimeGridText;
+        StringGridOrderCells.Cells[Pred(StringGridOrderCells.ColCount),
+          Pred(StringGridOrderCells.RowCount)] := rsRuntimeStringGridEdge;
+        AdvStringGridAudit.UnHideColumnsAll;
+        AdvStringGridAudit.UnHideRowsAll;
+        AdvStringGridAudit.SplitAllCells;
+        AdvStringGridAudit.ColCount := AdvStringGridAudit.ColCount + 1;
+        AdvStringGridAudit.RowCount := AdvStringGridAudit.RowCount + 1;
+        AdvStringGridAudit.Cells[2, 2] := rsRuntimeGridText;
+        AdvStringGridAudit.Cells[Pred(AdvStringGridAudit.ColCount),
+          Pred(AdvStringGridAudit.RowCount)] := rsRuntimeAdvStringGridEdge;
+        lDescription := rsRuntimeGridsGrown;
+      end;
+    11:
+      begin
+        FillStringGrid;
+        FillAdvStringGrid;
+        lDescription := rsRuntimeGridsReset;
+      end;
+    12:
+      begin
+        lOldHandle := StringGridOrderCells.Handle;
+        TWinControlAccess(StringGridOrderCells).RecreateWnd;
+        lDescription := Format(rsRuntimeControlRecreatedFormat,
+          [lOldHandle, StringGridOrderCells.Handle]);
+      end;
+    13:
+      begin
+        lOldHandle := Handle;
+        Caption := rsRuntimeFormRecreatedCaption;
+        RecreateWnd;
+        lDescription := Format(rsRuntimeFormRecreatedFormat, [lOldHandle, Handle]);
+      end;
+  else
+    begin
+      fRuntimeSyncStep := 0;
+      FreeAndNil(fRuntimeSyncChild);
+      Caption := fRuntimeSyncInitialCaption;
+      StaticTextQueue.FocusControl := cmbQueue;
+      cmbQueue.Visible := True;
+      staticAmbiguousCandidateB.Left := fRuntimeSyncAmbiguousCandidateLeft;
+      labeledEditReference.EditLabel.Caption := fRuntimeSyncInitialLabeledEditCaption;
+      labeledEditReference.EditLabel.Visible := True;
+      btnDynamicCaption.Enabled := True;
+      bitBtnDynamicCaption.Visible := True;
+      staticDynamicCaption.Align := alClient;
+      FillStringGrid;
+      FillAdvStringGrid;
+      UpdateDynamicContent;
+      DynamicContentTimer.Enabled := True;
+      lDescription := rsRuntimeReady;
+    end;
+  end;
+  UpdateRuntimeSyncStatus(lDescription);
+end;
+
 procedure TAccessibilityDemoMainForm.btnApplyFiltersClick(aSender: TObject);
 begin
   RefreshStatus(rsActionApplied);
@@ -249,6 +443,12 @@ begin
   FillEventList;
   FillMemo;
   RefreshStatus(rsActionRefreshed);
+end;
+
+procedure TAccessibilityDemoMainForm.btnRuntimeSyncStepClick(aSender: TObject);
+begin
+  Inc(fRuntimeSyncStep);
+  AdvanceRuntimeSyncScenario;
 end;
 
 procedure TAccessibilityDemoMainForm.btnSaveClick(aSender: TObject);
@@ -458,8 +658,13 @@ procedure TAccessibilityDemoMainForm.FormCreate(aSender: TObject);
 begin
   Inc(gWindowCount);
   Caption := Format(rsWindowCaptionFormat, [gWindowCount]);
+  fRuntimeSyncInitialCaption := Caption;
+  fRuntimeSyncInitialLabeledEditCaption := labeledEditReference.EditLabel.Caption;
+  fRuntimeSyncAmbiguousCandidateLeft := staticAmbiguousCandidateB.Left;
+  fRuntimeSyncStep := 0;
   fDynamicContentRevision := 0;
   UpdateDynamicContent;
+  UpdateRuntimeSyncStatus(rsRuntimeReady);
   SyncAccessibilityToggle;
   cmbQueue.ItemIndex := 0;
   FillStringGrid;
@@ -503,6 +708,17 @@ begin
   btnDynamicCaption.Hint := Format(rsDynamicButtonHintFormat, [fDynamicContentRevision]);
   bitBtnDynamicCaption.Caption := Format(rsDynamicBitButtonCaptionFormat, [fDynamicContentRevision]);
   bitBtnDynamicCaption.Hint := Format(rsDynamicBitButtonHintFormat, [fDynamicContentRevision]);
+end;
+
+procedure TAccessibilityDemoMainForm.UpdateRuntimeSyncStatus(const aDescription: string);
+begin
+  staticRuntimeSyncState.Caption := Format(rsRuntimeStatusFormat, [fRuntimeSyncStep, aDescription]);
+  if fRuntimeSyncStep >= 13 then
+  begin
+    btnRuntimeSyncStep.Caption := rsRuntimeReset;
+  end else begin
+    btnRuntimeSyncStep.Caption := Format(rsRuntimeNextStepFormat, [Succ(fRuntimeSyncStep)]);
+  end;
 end;
 
 end.

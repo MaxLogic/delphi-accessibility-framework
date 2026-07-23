@@ -36,6 +36,12 @@ Use this checklist on a real VCL application or on a manual sample built from th
 
 - Open the complex demo's `Dynamic content` tab and note the current cycle number for its `TStaticText`, `TLabel`, `TEdit`, `TButton`, and `TBitBtn` samples.
 - Wait at least 10 seconds, then revisit the samples with mouse review, object navigation, and Tab where applicable. NVDA and the UIA properties should expose the new cycle number in every caption/edit value and hint; none should retain a value from the earlier cycle.
+- After observing at least two timer cycles, use `Next runtime sync step` to advance one isolated transition at a time. Capture the displayed `Step NN` state before continuing.
+- Steps 1-5 change form/control properties, add an explicitly labeled edit, reparent it, and remove it. Confirm current names, values, hints, enabled/visible/bounds state, exact label association, provider identity, and one structure/reorder event for each hierarchy transition.
+- Steps 6-9 change the ambiguous sample into one geometrically inferred relationship and back, then remove and restore the `TLabeledEdit` label. Confirm the current label is announced once and ambiguous/unlabeled inputs never acquire a false relationship.
+- Steps 10-11 change cell values, grow both `TStringGrid` and `TAdvStringGrid`, then shrink and restore their original data. Confirm new edge cells appear once, removed cells disappear, and the restored TMS hidden-base merges retain correct text and spans.
+- Steps 12-13 recreate the `TStringGrid` and form HWNDs. Compare the displayed old/new handles with bridge, provider, and external UIA maps; focus, selection, hit testing, `WM_GETOBJECT`, and the current form name must continue without reinstalling accessibility.
+- Reset the walkthrough after Step 13. The original form caption, timer, label relationships, layout, and grid data should return.
 
 ## Hints
 

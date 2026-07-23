@@ -31,6 +31,7 @@ type
     [Test]
     procedure ScanFormSkipsSortForAlreadyOrderedControlTrees;
     [Test]
+    [Category('Scanner,LabeledBy')]
     procedure ScanFormAssociatesExplicitLabelsWithoutQuadraticSiblingScans;
     [Test]
     procedure ScanFormSortsLargeReorderedControlTreesWithoutQuadraticCost;
@@ -39,6 +40,7 @@ type
     [Test]
     procedure TextExtractionUsesFallbackPriorityAndSuppressesIconGlyphs;
     [Test]
+    [Category('Scanner,LabeledBy')]
     procedure TextExtractionUsesLabeledEditCaptionBeforeEditText;
   end;
 

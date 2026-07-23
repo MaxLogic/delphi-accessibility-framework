@@ -102,6 +102,9 @@ type
     [Category('AccessibilityManager,RuntimeProviderHierarchy,RuntimeRemovedControlLeavesProviderHierarchy')]
     procedure RuntimeRemovedControlLeavesProviderHierarchy;
     [Test]
+    [Category('AccessibilityManager,RuntimeProviderHierarchy,RuntimeFreedControlReconciliationIsSafe')]
+    procedure RuntimeFreedControlReconciliationIsSafe;
+    [Test]
     [Category('AccessibilityManager,RuntimeProviderHierarchy,RuntimeReparentedControlPreservesProviderIdentity')]
     procedure RuntimeReparentedControlPreservesProviderIdentity;
     [Test]
@@ -347,6 +350,18 @@ uses
 
 type
   TWinControlAccess = class(TWinControl);
+
+  TInstalledFormMarkerStorageAccess = class(TComponent)
+  public
+    fHook: TObject;
+  end;
+
+  TFormWindowHookStorageAccess = class(TComponent)
+  public
+    fApi: IAccessibilityUiaApi;
+    fChildHooks: TList<TObject>;
+    fChildHooksByControl: TDictionary<Pointer, TObject>;
+  end;
 
   IFormInstallRecorder = interface(IAccessibilityFormInstaller)
     ['{89B798B7-0880-4AE5-B799-58E4EB14DF22}']
@@ -681,6 +696,19 @@ type
 
   TNoActiveForm = class(TForm);
 
+  TReleasedControlStorageEdit = class(TEdit)
+  private
+    class var fRetainNextInstanceStorage: Boolean;
+    class var fRetainedInstance: Pointer;
+    class var fReuseRetainedInstanceStorage: Boolean;
+  public
+    class function NewInstance: TObject; override;
+    class procedure RetainNextInstanceStorage; static;
+    class procedure ReleaseRetainedInstance; static;
+    class procedure ReuseRetainedInstanceStorage; static;
+    procedure FreeInstance; override;
+  end;
+
 constructor TFormInstallRecorder.Create;
 begin
   inherited Create;
@@ -705,6 +733,70 @@ begin
       Inc(Result);
     end;
   end;
+end;
+
+procedure TReleasedControlStorageEdit.FreeInstance;
+var
+  lInstanceSize: Integer;
+begin
+  if not fRetainNextInstanceStorage then
+  begin
+    inherited FreeInstance;
+    Exit;
+  end;
+
+  fRetainNextInstanceStorage := False;
+  lInstanceSize := InstanceSize;
+  CleanupInstance;
+  fRetainedInstance := Pointer(Self);
+  FillChar(PByte(fRetainedInstance)^, lInstanceSize, 0);
+end;
+
+class function TReleasedControlStorageEdit.NewInstance: TObject;
+var
+  lInstance: Pointer;
+begin
+  if not fReuseRetainedInstanceStorage then
+  begin
+    Result := inherited NewInstance;
+    Exit;
+  end;
+
+  fReuseRetainedInstanceStorage := False;
+  lInstance := fRetainedInstance;
+  fRetainedInstance := nil;
+  if lInstance = nil then
+  begin
+    raise EInvalidOperation.Create('No retained control storage is available.');
+  end;
+
+  Result := InitInstance(lInstance);
+end;
+
+class procedure TReleasedControlStorageEdit.ReleaseRetainedInstance;
+begin
+  fRetainNextInstanceStorage := False;
+  fReuseRetainedInstanceStorage := False;
+  if fRetainedInstance <> nil then
+  begin
+    FreeMem(fRetainedInstance);
+    fRetainedInstance := nil;
+  end;
+end;
+
+class procedure TReleasedControlStorageEdit.RetainNextInstanceStorage;
+begin
+  fRetainNextInstanceStorage := True;
+end;
+
+class procedure TReleasedControlStorageEdit.ReuseRetainedInstanceStorage;
+begin
+  if fRetainedInstance = nil then
+  begin
+    raise EInvalidOperation.Create('No retained control storage is available.');
+  end;
+
+  fReuseRetainedInstanceStorage := True;
 end;
 
 procedure TFormInstallRecorder.FailNextInstall;
@@ -3837,6 +3929,80 @@ begin
     Assert.AreEqual(1, lWinEvents.Calls);
     lRemovedLabel.Free;
   finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.RuntimeFreedControlReconciliationIsSafe;
+var
+  lApi: IManagerTestUiaApi;
+  lComponentCountBeforeInstall: Integer;
+  lCurrentProvider: IRawElementProviderSimple;
+  lDone: Boolean;
+  lEdit: TReleasedControlStorageEdit;
+  lForm: TForm;
+  lFormHook: TFormWindowHookStorageAccess;
+  lLookup: IAccessibilityVclProviderLookup;
+  lMarker: TComponent;
+  lMessage: TMessage;
+  lReleasedAddress: Pointer;
+  lRemovedNode: IAccessibilityProviderNode;
+  lRemovedProvider: IRawElementProviderSimple;
+  lRootProvider: IRawElementProviderSimple;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lEdit := TReleasedControlStorageEdit.Create(lForm);
+    lEdit.Parent := lForm;
+    lEdit.Text := 'Temporary runtime value';
+    lForm.HandleNeeded;
+    lComponentCountBeforeInstall := lForm.ComponentCount;
+    TAccessibilityManager.Install(lForm);
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider));
+    Assert.IsTrue(Supports(lRootProvider, IAccessibilityVclProviderLookup, lLookup));
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lEdit, lRemovedProvider));
+    Assert.IsTrue(Supports(lRemovedProvider, IAccessibilityProviderNode, lRemovedNode));
+    Assert.IsTrue(lForm.ComponentCount > lComponentCountBeforeInstall, 'installed marker component');
+    lMarker := lForm.Components[lComponentCountBeforeInstall];
+    lFormHook := TFormWindowHookStorageAccess(
+      TInstalledFormMarkerStorageAccess(lMarker).fHook); //PALOFF STWA6 test-only private layout mirror
+    Assert.AreEqual(1, lFormHook.fChildHooks.Count, 'initial child hook count'); //PALOFF reviewed live hook-list mirror
+    Assert.AreEqual(1, lFormHook.fChildHooksByControl.Count, 'initial child hook index count'); //PALOFF reviewed live hook-index mirror
+
+    TReleasedControlStorageEdit.RetainNextInstanceStorage;
+    lReleasedAddress := Pointer(lEdit);
+    FreeAndNil(lEdit);
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+    Assert.IsTrue(lRemovedNode.IsDisconnected);
+    Assert.AreEqual(0, lFormHook.fChildHooks.Count, 'released child hook count');
+    Assert.AreEqual(0, lFormHook.fChildHooksByControl.Count, 'released child hook index count');
+
+    TReleasedControlStorageEdit.ReuseRetainedInstanceStorage;
+    lEdit := TReleasedControlStorageEdit.Create(lForm);
+    Assert.IsTrue(Pointer(lEdit) = lReleasedAddress, 'replacement must reuse the released control address');
+    lEdit.Parent := lForm;
+    lEdit.Text := 'Replacement runtime value';
+    lEdit.HandleNeeded;
+    lDone := True;
+    Application.OnIdle(Application, lDone);
+
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lEdit, lCurrentProvider));
+    Assert.IsFalse(lCurrentProvider = lRemovedProvider, 'replacement provider identity');
+    Assert.AreEqual(1, lFormHook.fChildHooks.Count, 'replacement child hook count');
+    Assert.AreEqual(1, lFormHook.fChildHooksByControl.Count, 'replacement child hook index count');
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_SETFOCUS;
+    lEdit.WindowProc(lMessage);
+    Assert.AreEqual(UIA_AutomationFocusChangedEventId, lApi.LastEventId);
+    Assert.IsTrue(lApi.LastEventProvider = lCurrentProvider, 'replacement window hook provider');
+  finally
+    TReleasedControlStorageEdit.ReleaseRetainedInstance;
     lForm.Free;
     ResetManager;
   end;

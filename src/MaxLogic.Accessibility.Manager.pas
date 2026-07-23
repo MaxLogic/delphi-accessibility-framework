@@ -134,7 +134,7 @@ type
   private
     fApi: IAccessibilityUiaApi;
     fChildHooks: TList<TAccessibilityControlWindowHook>;
-    fChildHooksByControl: TDictionary<TWinControl, TAccessibilityControlWindowHook>;
+    fChildHooksByControl: TDictionary<Pointer, TAccessibilityControlWindowHook>;
     fForm: TCustomForm;
     fHoverCache: THoverCache;
     fMsaaAccessible: IAccessible;
@@ -146,7 +146,7 @@ type
     fRetained: Boolean;
     fRuntimeGridNames: TDictionary<IUnknown, string>;
     fRuntimeGridVisited: TDictionary<IUnknown, Byte>;
-    fRuntimeProperties: TDictionary<TObject, TRuntimeProviderSnapshot>;
+    fRuntimeProperties: TDictionary<Pointer, TRuntimeProviderSnapshot>;
     function ControlIsHooked(aControl: TWinControl): Boolean;
     procedure Detach;
     procedure DisconnectProvider;
@@ -183,6 +183,7 @@ type
   private
     fApi: IAccessibilityUiaApi;
     fControl: TWinControl;
+    fControlKey: Pointer;
     fHasLastGridCell: Boolean;
     fHasLastListBoxIndex: Boolean;
     fHasLastRaisedProviderState: Boolean;
@@ -1756,12 +1757,12 @@ begin
 
   fApi := aApi;
   fChildHooks := TList<TAccessibilityControlWindowHook>.Create;
-  fChildHooksByControl := TDictionary<TWinControl, TAccessibilityControlWindowHook>.Create;
+  fChildHooksByControl := TDictionary<Pointer, TAccessibilityControlWindowHook>.Create;
   fForm := aForm;
   fProvider := aProvider;
   fRuntimeGridNames := TDictionary<IUnknown, string>.Create;
   fRuntimeGridVisited := TDictionary<IUnknown, Byte>.Create;
-  fRuntimeProperties := TDictionary<TObject, TRuntimeProviderSnapshot>.Create;
+  fRuntimeProperties := TDictionary<Pointer, TRuntimeProviderSnapshot>.Create;
   fObservedScan := TAccessibilityScanner.ObserveForm(aForm, aRegistry);
   fObservedRevision := fObservedScan.Revision;
   fOriginalWindowProc := aForm.WindowProc;
@@ -1835,10 +1836,11 @@ begin
   try
     Inc(lProbeCount);
     lHook := nil;
-    Result := fChildHooksByControl.TryGetValue(aControl, lHook) and (lHook <> nil) and (lHook.fControl = aControl);
+    Result := fChildHooksByControl.TryGetValue(Pointer(aControl), lHook) and (lHook <> nil) and
+      (lHook.fControl = aControl);
     if (not Result) and (lHook <> nil) then
     begin
-      fChildHooksByControl.Remove(aControl);
+      fChildHooksByControl.Remove(Pointer(aControl));
     end;
   finally
     TAccessibilityDiagnostics.RecordManagerHookLookup(lProbeCount);
@@ -1867,7 +1869,7 @@ begin
   lHook := TAccessibilityControlWindowHook.Create(aControl, aProvider, fApi, fProvider.RawElementProvider,
     aPreserveNativeWindowAccessibility);
   fChildHooks.Add(lHook);
-  fChildHooksByControl.AddOrSetValue(aControl, lHook);
+  fChildHooksByControl.AddOrSetValue(lHook.fControlKey, lHook);
 end;
 
 procedure TAccessibilityFormWindowHook.HookMissingWindowControls(aParent: TWinControl);
@@ -2110,10 +2112,7 @@ begin
   begin
     lHook := fChildHooks[Pred(fChildHooks.Count)];
     fChildHooks.Delete(Pred(fChildHooks.Count));
-    if lHook.fControl <> nil then
-    begin
-      fChildHooksByControl.Remove(lHook.fControl);
-    end;
+    fChildHooksByControl.Remove(lHook.fControlKey);
     if not lHook.Passivate then
     begin
       lHook.Free;
@@ -2250,10 +2249,7 @@ begin
     end;
 
     fChildHooks.Delete(i);
-    if lControl <> nil then
-    begin
-      fChildHooksByControl.Remove(lControl);
-    end;
+    fChildHooksByControl.Remove(lHook.fControlKey);
     if not lHook.Passivate then
     begin
       lHook.Free;
@@ -2265,39 +2261,41 @@ procedure TAccessibilityFormWindowHook.PruneRuntimePropertySnapshots(
   const aTree: IAccessibilityScanTree);
 var
   i: Integer;
-  lControl: TControl;
-  lObject: TObject;
-  lStaleObjects: TList<TObject>;
+  lControlKey: Pointer;
+  lLiveControls: THashSet<Pointer>;
+  lNode: IAccessibilityScanNode;
+  lStaleControls: TList<Pointer>;
 begin
   if aTree = nil then
   begin
     Exit;
   end;
 
-  lStaleObjects := TList<TObject>.Create;
+  lLiveControls := THashSet<Pointer>.Create;
+  lStaleControls := TList<Pointer>.Create;
   try
-    for lObject in fRuntimeProperties.Keys do
+    lLiveControls.Add(Pointer(fForm));
+    for lNode in aTree.FlattenedNodes do
     begin
-      if lObject = fForm then
+      if lNode.Control <> nil then
       begin
-        Continue;
-      end;
-      lControl := nil;
-      if lObject is TControl then
-      begin
-        lControl := lObject as TControl;
-      end;
-      if (lControl = nil) or (aTree.FindNode(lControl) = nil) then
-      begin
-        lStaleObjects.Add(lObject);
+        lLiveControls.Add(Pointer(lNode.Control));
       end;
     end;
-    for i := 0 to Pred(lStaleObjects.Count) do
+    for lControlKey in fRuntimeProperties.Keys do
     begin
-      fRuntimeProperties.Remove(lStaleObjects[i]);
+      if not lLiveControls.Contains(lControlKey) then
+      begin
+        lStaleControls.Add(lControlKey);
+      end;
+    end;
+    for i := 0 to Pred(lStaleControls.Count) do
+    begin
+      fRuntimeProperties.Remove(lStaleControls[i]);
     end;
   finally
-    lStaleObjects.Free;
+    lStaleControls.Free;
+    lLiveControls.Free;
   end;
 end;
 
@@ -2454,7 +2452,7 @@ begin
   end;
   if Supports(aProvider, IAccessibilityProviderNode, lNode) and lNode.IsDisconnected then
   begin
-    fRuntimeProperties.Remove(lObject);
+    fRuntimeProperties.Remove(Pointer(lObject));
     Exit;
   end;
   lNewSnapshot := Default(TRuntimeProviderSnapshot);
@@ -2482,7 +2480,7 @@ begin
     lNewSnapshot.HasGridShape := (lGridPattern.Get_ColumnCount(lNewSnapshot.ColumnCount) = S_OK) and
       (lGridPattern.Get_RowCount(lNewSnapshot.RowCount) = S_OK);
   end;
-  if fRuntimeProperties.TryGetValue(lObject, lOldSnapshot) and aPublishChanges and
+  if fRuntimeProperties.TryGetValue(Pointer(lObject), lOldSnapshot) and aPublishChanges and
     ProvidersAreSame(lOldSnapshot.Provider, aProvider) then
   begin
     if (lOldSnapshot.HasGridShape <> lNewSnapshot.HasGridShape) or
@@ -2562,7 +2560,7 @@ begin
       NotifyProviderWinEvent(aProvider, EVENT_OBJECT_VALUECHANGE);
     end;
   end;
-  fRuntimeProperties.AddOrSetValue(lObject, lNewSnapshot);
+  fRuntimeProperties.AddOrSetValue(Pointer(lObject), lNewSnapshot);
 
   if not Supports(aProvider, IAccessibilityProviderChildAccess, lChildAccess) or
     (lChildAccess.DirectChildCount(lChildCount) <> S_OK) then
@@ -2685,6 +2683,7 @@ begin
 
   fApi := aApi;
   fControl := aControl;
+  fControlKey := Pointer(aControl);
   fProvider := aProvider;
   fProviderIsGrid := ProviderIsGrid(fProvider);
   fProviderTracksControlWindow := aControl.HandleAllocated and

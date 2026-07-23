@@ -49,7 +49,7 @@ end;
 
 `TAccessibilityManager.Install(Form)` installs accessibility for that form and its controls without enabling app-wide form discovery.
 
-Installed VCL form providers automatically reconcile controls added, removed, or reparented at runtime. Lookup, navigation, and hit testing reflect the current hierarchy without reinstalling the form, retained providers for removed controls become unavailable, and retained form/control providers follow replacement HWNDs created by VCL window recreation.
+Installed VCL form providers automatically reconcile controls added, removed, or reparented at runtime. Lookup, navigation, and hit testing reflect the current hierarchy without reinstalling the form, retained providers for removed controls become unavailable, controls may be freed before the next idle reconciliation without stale-cache access violations, and retained form/control providers follow replacement HWNDs created by VCL window recreation.
 
 Call `TAccessibilityManager.Uninstall` to remove the framework hooks, hint observers, and installed form providers. The complex demo exposes this as an `Accessibility enabled` checkbox so manual NVDA testing can compare the framework-on and framework-off behavior in the same process.
 

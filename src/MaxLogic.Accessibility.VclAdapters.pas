@@ -132,14 +132,14 @@ type
     fForm: TCustomForm;
     fHitTestRoots: TList<IRawElementProviderFragmentRoot>;
     fNextRuntimeId: Integer;
-    fProviderNodesByControl: TDictionary<TControl, IAccessibilityProviderNode>;
-    fProvidersByControl: TDictionary<TControl, IRawElementProviderFragment>;
+    fProviderNodesByControl: TDictionary<Pointer, IAccessibilityProviderNode>;
+    fProvidersByControl: TDictionary<Pointer, IRawElementProviderFragment>;
     fRegistry: IAccessibilityAdapterRegistry;
     fRuntimeApi: IAccessibilityUiaApi;
     function AddMissingProviderChildren(const aParentProvider: IAccessibilityProviderNode;
       const aScanNode: IAccessibilityScanNode): Boolean;
     procedure CollectScanControls(const aScanNode: IAccessibilityScanNode;
-      aControls: TDictionary<TControl, Byte>);
+      aControls: THashSet<Pointer>);
     procedure ReconcileLabeledByRelationships(const aTree: IAccessibilityScanTree);
     function CanUseDirectHitTarget(aControl: TControl): Boolean;
     function ControlFromPoint(const aScreenPoint: TPoint): TControl;
@@ -2154,7 +2154,7 @@ begin
   end;
   for i := 0 to Pred(aScanNode.ChildCount) do
   begin
-    if not fProviderNodesByControl.TryGetValue(aScanNode.Child(i).Control, lChildProvider) or
+    if not fProviderNodesByControl.TryGetValue(Pointer(aScanNode.Child(i).Control), lChildProvider) or
       (lChildProvider = nil) or lChildProvider.IsDisconnected then
     begin
       if lChildProvider <> nil then
@@ -2211,13 +2211,13 @@ begin
 end;
 
 procedure TAccessibilityVclFormProviderRoot.CollectScanControls(const aScanNode: IAccessibilityScanNode;
-  aControls: TDictionary<TControl, Byte>);
+  aControls: THashSet<Pointer>);
 var
   i: Integer;
 begin
   for i := 0 to Pred(aScanNode.ChildCount) do
   begin
-    aControls.AddOrSetValue(aScanNode.Child(i).Control, 0);
+    aControls.Add(Pointer(aScanNode.Child(i).Control));
     CollectScanControls(aScanNode.Child(i), aControls);
   end;
 end;
@@ -2239,8 +2239,8 @@ begin
   fRuntimeApi := aApi;
   fHitTestRoots := TList<IRawElementProviderFragmentRoot>.Create;
   fNextRuntimeId := 1;
-  fProviderNodesByControl := TDictionary<TControl, IAccessibilityProviderNode>.Create;
-  fProvidersByControl := TDictionary<TControl, IRawElementProviderFragment>.Create;
+  fProviderNodesByControl := TDictionary<Pointer, IAccessibilityProviderNode>.Create;
+  fProvidersByControl := TDictionary<Pointer, IRawElementProviderFragment>.Create;
 end;
 
 destructor TAccessibilityVclFormProviderRoot.Destroy;
@@ -2270,10 +2270,10 @@ var
 begin
   if (aControl <> nil) and (aProvider <> nil) then
   begin
-    fProvidersByControl.AddOrSetValue(aControl, aProvider);
+    fProvidersByControl.AddOrSetValue(Pointer(aControl), aProvider);
     if Supports(aProvider, IAccessibilityProviderNode, lNode) then
     begin
-      fProviderNodesByControl.AddOrSetValue(aControl, lNode);
+      fProviderNodesByControl.AddOrSetValue(Pointer(aControl), lNode);
     end;
   end;
 end;
@@ -2282,6 +2282,7 @@ procedure TAccessibilityVclFormProviderRoot.ReconcileLabeledByRelationships(
   const aTree: IAccessibilityScanTree);
 var
   lControl: TControl;
+  lControlKey: Pointer;
   lControlProvider: TAccessibilityVclControlProvider;
   lLabelControl: TControl;
   lLabelNode: IAccessibilityProviderNode;
@@ -2299,9 +2300,10 @@ begin
     Exit;
   end;
 
-  for lControl in fProviderNodesByControl.Keys do
+  for lControlKey in fProviderNodesByControl.Keys do
   begin
-    if not fProviderNodesByControl.TryGetValue(lControl, lNode) or
+    lControl := TControl(lControlKey);
+    if not fProviderNodesByControl.TryGetValue(lControlKey, lNode) or
       not Supports(lNode, IAccessibilityProviderNodeInternal, lNodeInternal) or
       not (lNodeInternal.ProviderObject is TAccessibilityVclControlProvider) then
     begin
@@ -2319,7 +2321,8 @@ begin
     if Supports(lScanNode, IAccessibilityScanNodeLabelRelationship, lRelationship) then
     begin
       lLabelControl := lRelationship.AssociatedLabelControl;
-      if (lLabelControl <> nil) and fProviderNodesByControl.TryGetValue(lLabelControl, lLabelNode) and
+      if (lLabelControl <> nil) and
+        fProviderNodesByControl.TryGetValue(Pointer(lLabelControl), lLabelNode) and
         not lLabelNode.IsDisconnected then
       begin
         lLabelProvider := lLabelNode.RawElementProvider;
@@ -2348,9 +2351,9 @@ function TAccessibilityVclFormProviderRoot.ReconcileProviderHierarchy(
   const aTree: IAccessibilityScanTree): Boolean;
 var
   i: Integer;
-  lControl: TControl;
-  lControlsToRemove: TList<TControl>;
-  lDesiredControls: TDictionary<TControl, Byte>;
+  lControlKey: Pointer;
+  lControlsToRemove: TList<Pointer>;
+  lDesiredControls: THashSet<Pointer>;
   lHierarchy: IAccessibilityProviderHierarchyInternal;
   lHitTestRoot: IRawElementProviderFragmentRoot;
   lNode: IAccessibilityProviderNode;
@@ -2361,23 +2364,23 @@ begin
     Exit;
   end;
 
-  lDesiredControls := TDictionary<TControl, Byte>.Create;
-  lControlsToRemove := TList<TControl>.Create;
+  lDesiredControls := THashSet<Pointer>.Create;
+  lControlsToRemove := TList<Pointer>.Create;
   try
     CollectScanControls(aTree.Root, lDesiredControls);
-    for lControl in fProviderNodesByControl.Keys do
+    for lControlKey in fProviderNodesByControl.Keys do
     begin
-      if not lDesiredControls.ContainsKey(lControl) then
+      if not lDesiredControls.Contains(lControlKey) then
       begin
-        lControlsToRemove.Add(lControl);
+        lControlsToRemove.Add(lControlKey);
       end;
     end;
 
     Result := AddMissingProviderChildren(Self as IAccessibilityProviderNode, aTree.Root);
     for i := 0 to Pred(lControlsToRemove.Count) do
     begin
-      lControl := lControlsToRemove[i];
-      if fProviderNodesByControl.TryGetValue(lControl, lNode) then
+      lControlKey := lControlsToRemove[i];
+      if fProviderNodesByControl.TryGetValue(lControlKey, lNode) then
       begin
         if Supports(lNode, IRawElementProviderFragmentRoot, lHitTestRoot) then
         begin
@@ -2390,8 +2393,8 @@ begin
           lNode.Disconnect;
         end;
       end;
-      fProviderNodesByControl.Remove(lControl);
-      fProvidersByControl.Remove(lControl);
+      fProviderNodesByControl.Remove(lControlKey);
+      fProvidersByControl.Remove(lControlKey);
       Result := True;
     end;
   finally
@@ -2459,7 +2462,7 @@ begin
   lControl := aControl;
   while lControl <> nil do
   begin
-    if fProvidersByControl.TryGetValue(lControl, aProvider) and (aProvider <> nil) then
+    if fProvidersByControl.TryGetValue(Pointer(lControl), aProvider) and (aProvider <> nil) then
     begin
       Exit(True);
     end;

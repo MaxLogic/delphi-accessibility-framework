@@ -11,6 +11,7 @@ type
   TAccessibilityDocumentationTests = class
   public
     [Test]
+    [Category('AgentBridgeDocumentation')]
     procedure AgentBridgeDocumentationDescribesContract;
     [Test]
     procedure ReadmeDocumentsInstallAndSupportedScenarios;
@@ -25,7 +26,14 @@ type
     [Test]
     procedure DemoBuildIsReproducibleForExactCandidateCertification;
     [Test]
+    [Category('AgentBridgeDocumentation')]
     procedure AgentBridgeDocumentationSeparatesAccessibilityControlAndAgentModes;
+    [Test]
+    [Category('AgentBridgeDocumentation')]
+    procedure AgentBridgeDocumentationDefinesSafeControlWorkflow;
+    [Test]
+    [Category('AgentBridgeDocumentation')]
+    procedure DemoProvidesAgentControlModalScenario;
     [Test]
     procedure DemoShutdownDisarmsAccessibilityHooksAndTimers;
     [Test]
@@ -211,6 +219,37 @@ begin
   RejectText(lSkillText, 'Shadow Journal', 'desktop-control skill');
 end;
 
+procedure TAccessibilityDocumentationTests.AgentBridgeDocumentationDefinesSafeControlWorkflow;
+var
+  lBridgeText: string;
+  lChecklistText: string;
+  lSkillText: string;
+begin
+  lBridgeText := ReadRepoText('docs\agent-bridge.md');
+  lChecklistText := ReadRepoText('docs\agent-control-checklist.md');
+  lSkillText := ReadRepoText('agent-skills\windows-desktop-control\SKILL.md');
+
+  RequireText(lSkillText, 'Bridge control is not an NVDA test', 'desktop-control skill');
+  RequireText(lSkillText, '`takeover` includes the required three-second safety delay', 'desktop-control skill');
+  RequireText(lSkillText, 'Activation failure is a hard stop', 'desktop-control skill');
+  RequireText(lSkillText, 'Treat refs and geometry as expired', 'desktop-control skill');
+  RequireText(lSkillText, '`control.setText` is raw property assignment', 'desktop-control skill');
+  RequireText(lSkillText, 'Do not invoke modal-opening controls through synchronous bridge mutation',
+    'desktop-control skill');
+  RequireText(lSkillText, '`foreground-session`', 'desktop-control skill');
+  RequireText(lSkillText, 'bounded best-effort stopping rule', 'desktop-control skill');
+  RequireText(lBridgeText, 'Bridge evidence is not NVDA evidence', 'agent bridge documentation');
+  RequireText(lBridgeText, 'refs and geometry expire', 'agent bridge documentation');
+  RequireText(lBridgeText, 'modal opener', 'agent bridge documentation');
+  RequireText(lChecklistText, 'Bridge-only agent control', 'agent-control checklist');
+  RequireText(lChecklistText, 'Slow-form wait', 'agent-control checklist');
+  RequireText(lChecklistText, 'MDI activation', 'agent-control checklist');
+  RequireText(lChecklistText, 'Modal discovery', 'agent-control checklist');
+  RequireText(lChecklistText, 'Guarded mouse and keyboard input', 'agent-control checklist');
+  RequireText(lChecklistText, 'Lease expiry and watchdog release', 'agent-control checklist');
+  RequireText(lChecklistText, 'Clean application shutdown', 'agent-control checklist');
+end;
+
 procedure TAccessibilityDocumentationTests.NvdaChecklistDocumentsExpectedSpeech;
 var
   lText: string;
@@ -293,6 +332,23 @@ begin
     'demo form startup helper');
   RequireText(ReadRepoText('demos\AccessibilityComplexDemo.dpr'), 'SetDemoAccessibilityFrameworkEnabled(True);',
     'demo DPR');
+end;
+
+procedure TAccessibilityDocumentationTests.DemoProvidesAgentControlModalScenario;
+var
+  lDfmText: string;
+  lPasText: string;
+begin
+  lDfmText := ReadRepoText('demos\AccessibilityDemoMainForm.dfm');
+  lPasText := ReadRepoText('demos\AccessibilityDemoMainForm.pas');
+
+  RequireText(lDfmText, 'object btnShowModal: TButton', 'demo modal scenario');
+  RequireText(lDfmText, 'Caption = ''Modal dialog''', 'demo modal scenario');
+  RequireText(lDfmText, 'OnClick = btnShowModalClick', 'demo modal scenario');
+  RequireText(lPasText, 'procedure TAccessibilityDemoMainForm.btnShowModalClick(aSender: TObject);',
+    'demo modal scenario');
+  RequireText(lPasText, 'MessageDlg(rsAgentControlModalMessage, mtInformation, [mbOK], 0);',
+    'demo modal scenario');
 end;
 
 procedure TAccessibilityDocumentationTests.ReadmeDocumentsInstallAndSupportedScenarios;

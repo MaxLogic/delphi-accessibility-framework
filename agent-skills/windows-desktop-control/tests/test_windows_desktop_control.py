@@ -1122,6 +1122,55 @@ class WindowsDesktopControlTests(unittest.TestCase):
             )
             self.assertEqual(0, released.returncode, released.stderr)
 
+    def test_foreground_session_can_guard_one_pid_across_modal_hwnds(self) -> None:
+        helper = load_helper_module()
+
+        class FakeUser32:
+            # Real modal focus and cursor input are unsafe and nondeterministic in this unit test.
+            @staticmethod
+            def GetForegroundWindow():
+                return helper.int_to_hwnd(600)
+
+            @staticmethod
+            def SetCursorPos(_x, _y):
+                return True
+
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "lease.json"
+            helper.write_session(
+                state_path,
+                {
+                    "sessionId": "pid-session",
+                    "targetPid": 42,
+                    "targetHwnd": 0,
+                    "controllerPid": os.getpid(),
+                    "expiresAtMs": helper.epoch_ms() + 5000,
+                },
+            )
+            args = SimpleNamespace(
+                x=10,
+                y=20,
+                duration_ms=0,
+                require_foreground_pid=None,
+                require_foreground_hwnd=None,
+                session_id="pid-session",
+                state_path=str(state_path),
+            )
+            original_user32 = helper.user32
+            original_window_info = helper.window_info
+            try:
+                helper.user32 = FakeUser32()
+                helper.window_info = lambda _hwnd: {"hwnd": 600, "pid": 42, "title": "Modal"}
+                output = StringIO()
+                with redirect_stdout(output):
+                    result = helper.command_move(args)
+            finally:
+                helper.user32 = original_user32
+                helper.window_info = original_window_info
+
+            self.assertEqual(0, result)
+            self.assertEqual(0, json.loads(output.getvalue())["foregroundSession"]["targetHwnd"])
+
     def test_send_input_structure_matches_win32_layout(self) -> None:
         helper = load_helper_module()
         expected_size = 40 if ctypes.sizeof(ctypes.c_void_p) == 8 else 28

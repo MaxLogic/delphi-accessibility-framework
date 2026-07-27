@@ -14,11 +14,15 @@ Choose the drive mode before acting:
 
 Before touching the user's mouse or keyboard in Foreground Drive Mode, announce takeover and wait three seconds. When finished, announce release. Background Drive Mode does not need audio announcements because it must not take over the user's input devices.
 
+Bridge control is not an NVDA test. Bridge and desktop-control evidence can prove application state and agent input, but only a live screen-reader pass can prove NVDA output.
+
 Use the bundled helper:
 
 ```powershell
 python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py takeover
 ```
+
+`takeover` includes the required three-second safety delay. Do not add another sleep.
 
 Always wrap control sessions in a `try/finally` pattern:
 
@@ -68,6 +72,13 @@ python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py
 # Foreground safety.
 python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py foreground-window
 python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py activate-window --pid 12345
+python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py foreground-session start --target-pid 12345 --controller-pid $PID --ttl-ms 60000
+python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py foreground-session renew --session-id <id> --ttl-ms 60000
+python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py foreground-session release --session-id <id>
+
+# Fresh semantic actions. Pass the active session ID and state path for real input.
+python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py move-to-control --pipe-name <name> --form-name MainForm --control-name btnRun --session-id <id>
+python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py click-control --pipe-name <name> --form-name MainForm --control-name btnRun --session-id <id>
 
 # Window screenshot. Does not activate the target window.
 python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py screenshot-window --pid 12345 --output .\.agents\runs\window.bmp
@@ -105,15 +116,25 @@ Use Foreground Drive Mode when the task needs human-equivalent behavior: normal 
 
 Workflow:
 
-1. Run `takeover`.
+1. Start one bounded `foreground-session`; it announces takeover once and starts an independent release watchdog.
 2. Start or identify the target app.
 3. Use `activate-window --pid <processId>` or `--hwnd <handle>`.
 4. Verify `foreground-window` reports the expected target before every input batch.
-5. Use bridge/UIA/window screenshots to choose coordinates.
-6. Use `move`, `click`, `press`, `tab`, or `type-text`.
-7. Run `release` in a `finally` block.
+5. Prefer `move-to-control`, `click-control`, `double-click-control`, or `right-click-control`; each resolves, activates, resolves again, checks actionability and foreground ownership, then dispatches OS input.
+6. Pass the same session ID to guarded `move`, `click`, `press`, `tab`, `key-chord`, `clear-and-type`, or semantic control actions.
+7. Renew only around a bounded wait, then release the session normally. The detached watchdog releases independently on expiry or controller exit.
 
-If foreground activation fails, do not click or type. Report the blocker and continue with Background Drive Mode evidence if that can still answer the task.
+By default a session guards the target PID and permits that application's foreground HWND to change across owned or modal windows. Add `--target-hwnd` only when the interaction must remain on one exact window.
+
+Activation failure is a hard stop. Do not click or type after it. Report the blocker and continue with Background Drive Mode evidence if that can still answer the task.
+
+Treat refs and geometry as expired after activation, window movement, DPI change, mutation, tab/page change, form creation, modal transition, or any response with `snapshotInvalidated:true`. Resolve the named control again immediately before input; never reuse copied coordinates across those transitions.
+
+Do not invoke modal-opening controls through synchronous bridge mutation. Use a guarded OS click, return from that input command, then discover the new modal with `wait-window`, `windows-list`, or `wait-form` through a separate request.
+
+`control.setText` is raw property assignment. It does not prove key events, `OnChange` behavior, accelerators, or human-equivalent typing. Use guarded `clear-and-type` or `type-text` when those semantics matter.
+
+Use a bounded best-effort stopping rule: stop after the requested outcome is proved, a reproduced product failure is captured with its required persistence checks, or the agreed retry/time budget is exhausted. Release the session before optional lower-priority exploration.
 
 ## Background Drive Mode
 

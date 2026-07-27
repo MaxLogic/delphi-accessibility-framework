@@ -731,6 +731,16 @@ object AccessibilityDemoMainForm: TAccessibilityDemoMainForm
         TabOrder = 0
         OnClick = btnCloseClick
       end
+      object btnShowModal: TButton
+        Left = 112
+        Top = 14
+        Width = 120
+        Height = 34
+        Caption = 'Modal dialog'
+        Hint = 'Open a deterministic modal dialog for agent-control discovery'
+        TabOrder = 1
+        OnClick = btnShowModalClick
+      end
     end
   end
   object pnlClient: TPanel

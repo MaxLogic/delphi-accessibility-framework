@@ -1888,10 +1888,11 @@ def guard_real_input(args: argparse.Namespace) -> int | None:
         session_hwnd = int(session.get("targetHwnd") or 0)
         if required_pid is not None and required_pid != session_pid:
             return fail("The required PID does not match the foreground session. Input was not sent.", 2, reason="session-pid-mismatch")
-        if required_hwnd is not None and required_hwnd != session_hwnd:
+        if required_hwnd is not None and session_hwnd > 0 and required_hwnd != session_hwnd:
             return fail("The required HWND does not match the foreground session. Input was not sent.", 2, reason="session-hwnd-mismatch")
         required_pid = session_pid
-        required_hwnd = session_hwnd
+        if required_hwnd is None and session_hwnd > 0:
+            required_hwnd = session_hwnd
 
     if required_pid is None and required_hwnd is None:
         return None
@@ -2601,7 +2602,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     session = session_sub.add_parser("start")
     session.add_argument("--target-pid", type=int, required=True)
-    session.add_argument("--target-hwnd", type=int, required=True)
+    session.add_argument("--target-hwnd", type=int, default=0)
     session.add_argument("--controller-pid", type=int, required=True)
     session.add_argument("--ttl-ms", type=int, default=30000)
     session.add_argument("--state-path")

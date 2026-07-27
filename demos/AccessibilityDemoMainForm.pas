@@ -3,7 +3,7 @@ unit AccessibilityDemoMainForm;
 interface
 
 uses
-  System.Classes, System.SysUtils, System.Types,
+  System.Classes, System.SysUtils, System.Types, System.UITypes,
   Winapi.Windows,
   Vcl.Buttons, Vcl.ComCtrls, Vcl.Controls, Vcl.Dialogs, Vcl.ExtCtrls, Vcl.Forms, Vcl.Graphics, Vcl.Grids,
   Vcl.StdCtrls,
@@ -25,6 +25,7 @@ type
     btnGlyphInfo: TSpeedButton;
     btnGlyphWarn: TSpeedButton;
     btnShowBalloon: TSpeedButton;
+    btnShowModal: TButton;
     btnShowRegularHint: TButton;
     btnToggleDetails: TSpeedButton;
     chkAccessibilityEnabled: TCheckBox;
@@ -117,6 +118,7 @@ type
     procedure btnRuntimeSyncStepClick(aSender: TObject);
     procedure btnSaveClick(aSender: TObject);
     procedure btnShowBalloonClick(aSender: TObject);
+    procedure btnShowModalClick(aSender: TObject);
     procedure btnShowRegularHintClick(aSender: TObject);
     procedure btnToggleDetailsClick(aSender: TObject);
     procedure chkAccessibilityEnabledClick(aSender: TObject);
@@ -167,6 +169,7 @@ resourcestring
   rsActionOpened = 'Toolbar command executed';
   rsActionRefreshed = 'Demo data refreshed';
   rsActionSaved = 'Demo state saved';
+  rsAgentControlModalMessage = 'This modal dialog is available for deterministic agent-control discovery and shutdown checks.';
   rsBalloonDescription = 'The accessibility manager observes hints and exposes them through UI Automation.';
   rsBalloonTitle = 'Balloon hint raised';
   rsDetailsHidden = 'Details panel hidden';
@@ -464,6 +467,11 @@ begin
   BalloonHideTimer.Enabled := False;
   BalloonHideTimer.Enabled := True; // FI:W508 - disabling then enabling intentionally restarts the timeout.
   RefreshStatus(rsBalloonTitle);
+end;
+
+procedure TAccessibilityDemoMainForm.btnShowModalClick(aSender: TObject);
+begin
+  MessageDlg(rsAgentControlModalMessage, mtInformation, [mbOK], 0);
 end;
 
 procedure TAccessibilityDemoMainForm.btnShowRegularHintClick(aSender: TObject);

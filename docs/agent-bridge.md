@@ -184,6 +184,16 @@ A failed `control.focus` returns `focus_failed` with a fresh narrow `control` ta
 
 Framework mutations are diagnostic helpers. End-to-end acceptance tests should still prefer real OS input for user actions, then use the bridge to cross-check coordinates, labels, focus state, and logs.
 
+## Agent-control safety boundary
+
+Bridge evidence is not NVDA evidence. The bridge can prove native VCL state and help an agent control an application, but it does not observe or certify screen-reader speech. Audible desktop-control takeover and release announcements protect the human operator; they are not application accessibility output.
+
+For foreground input, use the desktop-control helper's bounded `foreground-session` lease. Keep one session for one short logical interaction, pass its session ID to every real-input command, and renew it only around a bounded condition wait. The detached watchdog announces release if the lease expires or its controller exits.
+
+After activation, movement, DPI changes, page changes, mutations, form creation, or modal transitions, refs and geometry expire. Resolve the target again and verify current root PID/HWND, visibility, enabled state, ownership, and foreground state immediately before input.
+
+Never call `control.click` for a modal opener when the same sequential pipe must inspect the resulting dialog. Invoke the opener through guarded OS input, let that helper command return, then use a separate bounded discovery request. Raw `control.setText` and `control.typeText` remain property assignment; use guarded keyboard input when event-producing behavior is under test.
+
 ## Threading
 
 `TAccessibilityAgentBridge.Execute` remains a main-thread-only API and rejects calls from other threads. Custom transports must marshal the call or reproduce the built-in transport split without allowing VCL controls, provider interfaces, or scanner objects to escape the main thread.

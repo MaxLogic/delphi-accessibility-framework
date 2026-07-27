@@ -326,7 +326,11 @@ type
     [Test]
     procedure FormInstallRaisesGridCellFocusEventAfterAdvStringGridArrowKey;
     [Test]
+    [Category('AccessibilityManager,WindowHandleRecreation,PassiveHookUiaRelease')]
     procedure LaterWindowProcHookCanCallManagerAfterUninstallWithoutUiaReturn;
+    [Test]
+    [Category('AccessibilityManager,WindowHandleRecreation,PassiveHookUiaRelease')]
+    procedure LaterChildWindowProcHookCanCallManagerAfterUninstallWithoutUiaReturn;
     [Test]
     procedure DestroyedFormIsRemovedFromInstallState;
     [Test]
@@ -383,6 +387,7 @@ type
     function LastNotificationProcessing: NotificationProcessing;
     function LastNotificationProvider: IRawElementProviderSimple;
     function LastNotificationText: string;
+    function LastWParam: WPARAM;
     function LabeledByPropertyChangedCalls: Integer;
     function LastLabeledByNewValue: OleVariant;
     function LastLabeledByOldValue: OleVariant;
@@ -425,6 +430,7 @@ type
     fLastPropertyChangedProvider: IRawElementProviderSimple;
     fLastStructureChangeProvider: IRawElementProviderSimple;
     fLastStructureChangeType: StructureChangeType;
+    fLastWParam: WPARAM;
     fNotificationCalls: Integer;
     fPropertyChangedCalls: Integer;
     fReturnedProvider: IRawElementProviderSimple;
@@ -455,6 +461,7 @@ type
     function LastPropertyChangedProvider: IRawElementProviderSimple;
     function LastStructureChangeProvider: IRawElementProviderSimple;
     function LastStructureChangeType: StructureChangeType;
+    function LastWParam: WPARAM;
     function NotificationCalls: Integer;
     function PropertyChangedCalls: Integer;
     function ReturnedProvider: IRawElementProviderSimple;
@@ -1486,6 +1493,11 @@ begin
   Result := fLastStructureChangeType;
 end;
 
+function TManagerTestUiaApi.LastWParam: WPARAM;
+begin
+  Result := fLastWParam;
+end;
+
 function TManagerTestUiaApi.NotificationCalls: Integer;
 begin
   Result := fNotificationCalls;
@@ -1568,6 +1580,7 @@ begin
   Inc(fReturnCalls);
   fLastHwnd := aHwnd;
   fLastLParam := aLParam;
+  fLastWParam := aWParam;
   fReturnedProvider := aProvider;
   Result := 2468;
 end;
@@ -2655,6 +2668,8 @@ var
   lGridProvider: IRawElementProviderSimple;
   lHostProvider: IRawElementProviderSimple;
   lMessage: TMessage;
+  lOldHwnd: HWND;
+  lReturnCalls: Integer;
   lRootProvider: IRawElementProviderSimple;
 begin
   ResetManager;
@@ -2678,11 +2693,25 @@ begin
     Assert.AreEqual(1, lApi.HostCalls);
     Assert.AreEqual(Integer(lGrid.Handle), Integer(lApi.LastHostHwnd));
     lBeforeAccessible := RepeatedMsaaAccessibleFromControl(lForm);
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.LParam := UiaRootObjectId;
+    lForm.WindowProc(lMessage);
+    Assert.AreEqual(2468, lMessage.Result);
+    Assert.IsTrue(lApi.ReturnedProvider = lRootProvider);
+    lOldHwnd := lForm.Handle;
+    lReturnCalls := lApi.ReturnCalls;
 
     TWinControlAccess(lForm).RecreateWnd;
     lForm.HandleNeeded;
     lGrid.HandleNeeded;
 
+    Assert.AreEqual(lReturnCalls + 1, lApi.ReturnCalls,
+      'WM_DESTROY must release the old form HWND provider mapping exactly once.');
+    Assert.AreEqual(Integer(lOldHwnd), Integer(lApi.LastHwnd));
+    Assert.AreEqual(0, Integer(lApi.LastWParam));
+    Assert.AreEqual(0, Integer(lApi.LastLParam));
+    Assert.IsNull(lApi.ReturnedProvider);
     Assert.IsTrue(lForm.HandleAllocated, 'Real form RecreateWnd must allocate the replacement HWND.');
     Assert.AreEqual(Integer(lForm.Handle),
       Integer(ProviderNativeWindowHandle(FragmentFromSimple(lRootProvider))));
@@ -2703,9 +2732,16 @@ begin
     Assert.IsTrue(SameAccessibleIdentity(lBeforeAccessible, lAfterAccessible),
       'MSAA wrapper identity must survive form HWND recreation.');
 
+    lOldHwnd := lForm.Handle;
+    lReturnCalls := lApi.ReturnCalls;
     TWinControlAccess(lForm).RecreateWnd;
     lForm.HandleNeeded;
     lGrid.HandleNeeded;
+    Assert.AreEqual(lReturnCalls + 1, lApi.ReturnCalls);
+    Assert.AreEqual(Integer(lOldHwnd), Integer(lApi.LastHwnd));
+    Assert.AreEqual(0, Integer(lApi.LastWParam));
+    Assert.AreEqual(0, Integer(lApi.LastLParam));
+    Assert.IsNull(lApi.ReturnedProvider);
     Assert.AreEqual(S_FALSE, lGridProvider.Get_HostRawElementProvider(lHostProvider));
     Assert.AreEqual(3, lApi.HostCalls);
     Assert.AreEqual(Integer(lGrid.Handle), Integer(lApi.LastHostHwnd));
@@ -2727,6 +2763,7 @@ var
   lGridProvider: IRawElementProviderSimple;
   lHostProvider: IRawElementProviderSimple;
   lMessage: TMessage;
+  lOldHwnd: HWND;
   lPoint: TPoint;
   lReturnCalls: Integer;
   lRootProvider: IRawElementProviderSimple;
@@ -2756,10 +2793,24 @@ begin
     Assert.AreEqual(S_FALSE, lGridProvider.Get_HostRawElementProvider(lHostProvider));
     Assert.AreEqual(1, lApi.HostCalls);
     lBeforeAccessible := RepeatedMsaaAccessibleFromControl(lGrid);
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.LParam := UiaRootObjectId;
+    lGrid.WindowProc(lMessage);
+    Assert.AreEqual(2468, lMessage.Result);
+    Assert.IsTrue(lApi.ReturnedProvider = lGridProvider);
+    lOldHwnd := lGrid.Handle;
+    lReturnCalls := lApi.ReturnCalls;
 
     TWinControlAccess(lGrid).RecreateWnd;
     lGrid.HandleNeeded;
 
+    Assert.AreEqual(lReturnCalls + 1, lApi.ReturnCalls,
+      'WM_DESTROY must release the old child HWND provider mapping exactly once.');
+    Assert.AreEqual(Integer(lOldHwnd), Integer(lApi.LastHwnd));
+    Assert.AreEqual(0, Integer(lApi.LastWParam));
+    Assert.AreEqual(0, Integer(lApi.LastLParam));
+    Assert.IsNull(lApi.ReturnedProvider);
     Assert.AreEqual(Integer(lGrid.Handle), Integer(lGrid.ObservedCreateHwnd));
     Assert.AreEqual(Integer(lGrid.Handle), Integer(ProviderNativeWindowHandle(lGridFragment)));
     Assert.AreEqual(S_FALSE, lGridProvider.Get_HostRawElementProvider(lHostProvider));
@@ -2778,8 +2829,15 @@ begin
       (lCellRect.Top + lCellRect.Bottom) div 2));
     AssertManagerGridCurrentCell(lGridFragment, lPoint, 'Current cell');
 
+    lOldHwnd := lGrid.Handle;
+    lReturnCalls := lApi.ReturnCalls;
     TWinControlAccess(lGrid).RecreateWnd;
     lGrid.HandleNeeded;
+    Assert.AreEqual(lReturnCalls + 1, lApi.ReturnCalls);
+    Assert.AreEqual(Integer(lOldHwnd), Integer(lApi.LastHwnd));
+    Assert.AreEqual(0, Integer(lApi.LastWParam));
+    Assert.AreEqual(0, Integer(lApi.LastLParam));
+    Assert.IsNull(lApi.ReturnedProvider);
     Assert.AreEqual(S_FALSE, lGridProvider.Get_HostRawElementProvider(lHostProvider));
     Assert.AreEqual(3, lApi.HostCalls);
 
@@ -9028,24 +9086,90 @@ begin
     lLabel.Parent := lForm;
 
     TAccessibilityManager.Install(lForm);
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.LParam := UiaRootObjectId;
+    lForm.WindowProc(lMessage);
+    Assert.AreEqual(1, lApi.ReturnCalls);
     lProbe.Prior := lForm.WindowProc;
     lForm.WindowProc := lProbe.WindowProc;
 
     TAccessibilityManager.Uninstall;
     Assert.IsTrue(lApi.DisconnectCalls > 0);
+    TUIAutomationCoreInternals.ResetExportCache;
+    TWinControlAccess(lForm).RecreateWnd;
+    lForm.HandleNeeded;
+    Assert.AreEqual(0,
+      TUIAutomationCoreInternals.ExportResolveCount(uiceReturnRawElementProvider),
+      'A passive retained hook must not call the default UIA API after uninstall.');
+    Assert.AreEqual(1, lApi.ReturnCalls);
 
     lMessage := Default(TMessage);
     lMessage.Msg := WM_GETOBJECT;
     lMessage.LParam := UiaRootObjectId;
     lForm.WindowProc(lMessage);
 
-    Assert.AreEqual(1, lProbe.Calls);
-    Assert.AreEqual(0, lApi.ReturnCalls);
+    Assert.IsTrue(lProbe.Calls > 0);
+    Assert.AreEqual(1, lApi.ReturnCalls);
     Assert.AreEqual(0, lMessage.Result);
   finally
     if (lForm <> nil) and Assigned(lOriginalWindowProc) then
     begin
       lForm.WindowProc := lOriginalWindowProc;
+    end;
+    lForm.Free;
+    ResetManager;
+    lProbe.Free;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.LaterChildWindowProcHookCanCallManagerAfterUninstallWithoutUiaReturn;
+var
+  lApi: IManagerTestUiaApi;
+  lForm: TForm;
+  lGrid: TStringGrid;
+  lMessage: TMessage;
+  lOriginalWindowProc: TWndMethod;
+  lProbe: TWindowProcProbe;
+begin
+  ResetManager;
+  lForm := nil;
+  lGrid := nil;
+  lOriginalWindowProc := nil;
+  lProbe := nil;
+  lApi := TManagerTestUiaApi.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  try
+    lForm := TForm.Create(nil);
+    lGrid := TStringGrid.Create(lForm);
+    lGrid.Parent := lForm;
+    lGrid.HandleNeeded;
+    lProbe := TWindowProcProbe.Create;
+    lOriginalWindowProc := lGrid.WindowProc;
+
+    TAccessibilityManager.Install(lForm);
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.LParam := UiaRootObjectId;
+    lGrid.WindowProc(lMessage);
+    Assert.AreEqual(1, lApi.ReturnCalls);
+    lProbe.Prior := lGrid.WindowProc;
+    lGrid.WindowProc := lProbe.WindowProc;
+
+    TAccessibilityManager.Uninstall;
+    Assert.IsTrue(lApi.DisconnectCalls > 0);
+    TUIAutomationCoreInternals.ResetExportCache;
+    TWinControlAccess(lGrid).RecreateWnd;
+    lGrid.HandleNeeded;
+    Assert.AreEqual(0,
+      TUIAutomationCoreInternals.ExportResolveCount(uiceReturnRawElementProvider),
+      'A passive retained child hook must not call the default UIA API after uninstall.');
+    Assert.AreEqual(1, lApi.ReturnCalls);
+    Assert.IsTrue(lProbe.Calls > 0);
+  finally
+    if (lGrid <> nil) and Assigned(lOriginalWindowProc) then
+    begin
+      lGrid.WindowProc := lOriginalWindowProc;
     end;
     lForm.Free;
     ResetManager;

@@ -147,6 +147,7 @@ type
     fRuntimeGridNames: TDictionary<IUnknown, string>;
     fRuntimeGridVisited: TDictionary<IUnknown, Byte>;
     fRuntimeProperties: TDictionary<Pointer, TRuntimeProviderSnapshot>;
+    fUiaProviderReturned: Boolean;
     function ControlIsHooked(aControl: TWinControl): Boolean;
     procedure Detach;
     procedure DisconnectProvider;
@@ -207,6 +208,7 @@ type
     fProviderStateMessageDepth: Integer;
     fRetained: Boolean;
     fRootProvider: IRawElementProviderSimple;
+    fUiaProviderReturned: Boolean;
     procedure Detach;
     function GridCellChanged: Boolean;
     procedure InitializeGridCellTracking;
@@ -296,6 +298,21 @@ begin
     gWinEventSink.NotifyEvent(aEvent, aHwnd, aObjectId, aChildId);
   end else begin
     NotifyWinEvent(aEvent, aHwnd, aObjectId, aChildId);
+  end;
+end;
+
+procedure ReleaseUiaProviderWindowMapping(const aApi: IAccessibilityUiaApi; aHwnd: HWND);
+begin
+  if aHwnd = 0 then
+  begin
+    Exit;
+  end;
+
+  if aApi <> nil then
+  begin
+    aApi.ReturnRawElementProvider(aHwnd, 0, 0, nil); //PALOFF WARN44 lifecycle cleanup result is non-actionable
+  end else begin
+    UiaReturnRawElementProvider(aHwnd, 0, 0, nil); //PALOFF WARN44 lifecycle cleanup result is non-actionable
   end;
 end;
 
@@ -1812,6 +1829,7 @@ end;
 
 procedure TAccessibilityFormWindowHook.DisconnectProvider;
 begin
+  fUiaProviderReturned := False;
   fMsaaAccessible := nil;
   fHoverCache.Clear;
   if fProvider <> nil then
@@ -2586,11 +2604,18 @@ end;
 procedure TAccessibilityFormWindowHook.WindowProc(var aMessage: TMessage);
 var
   lClientsAreListening: Boolean;
+  lDestroyedHwnd: HWND;
   lIsMouseMoveMessage: Boolean;
   lMouseParam: LPARAM;
   lResult: Winapi.Windows.LRESULT;
   lSynchronizeName: Boolean;
 begin
+  lDestroyedHwnd := 0;
+  if (aMessage.Msg = WM_DESTROY) and fUiaProviderReturned and (fForm <> nil) and fForm.HandleAllocated then
+  begin
+    lDestroyedHwnd := fForm.Handle;
+  end;
+
   if (not fPassive) and (fForm <> nil) and (fProvider <> nil) and
     ((aMessage.Msg = WM_GETOBJECT) or (aMessage.Msg = WM_NCCREATE) or
     (aMessage.Msg = WM_CREATE)) and fForm.HandleAllocated then
@@ -2611,6 +2636,7 @@ begin
       TAccessibilityProviderWindowMessages.TryHandleGetObject(fForm.Handle, aMessage.WParam, aMessage.LParam,
       fProvider.RawElementProvider, fApi, lResult) then
     begin
+      fUiaProviderReturned := True;
       if TAccessibilityDiagnostics.Enabled then
       begin
         TAccessibilityDiagnostics.Log(Format('Form WM_GETOBJECT handled form=%s hwnd=%d lParam=%d',
@@ -2637,6 +2663,11 @@ begin
   try
     fOriginalWindowProc(aMessage);
   finally
+    if lDestroyedHwnd <> 0 then
+    begin
+      ReleaseUiaProviderWindowMapping(fApi, lDestroyedHwnd);
+      fUiaProviderReturned := False;
+    end;
     if (aMessage.Msg = WM_NCDESTROY) and (fProvider <> nil) then
     begin
       RefreshProviderNativeWindowHandle(fProvider.RawElementProvider, 0);
@@ -3056,6 +3087,7 @@ end;
 function TAccessibilityControlWindowHook.Passivate: Boolean;
 begin
   Result := False;
+  fUiaProviderReturned := False;
   fMsaaAccessible := nil;
   fHoverCache.Clear;
   fApi := nil;
@@ -3289,6 +3321,7 @@ end;
 
 procedure TAccessibilityControlWindowHook.WindowProc(var aMessage: TMessage);
 var
+  lDestroyedHwnd: HWND;
   lHasOldProviderState: Boolean;
   lHasNonHoverPostMessageWork: Boolean;
   lHasPostMessageWork: Boolean;
@@ -3314,6 +3347,12 @@ var
   lOldSelectedRadio: TRadioButton;
   lResult: Winapi.Windows.LRESULT;
 begin
+  lDestroyedHwnd := 0;
+  if (aMessage.Msg = WM_DESTROY) and fUiaProviderReturned and (fControl <> nil) and fControl.HandleAllocated then
+  begin
+    lDestroyedHwnd := fControl.Handle;
+  end;
+
   if (not fPassive) and (fControl <> nil) and (fProvider <> nil) and
     ((aMessage.Msg = WM_GETOBJECT) or (aMessage.Msg = WM_NCCREATE) or
     (aMessage.Msg = WM_CREATE)) and fControl.HandleAllocated then
@@ -3364,6 +3403,7 @@ begin
       end else if TAccessibilityProviderWindowMessages.TryHandleGetObject(fControl.Handle, aMessage.WParam,
         aMessage.LParam, fProvider, fApi, lResult) then
       begin
+        fUiaProviderReturned := True;
         if TAccessibilityDiagnostics.Enabled then
         begin
           TAccessibilityDiagnostics.Log(Format('Child WM_GETOBJECT handled control=%s hwnd=%d lParam=%d',
@@ -3443,6 +3483,11 @@ begin
     if aMessage.Msg = WM_NCDESTROY then
     begin
       RefreshProviderWindowHandle(0);
+    end;
+    if lDestroyedHwnd <> 0 then
+    begin
+      ReleaseUiaProviderWindowMapping(fApi, lDestroyedHwnd);
+      fUiaProviderReturned := False;
     end;
     if lListBoxSelectionMayChange then
     begin

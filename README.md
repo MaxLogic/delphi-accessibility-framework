@@ -49,7 +49,7 @@ end;
 
 `TAccessibilityManager.Install(Form)` installs accessibility for that form and its controls without enabling app-wide form discovery.
 
-Installed VCL form providers automatically reconcile controls added, removed, or reparented at runtime. Lookup, navigation, and hit testing reflect the current hierarchy without reinstalling the form, retained providers for removed controls become unavailable, controls may be freed before the next idle reconciliation without stale-cache access violations, and retained form/control providers follow replacement HWNDs created by VCL window recreation.
+Installed VCL form providers automatically reconcile controls added, removed, or reparented at runtime. Lookup, navigation, and hit testing reflect the current hierarchy without reinstalling the form, retained providers for removed controls become unavailable, controls may be freed before the next idle reconciliation without stale-cache access violations, and retained form/control providers release destroyed UIA HWND mappings before following replacement HWNDs created by VCL window recreation.
 
 Call `TAccessibilityManager.Uninstall` to remove the framework hooks, hint observers, and installed form providers. The complex demo exposes this as an `Accessibility enabled` checkbox so manual NVDA testing can compare the framework-on and framework-off behavior in the same process.
 
@@ -199,3 +199,4 @@ See also:
 - Changing the app-wide or form-scoped adapter registry after accessibility is installed requires `TAccessibilityManager.Uninstall` first. This avoids silently mixing default and custom provider trees.
 - Registry compatibility is instance-based. Repeated custom installs should reuse the same registry instance, or call `TAccessibilityManager.Uninstall` before switching to another registry.
 - Screen-reader speech varies by reader and settings. The UIA probe is automated proof of provider behavior; the NVDA checklist remains the manual acceptance pass for spoken output.
+- For HWND-backed controls whose native accessibility is intentionally preserved, an external `AutomationElement.FocusedElement` query can resolve the native Win32 proxy rather than the framework fragment. Validate framework-specific properties such as inferred `LabeledBy` through the framework provider tree or the external `AutomationFocusChanged` event sender; the native proxy's independent label heuristic is outside the framework's control.

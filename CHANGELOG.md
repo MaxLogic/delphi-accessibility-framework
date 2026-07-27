@@ -12,7 +12,7 @@
 - Runtime hierarchy reconciliation now removes provider and property snapshots by stable control identity without dereferencing controls that were already freed.
 - Installed VCL text-input providers now refresh explicit, `TLabeledEdit`, and unambiguous inferred UIA `LabeledBy` relationships after runtime association, movement, addition, removal, or reparenting without stale providers or duplicate relationship events.
 - `TStringGrid` and opt-in `TAdvStringGrid` providers now publish runtime cell-name and shape changes, keep visible navigation and GridItem lookup current, and safely invalidate retained cells removed while a grid is hidden.
-- Installed form and control providers now refresh native HWND and host-provider caches after VCL window recreation while preserving provider identity, UIA/MSAA routing, focus, hit testing, and teardown safety.
+- Installed form and control providers now release destroyed UIA HWND mappings and refresh native HWND and host-provider caches after VCL window recreation while preserving provider identity, UIA/MSAA routing, focus, hit testing, and teardown safety.
 
 ## 2026-07-18
 ### Added

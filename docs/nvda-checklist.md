@@ -27,7 +27,7 @@ Use this checklist on a real VCL application or on a manual sample built from th
 
 ## Label relationships
 
-- In the complex demo's filter area, tab to `Search text`, `Queue`, and `TLabeledEdit reference`. UIA `LabeledBy` should resolve respectively to the geometrically inferred `TStaticText`, explicit `TLabel.FocusControl`, and bound `TLabeledEdit.EditLabel` provider.
+- In the complex demo's filter area, tab to `Search text`, `Queue`, and `TLabeledEdit reference`. In the framework provider tree or an external `AutomationFocusChanged` event sender, UIA `LabeledBy` should resolve respectively to the geometrically inferred `TStaticText`, explicit `TLabel.FocusControl`, and bound `TLabeledEdit.EditLabel` provider. A separate `AutomationElement.FocusedElement` query can resolve the native HWND proxy for controls whose native accessibility is preserved; do not treat that proxy's independent label heuristic as the framework fragment.
 - NVDA should announce each current label once with the input value, without duplicating the label because the accessible Name fallback is also retained.
 - `Ambiguous label sample` has two equally plausible same-parent labels and `Unlabeled sample` has none. Neither input should expose `LabeledBy` or acquire an incorrect label announcement.
 - Change an associated label caption at runtime and query the input again. The same `LabeledBy` provider should expose the new caption without rebuilding the relationship.

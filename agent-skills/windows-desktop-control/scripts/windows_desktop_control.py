@@ -47,6 +47,8 @@ MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
 MOUSEEVENTF_RIGHTDOWN = 0x0008
 MOUSEEVENTF_RIGHTUP = 0x0010
+MOUSEEVENTF_MIDDLEDOWN = 0x0020
+MOUSEEVENTF_MIDDLEUP = 0x0040
 PW_RENDERFULLCONTENT = 0x00000002
 SRCCOPY = 0x00CC0020
 SW_RESTORE = 9
@@ -57,18 +59,35 @@ GW_OWNER = 4
 GW_CHILD = 5
 
 VK_CODES = {
+    "backspace": 0x08,
     "tab": 0x09,
     "enter": 0x0D,
+    "shift": 0x10,
+    "ctrl": 0x11,
+    "control": 0x11,
+    "alt": 0x12,
     "esc": 0x1B,
     "escape": 0x1B,
     "space": 0x20,
+    "pageup": 0x21,
+    "page-up": 0x21,
+    "pagedown": 0x22,
+    "page-down": 0x22,
+    "end": 0x23,
+    "home": 0x24,
     "left": 0x25,
     "up": 0x26,
     "right": 0x27,
     "down": 0x28,
-    "shift": 0x10,
+    "insert": 0x2D,
+    "delete": 0x2E,
+    "del": 0x2E,
 }
-EXTENDED_VK_CODES = {VK_CODES["left"], VK_CODES["up"], VK_CODES["right"], VK_CODES["down"]}
+VK_CODES.update({f"f{number}": 0x6F + number for number in range(1, 25)})
+EXTENDED_VK_CODES = {
+    VK_CODES[name]
+    for name in ["pageup", "pagedown", "end", "home", "left", "up", "right", "down", "insert", "delete"]
+}
 
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
@@ -85,6 +104,10 @@ class RECT(ctypes.Structure):
         ("right", wintypes.LONG),
         ("bottom", wintypes.LONG),
     ]
+
+
+class POINT(ctypes.Structure):
+    _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG)]
 
 
 class BITMAPINFOHEADER(ctypes.Structure):
@@ -151,6 +174,8 @@ user32.EnumWindows.argtypes = [EnumWindowsProc, wintypes.LPARAM]
 user32.EnumWindows.restype = wintypes.BOOL
 user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
 user32.GetClassNameW.restype = ctypes.c_int
+user32.GetCursorPos.argtypes = [ctypes.POINTER(POINT)]
+user32.GetCursorPos.restype = wintypes.BOOL
 user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
 user32.GetAncestor.restype = wintypes.HWND
 user32.GetForegroundWindow.argtypes = []
@@ -535,21 +560,10 @@ def dispatch_pointer_action(
 ) -> None:
     x = int(point["x"])
     y = int(point["y"])
-    if not user32.SetCursorPos(x, y):
-        raise OSError(f"SetCursorPos failed: {ctypes.get_last_error()}")
+    move_cursor(x, y, 0)
     if action == "move-to-control":
         return
-    flags = {
-        "left": (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
-        "right": (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
-    }
-    if button not in flags:
-        raise ValueError(f"Unsupported mouse button: {button}")
-    down_flag, up_flag = flags[button]
-    for _index in range(count):
-        user32.mouse_event(down_flag, 0, 0, 0, 0)
-        time.sleep(max(0, down_ms) / 1000.0)
-        user32.mouse_event(up_flag, 0, 0, 0, 0)
+    send_mouse_click(str(button), count, down_ms)
 
 
 def command_semantic_control_action(
@@ -707,6 +721,9 @@ def discovery_item_matches(item: dict[str, object], args: argparse.Namespace) ->
     visible = getattr(args, "visible", None)
     if visible is not None and bool(item.get("visible")) != (str(visible).lower() == "true"):
         return False
+    value = getattr(args, "value", None)
+    if value is not None and str(item.get("value") or "") != str(value):
+        return False
     ref = getattr(args, "ref", None)
     if ref and str(item.get("ref") or "") != str(ref):
         return False
@@ -773,10 +790,34 @@ def build_bridge_find_response(
 ) -> dict[str, object]:
     if not getattr(args, "control_name", None) and not getattr(args, "ref", None):
         return build_bridge_forms_response(args, timeout_ms, bounded)
-    request = build_bridge_control_resolve_request(args)
+    deadline = time.monotonic() + max(1, timeout_ms) / 1000.0
     request_func = bridge_request_bounded if bounded else bridge_request
+    request = build_bridge_control_resolve_request(args)
     response = request_func(args.pipe_name, request, timeout_ms)
     control = response.get("control")
+    fields = set(requested_fields(args))
+    detail_fields = {"caption", "value", "hint", "accessibleName", "helpText"}
+    needs_detail = getattr(args, "value", None) is not None or bool(fields & detail_fields)
+    if response.get("ok") is True and isinstance(control, dict) and needs_detail:
+        remaining_ms = max(0, round((deadline - time.monotonic()) * 1000))
+        if remaining_ms <= 0:
+            raise TimeoutError("Control detail enrichment exceeded the remaining discovery deadline.")
+        detail_request = json.dumps(
+            {
+                "cmd": "control.info",
+                "ref": control.get("ref"),
+                "detail": "full",
+                "includeAccessibility": False,
+            },
+            separators=(",", ":"),
+        )
+        detail_response = request_func(args.pipe_name, detail_request, remaining_ms)
+        detail_control = detail_response.get("control")
+        if detail_response.get("ok") is True and isinstance(detail_control, dict):
+            control = {**control, **detail_control}
+        else:
+            response = detail_response
+            control = None
     items = [control] if isinstance(control, dict) else []
     matches = filter_and_project(items, args)
     return {
@@ -1539,14 +1580,55 @@ def guard_real_input(args: argparse.Namespace) -> int | None:
     return None
 
 
+def move_cursor(x: int, y: int, duration_ms: int) -> None:
+    duration_ms = max(0, duration_ms)
+    if duration_ms == 0:
+        if not user32.SetCursorPos(x, y):
+            raise OSError(f"SetCursorPos failed: {ctypes.get_last_error()}")
+        return
+
+    start = POINT()
+    if not user32.GetCursorPos(ctypes.byref(start)):
+        raise OSError(f"GetCursorPos failed: {ctypes.get_last_error()}")
+    steps = max(2, min(120, duration_ms // 16))
+    delay = duration_ms / (steps - 1) / 1000.0
+    for step in range(steps):
+        next_x = round(start.x + ((x - start.x) * step / (steps - 1)))
+        next_y = round(start.y + ((y - start.y) * step / (steps - 1)))
+        if not user32.SetCursorPos(next_x, next_y):
+            raise OSError(f"SetCursorPos failed: {ctypes.get_last_error()}")
+        if step < steps - 1:
+            time.sleep(delay)
+
+
+def send_mouse_click(button: str, count: int, down_ms: int) -> None:
+    flags = {
+        "left": (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
+        "right": (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
+        "middle": (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
+    }
+    if button not in flags:
+        raise ValueError(f"Unsupported mouse button: {button}")
+    if count not in (1, 2):
+        raise ValueError("Mouse click count must be 1 or 2.")
+    down_flag, up_flag = flags[button]
+    for _index in range(count):
+        user32.mouse_event(down_flag, 0, 0, 0, 0)
+        time.sleep(max(0, down_ms) / 1000.0)
+        user32.mouse_event(up_flag, 0, 0, 0, 0)
+
+
 def command_move(args: argparse.Namespace) -> int:
     guard_result = guard_real_input(args)
     if guard_result is not None:
         return guard_result
-    if not user32.SetCursorPos(int(args.x), int(args.y)):
-        return fail("SetCursorPos failed.", win32Error=ctypes.get_last_error())
-    print_json({"ok": True, "action": "move", "x": args.x, "y": args.y})
-    return 0
+    try:
+        duration_ms = getattr(args, "duration_ms", 0)
+        move_cursor(int(args.x), int(args.y), duration_ms)
+        print_json({"ok": True, "action": "move", "x": args.x, "y": args.y, "durationMs": duration_ms})
+        return 0
+    except Exception as exc:  # noqa: BLE001 - CLI boundary
+        return fail(str(exc))
 
 
 def command_click(args: argparse.Namespace) -> int:
@@ -1555,13 +1637,35 @@ def command_click(args: argparse.Namespace) -> int:
     guard_result = guard_real_input(args)
     if guard_result is not None:
         return guard_result
-    if args.x is not None and args.y is not None and not user32.SetCursorPos(int(args.x), int(args.y)):
-        return fail("SetCursorPos failed.", win32Error=ctypes.get_last_error())
-    user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-    time.sleep(args.down_ms / 1000.0)
-    user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-    print_json({"ok": True, "action": "click", "x": args.x, "y": args.y})
-    return 0
+    try:
+        if args.x is not None and args.y is not None:
+            move_cursor(int(args.x), int(args.y), getattr(args, "duration_ms", 0))
+            guard_result = guard_real_input(args)
+            if guard_result is not None:
+                return guard_result
+        button = getattr(args, "button", "left")
+        count = getattr(args, "count", 1)
+        send_mouse_click(button, count, args.down_ms)
+        action = getattr(args, "action_name", "click")
+        print_json(
+            {
+                "ok": True,
+                "action": action,
+                "x": args.x,
+                "y": args.y,
+                "button": button,
+                "count": count,
+            }
+        )
+        return 0
+    except Exception as exc:  # noqa: BLE001 - CLI boundary
+        return fail(str(exc))
+
+
+def command_double_click(args: argparse.Namespace) -> int:
+    args.count = 2
+    args.action_name = "double-click"
+    return command_click(args)
 
 
 def key_flags_for_vk(vk: int, key_up: bool = False) -> int:
@@ -1587,18 +1691,60 @@ def send_unicode_unit(unit: int, key_up: bool = False) -> None:
         raise OSError(f"SendInput failed: {ctypes.get_last_error()}")
 
 
+def virtual_key_for_name(name: str) -> int:
+    normalized = name.strip().lower()
+    if normalized in VK_CODES:
+        return VK_CODES[normalized]
+    if len(normalized) == 1 and normalized.isalnum():
+        return ord(normalized.upper())
+    raise ValueError(f"Unsupported key: {name}")
+
+
+def parse_key_chord(chord: str) -> list[int]:
+    names = [name.strip() for name in chord.split("+") if name.strip()]
+    if not names:
+        raise ValueError("Key chord must not be empty.")
+    return [virtual_key_for_name(name) for name in names]
+
+
+def send_key_chord(keys: list[int], down_ms: int) -> None:
+    pressed: list[int] = []
+    error: BaseException | None = None
+    try:
+        for vk in keys:
+            send_key_input(vk, False)
+            pressed.append(vk)
+        time.sleep(max(0, down_ms) / 1000.0)
+    except BaseException as exc:  # noqa: BLE001 - all pressed modifiers must still be released
+        error = exc
+    finally:
+        for vk in reversed(pressed):
+            try:
+                send_key_input(vk, True)
+            except BaseException as exc:  # noqa: BLE001 - release every remaining key before reporting
+                if error is None:
+                    error = exc
+    if error is not None:
+        raise error
+
+
+def type_unicode_text(text: str, delay_ms: int) -> None:
+    raw = text.encode("utf-16-le")
+    units = [raw[index] | (raw[index + 1] << 8) for index in range(0, len(raw), 2)]
+    for unit in units:
+        send_unicode_unit(unit, False)
+        send_unicode_unit(unit, True)
+        if delay_ms > 0:
+            time.sleep(delay_ms / 1000.0)
+
+
 def command_press(args: argparse.Namespace) -> int:
-    key = args.key.lower()
-    if key not in VK_CODES:
-        return fail(f"Unsupported key: {args.key}", supported=sorted(VK_CODES))
     guard_result = guard_real_input(args)
     if guard_result is not None:
         return guard_result
     try:
-        vk = VK_CODES[key]
-        send_key_input(vk, False)
-        time.sleep(args.down_ms / 1000.0)
-        send_key_input(vk, True)
+        key = args.key.lower()
+        send_key_chord([virtual_key_for_name(key)], args.down_ms)
         print_json({"ok": True, "action": "press", "key": key})
         return 0
     except Exception as exc:  # noqa: BLE001 - CLI boundary
@@ -1610,12 +1756,8 @@ def command_tab(args: argparse.Namespace) -> int:
     if guard_result is not None:
         return guard_result
     try:
-        if args.shift:
-            send_key_input(VK_CODES["shift"], False)
-        send_key_input(VK_CODES["tab"], False)
-        send_key_input(VK_CODES["tab"], True)
-        if args.shift:
-            send_key_input(VK_CODES["shift"], True)
+        keys = [VK_CODES["shift"], VK_CODES["tab"]] if args.shift else [VK_CODES["tab"]]
+        send_key_chord(keys, 0)
         print_json({"ok": True, "action": "tab", "shift": args.shift})
         return 0
     except Exception as exc:  # noqa: BLE001 - CLI boundary
@@ -1627,14 +1769,52 @@ def command_type_text(args: argparse.Namespace) -> int:
     if guard_result is not None:
         return guard_result
     try:
-        raw = args.text.encode("utf-16-le")
-        units = [raw[i] | (raw[i + 1] << 8) for i in range(0, len(raw), 2)]
-        for unit in units:
-            send_unicode_unit(unit, False)
-            send_unicode_unit(unit, True)
-            if args.delay_ms > 0:
-                time.sleep(args.delay_ms / 1000.0)
+        type_unicode_text(args.text, args.delay_ms)
         print_json({"ok": True, "action": "type-text", "length": len(args.text)})
+        return 0
+    except Exception as exc:  # noqa: BLE001 - CLI boundary
+        return fail(str(exc))
+
+
+def command_key_chord(args: argparse.Namespace) -> int:
+    guard_result = guard_real_input(args)
+    if guard_result is not None:
+        return guard_result
+    try:
+        keys = parse_key_chord(args.keys)
+        send_key_chord(keys, args.down_ms)
+        print_json(
+            {
+                "ok": True,
+                "action": "key-chord",
+                "keys": args.keys,
+                "humanEquivalent": True,
+                "userInputEventsGenerated": True,
+            }
+        )
+        return 0
+    except Exception as exc:  # noqa: BLE001 - CLI boundary
+        return fail(str(exc))
+
+
+def command_clear_and_type(args: argparse.Namespace) -> int:
+    guard_result = guard_real_input(args)
+    if guard_result is not None:
+        return guard_result
+    try:
+        send_key_chord(parse_key_chord("Ctrl+A"), args.down_ms)
+        send_key_chord([VK_CODES["backspace"]], args.down_ms)
+        type_unicode_text(args.text, args.delay_ms)
+        print_json(
+            {
+                "ok": True,
+                "action": "clear-and-type",
+                "length": len(args.text),
+                "mutationSemantics": "os-keyboard-input",
+                "humanEquivalent": True,
+                "userInputEventsGenerated": True,
+            }
+        )
         return 0
     except Exception as exc:  # noqa: BLE001 - CLI boundary
         return fail(str(exc))
@@ -2028,6 +2208,7 @@ def add_discovery_filter_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--caption-contains")
     parser.add_argument("--class-name")
     parser.add_argument("--visible", choices=["true", "false"])
+    parser.add_argument("--value")
     parser.add_argument("--fields")
 
 
@@ -2231,15 +2412,28 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("move")
     p.add_argument("--x", type=int, required=True)
     p.add_argument("--y", type=int, required=True)
+    p.add_argument("--duration-ms", type=int, default=0)
     add_foreground_guard_arguments(p)
     p.set_defaults(func=command_move)
 
     p = sub.add_parser("click")
     p.add_argument("--x", type=int)
     p.add_argument("--y", type=int)
+    p.add_argument("--button", choices=["left", "right", "middle"], default="left")
+    p.add_argument("--count", type=int, choices=[1, 2], default=1)
     p.add_argument("--down-ms", type=int, default=40)
+    p.add_argument("--duration-ms", type=int, default=0)
     add_foreground_guard_arguments(p)
     p.set_defaults(func=command_click)
+
+    p = sub.add_parser("double-click")
+    p.add_argument("--x", type=int)
+    p.add_argument("--y", type=int)
+    p.add_argument("--button", choices=["left", "right", "middle"], default="left")
+    p.add_argument("--down-ms", type=int, default=40)
+    p.add_argument("--duration-ms", type=int, default=0)
+    add_foreground_guard_arguments(p)
+    p.set_defaults(count=2, func=command_double_click)
 
     p = sub.add_parser("press")
     p.add_argument("--key", required=True)
@@ -2257,6 +2451,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--delay-ms", type=int, default=0)
     add_foreground_guard_arguments(p)
     p.set_defaults(func=command_type_text)
+
+    p = sub.add_parser("key-chord")
+    p.add_argument("--keys", required=True)
+    p.add_argument("--down-ms", type=int, default=20)
+    add_foreground_guard_arguments(p)
+    p.set_defaults(func=command_key_chord)
+
+    p = sub.add_parser("clear-and-type")
+    p.add_argument("--text", required=True)
+    p.add_argument("--delay-ms", type=int, default=0)
+    p.add_argument("--down-ms", type=int, default=20)
+    add_foreground_guard_arguments(p)
+    p.set_defaults(func=command_clear_and_type)
 
     p = sub.add_parser("uia-map")
     p.add_argument("--focused", action="store_true")

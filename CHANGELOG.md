@@ -7,6 +7,7 @@
 - The agent bridge can now resolve one named VCL control without serializing a full form map, reports effective focus-failure context, and labels every diagnostic mutation with its actual VCL/input semantics.
 - Windows desktop control now offers guarded move, left-click, right-click, and double-click actions by VCL form/control identity or fresh bridge ref, with post-activation retargeting and concise refusal evidence.
 - Windows desktop control now provides filtered bridge form/control and top-level window discovery plus deadline-bounded waits, including owner/root/z-order and likely-modal evidence without full control maps.
+- Windows desktop control now supports cleanup-safe key chords, common navigation/function keys, guarded clear-and-type, left/right/middle and double clicks, and optional visible-duration pointer movement.
 
 ## 2026-07-23
 ### Added

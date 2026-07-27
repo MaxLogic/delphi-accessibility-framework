@@ -71,9 +71,12 @@ class WindowsDesktopControlTests(unittest.TestCase):
         commands = [
             (helper.command_move, SimpleNamespace(x=10, y=20)),
             (helper.command_click, SimpleNamespace(x=10, y=20, down_ms=0)),
+            (helper.command_double_click, SimpleNamespace(x=10, y=20, down_ms=0)),
             (helper.command_press, SimpleNamespace(key="enter", down_ms=0)),
             (helper.command_tab, SimpleNamespace(shift=False)),
             (helper.command_type_text, SimpleNamespace(text="x", delay_ms=0)),
+            (helper.command_key_chord, SimpleNamespace(keys="Ctrl+A", down_ms=0)),
+            (helper.command_clear_and_type, SimpleNamespace(text="x", delay_ms=0, down_ms=0)),
         ]
         original_user32 = helper.user32
         original_window_info = helper.window_info
@@ -141,7 +144,7 @@ class WindowsDesktopControlTests(unittest.TestCase):
             helper.window_info = original_window_info
 
     def test_real_input_command_help_documents_foreground_guards(self) -> None:
-        for command in ["move", "click", "press", "tab", "type-text"]:
+        for command in ["move", "click", "double-click", "press", "tab", "type-text", "key-chord", "clear-and-type"]:
             with self.subTest(command=command):
                 result = self.run_helper(command, "--help")
 
@@ -561,6 +564,64 @@ class WindowsDesktopControlTests(unittest.TestCase):
         self.assertEqual([700, 600, 500], [request[1] for request in requests])
         self.assertEqual(1, by_ref["count"])
 
+    def test_bridge_find_enriches_only_one_control_for_a_value_condition(self) -> None:
+        helper = load_helper_module()
+        requests = []
+        responses = [
+            {
+                "ok": True,
+                "snapshotId": 8,
+                "control": {
+                    "ref": "@a0",
+                    "name": "CustomerEdit",
+                    "className": "TEdit",
+                    "formName": "MainForm",
+                    "visible": True,
+                    "enabled": True,
+                },
+            },
+            {
+                "ok": True,
+                "control": {
+                    "ref": "@a0",
+                    "name": "CustomerEdit",
+                    "className": "TEdit",
+                    "formName": "MainForm",
+                    "visible": True,
+                    "enabled": True,
+                    "value": "Agent input 42",
+                },
+            },
+        ]
+
+        def fake_bridge_request(_pipe, request, timeout_ms):
+            requests.append((json.loads(request), timeout_ms))
+            return responses.pop(0)
+
+        original_bridge_request = helper.bridge_request
+        try:
+            helper.bridge_request = fake_bridge_request
+            args = SimpleNamespace(
+                pipe_name="Bridge.42",
+                form_name="MainForm",
+                control_name="CustomerEdit",
+                ref=None,
+                name="CustomerEdit",
+                caption_contains=None,
+                class_name="TEdit",
+                visible="true",
+                value="Agent input 42",
+                fields="ref,name,value",
+                pid=None,
+            )
+            result = helper.build_bridge_find_response(args, 500)
+        finally:
+            helper.bridge_request = original_bridge_request
+
+        self.assertEqual([{"ref": "@a0", "name": "CustomerEdit", "value": "Agent input 42"}], result["matches"])
+        self.assertEqual(["control.resolve", "control.info"], [request[0]["cmd"] for request in requests])
+        self.assertNotIn("form.map", json.dumps(requests))
+
     def test_wait_lookup_uses_one_deadline_and_returns_final_timeout_evidence(self) -> None:
         helper = load_helper_module()
         clock = [0.0]
@@ -648,6 +709,178 @@ class WindowsDesktopControlTests(unittest.TestCase):
             helper.bridge_request = original_bridge_request
 
         self.assertLess(elapsed_ms, 250)
+
+    def test_general_key_chords_cover_navigation_functions_and_modifier_cleanup(self) -> None:
+        helper = load_helper_module()
+        self.assertEqual([helper.VK_CODES["ctrl"], ord("A")], helper.parse_key_chord("Ctrl+A"))
+        self.assertEqual([helper.VK_CODES["alt"], helper.VK_CODES["f4"]], helper.parse_key_chord("Alt+F4"))
+        for name in ["backspace", "delete", "home", "end", "insert", "pageup", "pagedown", "f1", "f12"]:
+            with self.subTest(name=name):
+                self.assertIsInstance(helper.virtual_key_for_name(name), int)
+        self.assertTrue(helper.key_flags_for_vk(helper.VK_CODES["delete"]) & helper.KEYEVENTF_EXTENDEDKEY)
+
+        calls = []
+        original_send_key_input = helper.send_key_input
+        original_sleep = helper.time.sleep
+        try:
+            helper.send_key_input = lambda vk, key_up=False: calls.append((vk, key_up))
+            helper.time.sleep = lambda _seconds: None
+            helper.send_key_chord(helper.parse_key_chord("Ctrl+A"), 0)
+        finally:
+            helper.send_key_input = original_send_key_input
+            helper.time.sleep = original_sleep
+        self.assertEqual(
+            [
+                (helper.VK_CODES["ctrl"], False),
+                (ord("A"), False),
+                (ord("A"), True),
+                (helper.VK_CODES["ctrl"], True),
+            ],
+            calls,
+        )
+
+        calls.clear()
+
+        def fail_on_a(vk, key_up=False):
+            calls.append((vk, key_up))
+            if vk == ord("A") and not key_up:
+                raise OSError("injected SendInput failure")
+
+        try:
+            helper.send_key_input = fail_on_a
+            with self.assertRaises(OSError):
+                helper.send_key_chord(helper.parse_key_chord("Ctrl+A"), 0)
+        finally:
+            helper.send_key_input = original_send_key_input
+        self.assertEqual((helper.VK_CODES["ctrl"], True), calls[-1])
+
+    def test_mouse_buttons_double_click_and_visible_move_share_one_dispatch_path(self) -> None:
+        helper = load_helper_module()
+        moves = []
+        mouse = []
+        sleeps = []
+
+        class FakeUser32:
+            # Real mouse movement is unsafe in a unit test; this fixes the exact User32 dispatch boundary.
+            @staticmethod
+            def GetCursorPos(point):
+                point._obj.x = 0
+                point._obj.y = 0
+                return True
+
+            @staticmethod
+            def SetCursorPos(x, y):
+                moves.append((x, y))
+                return True
+
+            @staticmethod
+            def mouse_event(*args):
+                mouse.append(args[0])
+
+        original_user32 = helper.user32
+        original_sleep = helper.time.sleep
+        try:
+            helper.user32 = FakeUser32()
+            helper.time.sleep = lambda seconds: sleeps.append(seconds)
+            helper.move_cursor(30, 60, 48)
+            helper.send_mouse_click("middle", 2, 0)
+        finally:
+            helper.user32 = original_user32
+            helper.time.sleep = original_sleep
+
+        self.assertGreater(len(moves), 1)
+        self.assertEqual((30, 60), moves[-1])
+        self.assertAlmostEqual(0.048, sum(sleeps), places=3)
+        self.assertEqual(
+            [
+                helper.MOUSEEVENTF_MIDDLEDOWN,
+                helper.MOUSEEVENTF_MIDDLEUP,
+                helper.MOUSEEVENTF_MIDDLEDOWN,
+                helper.MOUSEEVENTF_MIDDLEUP,
+            ],
+            mouse,
+        )
+
+    def test_clear_and_type_uses_guarded_event_producing_keyboard_sequence(self) -> None:
+        helper = load_helper_module()
+        calls = []
+        original_guard_real_input = helper.guard_real_input
+        original_send_key_chord = helper.send_key_chord
+        original_type_unicode_text = helper.type_unicode_text
+        try:
+            helper.guard_real_input = lambda _args: None
+            helper.send_key_chord = lambda keys, down_ms: calls.append(("chord", list(keys), down_ms))
+            helper.type_unicode_text = lambda text, delay_ms: calls.append(("text", text, delay_ms))
+            args = SimpleNamespace(
+                text="new value",
+                delay_ms=3,
+                down_ms=4,
+                require_foreground_pid=42,
+                require_foreground_hwnd=500,
+            )
+            output = StringIO()
+            with redirect_stdout(output):
+                result = helper.command_clear_and_type(args)
+        finally:
+            helper.guard_real_input = original_guard_real_input
+            helper.send_key_chord = original_send_key_chord
+            helper.type_unicode_text = original_type_unicode_text
+
+        self.assertEqual(0, result)
+        self.assertEqual(
+            [
+                ("chord", helper.parse_key_chord("Ctrl+A"), 4),
+                ("chord", [helper.VK_CODES["backspace"]], 4),
+                ("text", "new value", 3),
+            ],
+            calls,
+        )
+        payload = json.loads(output.getvalue())
+        self.assertTrue(payload["humanEquivalent"])
+        self.assertTrue(payload["userInputEventsGenerated"])
+        self.assertEqual("os-keyboard-input", payload["mutationSemantics"])
+
+    def test_click_rechecks_foreground_after_visible_pointer_move(self) -> None:
+        helper = load_helper_module()
+        guards = [None, 2]
+        clicks = []
+        original_guard_real_input = helper.guard_real_input
+        original_move_cursor = helper.move_cursor
+        original_send_mouse_click = helper.send_mouse_click
+        try:
+            helper.guard_real_input = lambda _args: guards.pop(0)
+            helper.move_cursor = lambda *_items: None
+            helper.send_mouse_click = lambda *items: clicks.append(items)
+            args = SimpleNamespace(
+                x=10,
+                y=20,
+                button="left",
+                count=1,
+                down_ms=0,
+                duration_ms=100,
+                require_foreground_pid=42,
+                require_foreground_hwnd=500,
+            )
+            result = helper.command_click(args)
+        finally:
+            helper.guard_real_input = original_guard_real_input
+            helper.move_cursor = original_move_cursor
+            helper.send_mouse_click = original_send_mouse_click
+
+        self.assertEqual(2, result)
+        self.assertEqual([], guards)
+        self.assertEqual([], clicks)
+
+    def test_general_input_commands_are_documented(self) -> None:
+        for command in ["key-chord", "clear-and-type", "double-click"]:
+            with self.subTest(command=command):
+                result = self.run_helper(command, "--help")
+                self.assertEqual(0, result.returncode, result.stderr)
+        result = self.run_helper("move", "--help")
+        self.assertIn("--duration-ms", result.stdout)
+        result = self.run_helper("click", "--help")
+        self.assertIn("--button", result.stdout)
+        self.assertIn("--count", result.stdout)
 
     def test_send_input_structure_matches_win32_layout(self) -> None:
         helper = load_helper_module()

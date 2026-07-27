@@ -1,10 +1,13 @@
 import json
 import ctypes
+from contextlib import redirect_stdout
 import importlib.util
+from io import StringIO
 import os
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 from pathlib import Path
 from unittest import mock
 import unittest
@@ -45,6 +48,149 @@ class WindowsDesktopControlTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertIn("pid", payload["window"])
         self.assertIn("title", payload["window"])
+
+    def test_real_input_commands_refuse_mismatched_foreground_before_dispatch(self) -> None:
+        helper = load_helper_module()
+        calls = []
+
+        class FakeUser32:
+            # Real foreground ownership and SendInput are nondeterministic and unsafe in this unit test.
+            @staticmethod
+            def GetForegroundWindow():
+                return helper.int_to_hwnd(101)
+
+            @staticmethod
+            def SetCursorPos(x, y):
+                calls.append(("move", x, y))
+                return True
+
+            @staticmethod
+            def mouse_event(*args):
+                calls.append(("mouse", *args))
+
+        commands = [
+            (helper.command_move, SimpleNamespace(x=10, y=20)),
+            (helper.command_click, SimpleNamespace(x=10, y=20, down_ms=0)),
+            (helper.command_press, SimpleNamespace(key="enter", down_ms=0)),
+            (helper.command_tab, SimpleNamespace(shift=False)),
+            (helper.command_type_text, SimpleNamespace(text="x", delay_ms=0)),
+        ]
+        original_user32 = helper.user32
+        original_window_info = helper.window_info
+        original_send_key_input = helper.send_key_input
+        original_send_unicode_unit = helper.send_unicode_unit
+        try:
+            helper.user32 = FakeUser32()
+            helper.window_info = lambda _hwnd: {"hwnd": 101, "pid": 202, "title": "Other application"}
+            helper.send_key_input = lambda *args: calls.append(("key", *args))
+            helper.send_unicode_unit = lambda *args: calls.append(("unicode", *args))
+
+            guards = [(303, None, "requiredForegroundPid", 303), (None, 404, "requiredForegroundHwnd", 404)]
+            for required_pid, required_hwnd, field, expected in guards:
+                for command, args in commands:
+                    with self.subTest(command=command.__name__, guard=field):
+                        args.require_foreground_pid = required_pid
+                        args.require_foreground_hwnd = required_hwnd
+                        output = StringIO()
+                        with redirect_stdout(output):
+                            result = command(args)
+
+                        self.assertEqual(2, result)
+                        payload = json.loads(output.getvalue())
+                        self.assertFalse(payload["ok"])
+                        self.assertEqual(expected, payload[field])
+                        self.assertEqual(202, payload["actualForeground"]["pid"])
+                        self.assertEqual([], calls)
+        finally:
+            helper.user32 = original_user32
+            helper.window_info = original_window_info
+            helper.send_key_input = original_send_key_input
+            helper.send_unicode_unit = original_send_unicode_unit
+
+    def test_real_input_guard_allows_matching_pid_and_hwnd(self) -> None:
+        helper = load_helper_module()
+        calls = []
+
+        class FakeUser32:
+            # Real cursor movement is unsafe in this unit test; the guard itself uses real Win32-shaped values.
+            @staticmethod
+            def GetForegroundWindow():
+                return helper.int_to_hwnd(101)
+
+            @staticmethod
+            def SetCursorPos(x, y):
+                calls.append((x, y))
+                return True
+
+        original_user32 = helper.user32
+        original_window_info = helper.window_info
+        try:
+            helper.user32 = FakeUser32()
+            helper.window_info = lambda _hwnd: {"hwnd": 101, "pid": 202, "title": "Expected application"}
+            args = SimpleNamespace(
+                x=10,
+                y=20,
+                require_foreground_pid=202,
+                require_foreground_hwnd=101,
+            )
+
+            self.assertEqual(0, helper.command_move(args))
+            self.assertEqual([(10, 20)], calls)
+        finally:
+            helper.user32 = original_user32
+            helper.window_info = original_window_info
+
+    def test_real_input_command_help_documents_foreground_guards(self) -> None:
+        for command in ["move", "click", "press", "tab", "type-text"]:
+            with self.subTest(command=command):
+                result = self.run_helper(command, "--help")
+
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertIn("--require-foreground-pid", result.stdout)
+                self.assertIn("--require-foreground-hwnd", result.stdout)
+
+    def test_activate_window_resolves_child_to_activatable_root(self) -> None:
+        helper = load_helper_module()
+        activated = []
+        requested = {"hwnd": 501, "pid": 42, "title": "MDI child", "className": "TEditorForm"}
+        root = {"hwnd": 500, "pid": 42, "title": "KFZMeister", "className": "TApplication"}
+
+        class FakeUser32:
+            # Real MDI activation is session-dependent, so this test fixes only the Win32 identity boundary.
+            @staticmethod
+            def GetAncestor(hwnd, flag):
+                self.assertEqual(2, flag)
+                return helper.int_to_hwnd(500 if helper.hwnd_to_int(hwnd) == 501 else 0)
+
+            @staticmethod
+            def GetForegroundWindow():
+                return helper.int_to_hwnd(500)
+
+        original_user32 = helper.user32
+        original_resolve_target_window = helper.resolve_target_window
+        original_activate_hwnd = helper.activate_hwnd
+        original_window_info = helper.window_info
+        try:
+            helper.user32 = FakeUser32()
+            helper.resolve_target_window = lambda _args: (requested, [requested])
+            helper.activate_hwnd = lambda hwnd, _timeout: activated.append(helper.hwnd_to_int(hwnd)) or True
+            helper.window_info = lambda hwnd: root if helper.hwnd_to_int(hwnd) == 500 else requested
+            args = SimpleNamespace(hwnd=501, pid=None, title_contains=None, timeout_ms=100)
+            output = StringIO()
+            with redirect_stdout(output):
+                result = helper.command_activate_window(args)
+
+            self.assertEqual(0, result)
+            self.assertEqual([500], activated)
+            payload = json.loads(output.getvalue())
+            self.assertEqual(501, payload["requested"]["hwnd"])
+            self.assertEqual(500, payload["activated"]["hwnd"])
+            self.assertTrue(payload["resolvedToRoot"])
+        finally:
+            helper.user32 = original_user32
+            helper.resolve_target_window = original_resolve_target_window
+            helper.activate_hwnd = original_activate_hwnd
+            helper.window_info = original_window_info
 
     def test_send_input_structure_matches_win32_layout(self) -> None:
         helper = load_helper_module()

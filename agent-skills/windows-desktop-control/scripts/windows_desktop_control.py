@@ -46,6 +46,7 @@ MOUSEEVENTF_LEFTUP = 0x0004
 PW_RENDERFULLCONTENT = 0x00000002
 SRCCOPY = 0x00CC0020
 SW_RESTORE = 9
+GA_ROOT = 2
 GW_HWNDNEXT = 2
 GW_CHILD = 5
 
@@ -144,6 +145,8 @@ user32.EnumWindows.argtypes = [EnumWindowsProc, wintypes.LPARAM]
 user32.EnumWindows.restype = wintypes.BOOL
 user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
 user32.GetClassNameW.restype = ctypes.c_int
+user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+user32.GetAncestor.restype = wintypes.HWND
 user32.GetForegroundWindow.argtypes = []
 user32.GetForegroundWindow.restype = wintypes.HWND
 user32.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
@@ -959,14 +962,26 @@ def command_foreground_window(_args: argparse.Namespace) -> int:
     return 0
 
 
+def activatable_root(hwnd: wintypes.HWND) -> wintypes.HWND:
+    root = user32.GetAncestor(hwnd, GA_ROOT)
+    return root if hwnd_to_int(root) else hwnd
+
+
 def command_activate_window(args: argparse.Namespace) -> int:
     try:
         target, matches = resolve_target_window(args)
-        ok = activate_hwnd(int_to_hwnd(int(target["hwnd"])), args.timeout_ms)
+        requested_hwnd = int_to_hwnd(int(target["hwnd"]))
+        activated_hwnd = activatable_root(requested_hwnd)
+        activated = window_info(activated_hwnd)
+        ok = activate_hwnd(activated_hwnd, args.timeout_ms)
         payload = {
             "ok": ok,
             "action": "activate-window",
             "target": target,
+            "requested": target,
+            "activated": activated,
+            "resolvedToRoot": hwnd_to_int(requested_hwnd) != hwnd_to_int(activated_hwnd),
+            "reason": None if ok else "foreground-activation-failed",
             "foreground": window_info(user32.GetForegroundWindow()),
             "matches": matches[:5],
         }
@@ -1061,7 +1076,32 @@ def command_screenshot_window(args: argparse.Namespace) -> int:
         return fail(str(exc))
 
 
+def guard_real_input(args: argparse.Namespace) -> int | None:
+    required_pid = getattr(args, "require_foreground_pid", None)
+    required_hwnd = getattr(args, "require_foreground_hwnd", None)
+    if required_pid is None and required_hwnd is None:
+        return None
+
+    actual = window_info(user32.GetForegroundWindow())
+    if (
+        (required_pid is not None and int(actual["pid"]) != required_pid)
+        or (required_hwnd is not None and int(actual["hwnd"]) != required_hwnd)
+    ):
+        return fail(
+            "Foreground requirement was not satisfied. Input was not sent.",
+            2,
+            reason="foreground-mismatch",
+            requiredForegroundPid=required_pid,
+            requiredForegroundHwnd=required_hwnd,
+            actualForeground=actual,
+        )
+    return None
+
+
 def command_move(args: argparse.Namespace) -> int:
+    guard_result = guard_real_input(args)
+    if guard_result is not None:
+        return guard_result
     if not user32.SetCursorPos(int(args.x), int(args.y)):
         return fail("SetCursorPos failed.", win32Error=ctypes.get_last_error())
     print_json({"ok": True, "action": "move", "x": args.x, "y": args.y})
@@ -1071,6 +1111,9 @@ def command_move(args: argparse.Namespace) -> int:
 def command_click(args: argparse.Namespace) -> int:
     if (args.x is None) != (args.y is None):
         return fail("Provide both --x and --y, or neither.")
+    guard_result = guard_real_input(args)
+    if guard_result is not None:
+        return guard_result
     if args.x is not None and args.y is not None and not user32.SetCursorPos(int(args.x), int(args.y)):
         return fail("SetCursorPos failed.", win32Error=ctypes.get_last_error())
     user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
@@ -1107,6 +1150,9 @@ def command_press(args: argparse.Namespace) -> int:
     key = args.key.lower()
     if key not in VK_CODES:
         return fail(f"Unsupported key: {args.key}", supported=sorted(VK_CODES))
+    guard_result = guard_real_input(args)
+    if guard_result is not None:
+        return guard_result
     try:
         vk = VK_CODES[key]
         send_key_input(vk, False)
@@ -1119,6 +1165,9 @@ def command_press(args: argparse.Namespace) -> int:
 
 
 def command_tab(args: argparse.Namespace) -> int:
+    guard_result = guard_real_input(args)
+    if guard_result is not None:
+        return guard_result
     try:
         if args.shift:
             send_key_input(VK_CODES["shift"], False)
@@ -1133,6 +1182,9 @@ def command_tab(args: argparse.Namespace) -> int:
 
 
 def command_type_text(args: argparse.Namespace) -> int:
+    guard_result = guard_real_input(args)
+    if guard_result is not None:
+        return guard_result
     try:
         raw = args.text.encode("utf-16-le")
         units = [raw[i] | (raw[i + 1] << 8) for i in range(0, len(raw), 2)]
@@ -1515,6 +1567,11 @@ def command_uia_map(args: argparse.Namespace) -> int:
         return fail(str(exc))
 
 
+def add_foreground_guard_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--require-foreground-pid", type=int)
+    parser.add_argument("--require-foreground-hwnd", type=int)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Safe Windows desktop control helper.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1653,26 +1710,31 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("move")
     p.add_argument("--x", type=int, required=True)
     p.add_argument("--y", type=int, required=True)
+    add_foreground_guard_arguments(p)
     p.set_defaults(func=command_move)
 
     p = sub.add_parser("click")
     p.add_argument("--x", type=int)
     p.add_argument("--y", type=int)
     p.add_argument("--down-ms", type=int, default=40)
+    add_foreground_guard_arguments(p)
     p.set_defaults(func=command_click)
 
     p = sub.add_parser("press")
     p.add_argument("--key", required=True)
     p.add_argument("--down-ms", type=int, default=20)
+    add_foreground_guard_arguments(p)
     p.set_defaults(func=command_press)
 
     p = sub.add_parser("tab")
     p.add_argument("--shift", action="store_true")
+    add_foreground_guard_arguments(p)
     p.set_defaults(func=command_tab)
 
     p = sub.add_parser("type-text")
     p.add_argument("--text", required=True)
     p.add_argument("--delay-ms", type=int, default=0)
+    add_foreground_guard_arguments(p)
     p.set_defaults(func=command_type_text)
 
     p = sub.add_parser("uia-map")

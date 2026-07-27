@@ -432,6 +432,223 @@ class WindowsDesktopControlTests(unittest.TestCase):
             mouse_flags,
         )
 
+    def test_windows_list_reports_owner_root_z_order_and_modal_likelihood(self) -> None:
+        helper = load_helper_module()
+
+        class FakeUser32:
+            # The live desktop z-order and modal-owner state are nondeterministic, so this fixes the Win32 boundary.
+            @staticmethod
+            def GetWindow(hwnd, flag):
+                self.assertEqual(helper.GW_OWNER, flag)
+                return helper.int_to_hwnd(10 if helper.hwnd_to_int(hwnd) == 20 else 0)
+
+            @staticmethod
+            def GetAncestor(hwnd, flag):
+                self.assertEqual(helper.GA_ROOTOWNER, flag)
+                return helper.int_to_hwnd(10 if helper.hwnd_to_int(hwnd) == 20 else helper.hwnd_to_int(hwnd))
+
+            @staticmethod
+            def IsWindowEnabled(hwnd):
+                return helper.hwnd_to_int(hwnd) != 10
+
+        original_user32 = helper.user32
+        original_enum_top_windows = helper.enum_top_windows
+        original_window_info = helper.window_info
+        try:
+            helper.user32 = FakeUser32()
+            helper.enum_top_windows = lambda: [helper.int_to_hwnd(20), helper.int_to_hwnd(10)]
+            helper.window_info = lambda hwnd: {
+                "hwnd": helper.hwnd_to_int(hwnd),
+                "pid": 42,
+                "title": "Dialog" if helper.hwnd_to_int(hwnd) == 20 else "Main",
+                "className": "TDialog" if helper.hwnd_to_int(hwnd) == 20 else "TMainForm",
+                "visible": True,
+                "enabled": helper.hwnd_to_int(hwnd) != 10,
+                "foreground": helper.hwnd_to_int(hwnd) == 20,
+            }
+            args = SimpleNamespace(
+                pid=None,
+                name=None,
+                caption_contains=None,
+                class_name=None,
+                visible=None,
+                ref=None,
+                fields=None,
+            )
+
+            result = helper.build_windows_list_response(args)
+        finally:
+            helper.user32 = original_user32
+            helper.enum_top_windows = original_enum_top_windows
+            helper.window_info = original_window_info
+
+        self.assertEqual(2, result["count"])
+        dialog = result["matches"][0]
+        self.assertEqual(0, dialog["zOrder"])
+        self.assertEqual(10, dialog["ownerHwnd"])
+        self.assertEqual(10, dialog["rootOwnerHwnd"])
+        self.assertFalse(dialog["ownerEnabled"])
+        self.assertTrue(dialog["likelyModal"])
+
+    def test_bridge_discovery_uses_narrow_requests_filters_and_projection(self) -> None:
+        helper = load_helper_module()
+        requests = []
+
+        def fake_bridge_request(_pipe, request, timeout_ms):
+            requests.append((json.loads(request), timeout_ms))
+            if len(requests) == 1:
+                return {
+                    "ok": True,
+                    "forms": [
+                        {"name": "MainForm", "caption": "Orders", "className": "TMainForm", "visible": True},
+                        {"name": "HiddenForm", "caption": "Other", "className": "TForm", "visible": False},
+                    ],
+                }
+            return {
+                "ok": True,
+                "snapshotId": 4,
+                "control": {
+                    "ref": "@a0",
+                    "name": "CustomerEdit",
+                    "className": "TEdit",
+                    "formName": "MainForm",
+                    "visible": True,
+                    "enabled": True,
+                },
+            }
+
+        original_bridge_request = helper.bridge_request
+        try:
+            helper.bridge_request = fake_bridge_request
+            forms_args = SimpleNamespace(
+                pipe_name="Bridge.42",
+                timeout_ms=900,
+                name="MainForm",
+                caption_contains="ord",
+                class_name="TMainForm",
+                visible="true",
+                ref=None,
+                fields="name,caption",
+            )
+            forms = helper.build_bridge_forms_response(forms_args, 700)
+            control_args = SimpleNamespace(
+                pipe_name="Bridge.42",
+                timeout_ms=900,
+                form_name="MainForm",
+                control_name="CustomerEdit",
+                ref=None,
+                name="CustomerEdit",
+                caption_contains=None,
+                class_name="TEdit",
+                visible="true",
+                fields="ref,name,className",
+            )
+            control = helper.build_bridge_find_response(control_args, 600)
+            control_args.ref = "@a0"
+            control_args.form_name = None
+            control_args.control_name = None
+            control_args.name = None
+            by_ref = helper.build_bridge_find_response(control_args, 500)
+        finally:
+            helper.bridge_request = original_bridge_request
+
+        self.assertEqual([{"name": "MainForm", "caption": "Orders"}], forms["matches"])
+        self.assertEqual([{"ref": "@a0", "name": "CustomerEdit", "className": "TEdit"}], control["matches"])
+        self.assertEqual({"cmd": "forms.list"}, requests[0][0])
+        self.assertEqual("control.resolve", requests[1][0]["cmd"])
+        self.assertEqual("@a0", requests[2][0]["ref"])
+        self.assertNotIn("form.map", json.dumps(requests))
+        self.assertEqual([700, 600, 500], [request[1] for request in requests])
+        self.assertEqual(1, by_ref["count"])
+
+    def test_wait_lookup_uses_one_deadline_and_returns_final_timeout_evidence(self) -> None:
+        helper = load_helper_module()
+        clock = [0.0]
+        remaining = []
+
+        def lookup(remaining_ms):
+            remaining.append(remaining_ms)
+            return {"ok": True, "count": 0, "matches": [], "marker": len(remaining)}
+
+        original_monotonic = helper.time.monotonic
+        original_sleep = helper.time.sleep
+        try:
+            helper.time.monotonic = lambda: clock[0]
+            helper.time.sleep = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+            result, attempts, timed_out = helper.poll_until_match(250, 100, lookup)
+        finally:
+            helper.time.monotonic = original_monotonic
+            helper.time.sleep = original_sleep
+
+        self.assertTrue(timed_out)
+        self.assertEqual(3, attempts)
+        self.assertEqual([250, 150, 50], remaining)
+        self.assertEqual(3, result["marker"])
+
+        output = StringIO()
+        with redirect_stdout(output):
+            exit_code = helper.print_wait_result("wait-control", result, attempts, timed_out, 250)
+        self.assertEqual(2, exit_code)
+        payload = json.loads(output.getvalue())
+        self.assertEqual("timeout", payload["reason"])
+        self.assertEqual(result, payload["finalEvidence"])
+
+    def test_wait_lookup_retries_transient_discovery_errors_within_deadline(self) -> None:
+        helper = load_helper_module()
+        clock = [0.0]
+        calls = [0]
+
+        def lookup(_remaining_ms):
+            calls[0] += 1
+            if calls[0] == 1:
+                raise OSError("pipe is starting")
+            return {"ok": True, "count": 1, "matches": [{"name": "MainForm"}]}
+
+        original_monotonic = helper.time.monotonic
+        original_sleep = helper.time.sleep
+        try:
+            helper.time.monotonic = lambda: clock[0]
+            helper.time.sleep = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+            result, attempts, timed_out = helper.poll_until_match(500, 50, lookup)
+        finally:
+            helper.time.monotonic = original_monotonic
+            helper.time.sleep = original_sleep
+
+        self.assertFalse(timed_out)
+        self.assertEqual(2, attempts)
+        self.assertEqual("MainForm", result["matches"][0]["name"])
+
+    def test_discovery_and_wait_commands_are_documented_and_bridge_wait_is_bounded(self) -> None:
+        for command in ["bridge-forms", "bridge-find", "windows-list", "wait-window", "wait-form", "wait-control"]:
+            with self.subTest(command=command):
+                result = self.run_helper(command, "--help")
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertIn("--fields", result.stdout)
+                if command.startswith("wait-"):
+                    self.assertIn("--timeout-ms", result.stdout)
+                    self.assertIn("--poll-ms", result.stdout)
+
+        helper = load_helper_module()
+        release = helper.threading.Event()
+
+        def blocked_request(_pipe, _request, _timeout):
+            # A genuinely blocked named-pipe read would make the test nondeterministic; the event fixes that boundary.
+            release.wait(1)
+            return {"ok": True}
+
+        original_bridge_request = helper.bridge_request
+        try:
+            helper.bridge_request = blocked_request
+            started = helper.time.perf_counter()
+            with self.assertRaises(TimeoutError):
+                helper.bridge_request_bounded("Bridge.42", '{"cmd":"hello"}', 25)
+            elapsed_ms = (helper.time.perf_counter() - started) * 1000
+        finally:
+            release.set()
+            helper.bridge_request = original_bridge_request
+
+        self.assertLess(elapsed_ms, 250)
+
     def test_send_input_structure_matches_win32_layout(self) -> None:
         helper = load_helper_module()
         expected_size = 40 if ctypes.sizeof(ctypes.c_void_p) == 8 else 28

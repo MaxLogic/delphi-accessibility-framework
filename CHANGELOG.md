@@ -6,6 +6,7 @@
 - `activate-window` now resolves child and MDI-child HWNDs to their activatable top-level host and reports requested and activated window identities separately.
 - The agent bridge can now resolve one named VCL control without serializing a full form map, reports effective focus-failure context, and labels every diagnostic mutation with its actual VCL/input semantics.
 - Windows desktop control now offers guarded move, left-click, right-click, and double-click actions by VCL form/control identity or fresh bridge ref, with post-activation retargeting and concise refusal evidence.
+- Windows desktop control now provides filtered bridge form/control and top-level window discovery plus deadline-bounded waits, including owner/root/z-order and likely-modal evidence without full control maps.
 
 ## 2026-07-23
 ### Added

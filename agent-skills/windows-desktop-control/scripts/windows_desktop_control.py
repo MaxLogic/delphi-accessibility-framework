@@ -8,9 +8,11 @@ import ctypes
 from ctypes import wintypes
 import json
 from pathlib import Path
+import queue
 import struct
 import subprocess
 import sys
+import threading
 import time
 import winsound
 
@@ -49,7 +51,9 @@ PW_RENDERFULLCONTENT = 0x00000002
 SRCCOPY = 0x00CC0020
 SW_RESTORE = 9
 GA_ROOT = 2
+GA_ROOTOWNER = 3
 GW_HWNDNEXT = 2
+GW_OWNER = 4
 GW_CHILD = 5
 
 VK_CODES = {
@@ -685,6 +689,243 @@ def command_right_click_control(args: argparse.Namespace) -> int:
     return command_semantic_control_action(args, "right-click-control", "right", 1)
 
 
+def requested_fields(args: argparse.Namespace) -> list[str]:
+    return [field.strip() for field in str(getattr(args, "fields", "") or "").split(",") if field.strip()]
+
+
+def discovery_item_matches(item: dict[str, object], args: argparse.Namespace) -> bool:
+    name = getattr(args, "name", None)
+    if name and str(item.get("name") or "").lower() != str(name).lower():
+        return False
+    caption_contains = getattr(args, "caption_contains", None)
+    caption = item.get("caption", item.get("title", ""))
+    if caption_contains and str(caption_contains).lower() not in str(caption or "").lower():
+        return False
+    class_name = getattr(args, "class_name", None)
+    if class_name and str(item.get("className") or "").lower() != str(class_name).lower():
+        return False
+    visible = getattr(args, "visible", None)
+    if visible is not None and bool(item.get("visible")) != (str(visible).lower() == "true"):
+        return False
+    ref = getattr(args, "ref", None)
+    if ref and str(item.get("ref") or "") != str(ref):
+        return False
+    pid = getattr(args, "pid", None)
+    if pid is not None and int(item.get("pid") or 0) != int(pid):
+        return False
+    return True
+
+
+def filter_and_project(items: list[dict[str, object]], args: argparse.Namespace) -> list[dict[str, object]]:
+    fields = requested_fields(args)
+    matches = [item for item in items if discovery_item_matches(item, args)]
+    if not fields:
+        return matches
+    return [{field: item.get(field) for field in fields} for item in matches]
+
+
+def bridge_request_bounded(pipe_name: str, request_text: str, timeout_ms: int) -> dict[str, object]:
+    results: queue.Queue[tuple[dict[str, object] | None, BaseException | None]] = queue.Queue(maxsize=1)
+
+    def run_request() -> None:
+        try:
+            results.put((bridge_request(pipe_name, request_text, timeout_ms), None))
+        except BaseException as exc:  # noqa: BLE001 - passed back to the controlling CLI thread
+            results.put((None, exc))
+
+    thread = threading.Thread(target=run_request, daemon=True)
+    thread.start()
+    thread.join(max(1, timeout_ms) / 1000.0)
+    if thread.is_alive():
+        raise TimeoutError(f"Bridge request exceeded the remaining {timeout_ms} ms deadline.")
+    result, error = results.get_nowait()
+    if error is not None:
+        raise error
+    if result is None:
+        raise RuntimeError("Bridge request returned no result.")
+    return result
+
+
+def build_bridge_forms_response(
+    args: argparse.Namespace,
+    timeout_ms: int,
+    bounded: bool = False,
+) -> dict[str, object]:
+    request = json.dumps({"cmd": "forms.list"}, separators=(",", ":"))
+    request_func = bridge_request_bounded if bounded else bridge_request
+    response = request_func(args.pipe_name, request, timeout_ms)
+    forms = response.get("forms")
+    items = [item for item in forms if isinstance(item, dict)] if isinstance(forms, list) else []
+    matches = filter_and_project(items, args)
+    return {
+        "ok": response.get("ok") is True,
+        "command": "bridge-forms",
+        "count": len(matches),
+        "matches": matches,
+        "responseError": response.get("errorCode"),
+    }
+
+
+def build_bridge_find_response(
+    args: argparse.Namespace,
+    timeout_ms: int,
+    bounded: bool = False,
+) -> dict[str, object]:
+    if not getattr(args, "control_name", None) and not getattr(args, "ref", None):
+        return build_bridge_forms_response(args, timeout_ms, bounded)
+    request = build_bridge_control_resolve_request(args)
+    request_func = bridge_request_bounded if bounded else bridge_request
+    response = request_func(args.pipe_name, request, timeout_ms)
+    control = response.get("control")
+    items = [control] if isinstance(control, dict) else []
+    matches = filter_and_project(items, args)
+    return {
+        "ok": response.get("ok") is True,
+        "command": "bridge-find",
+        "count": len(matches),
+        "matches": matches,
+        "responseError": response.get("errorCode"),
+    }
+
+
+def build_windows_list_response(args: argparse.Namespace) -> dict[str, object]:
+    items: list[dict[str, object]] = []
+    for z_order, hwnd in enumerate(enum_top_windows()):
+        item = window_info(hwnd)
+        if not item.get("visible"):
+            continue
+        owner = user32.GetWindow(hwnd, GW_OWNER)
+        owner_handle = hwnd_to_int(owner)
+        root_owner = user32.GetAncestor(hwnd, GA_ROOTOWNER)
+        root_owner_handle = hwnd_to_int(root_owner) or int(item["hwnd"])
+        owner_enabled = bool(user32.IsWindowEnabled(owner)) if owner_handle else True
+        item.update(
+            {
+                "zOrder": z_order,
+                "ownerHwnd": owner_handle,
+                "rootOwnerHwnd": root_owner_handle,
+                "ownerEnabled": owner_enabled,
+                "likelyModal": owner_handle != 0 and not owner_enabled and bool(item.get("enabled")),
+            }
+        )
+        items.append(item)
+    matches = filter_and_project(items, args)
+    return {"ok": True, "command": "windows-list", "count": len(matches), "matches": matches}
+
+
+def command_discovery(args: argparse.Namespace, builder) -> int:
+    try:
+        result = builder(args)
+        print_json(result)
+        return 0 if result.get("ok") is True else 2
+    except Exception as exc:  # noqa: BLE001 - CLI boundary
+        return fail(str(exc), 2)
+
+
+def command_bridge_forms(args: argparse.Namespace) -> int:
+    return command_discovery(args, lambda value: build_bridge_forms_response(value, value.timeout_ms))
+
+
+def command_bridge_find(args: argparse.Namespace) -> int:
+    return command_discovery(args, lambda value: build_bridge_find_response(value, value.timeout_ms))
+
+
+def command_windows_list(args: argparse.Namespace) -> int:
+    return command_discovery(args, build_windows_list_response)
+
+
+def poll_until_match(timeout_ms: int, poll_ms: int, lookup) -> tuple[dict[str, object], int, bool]:
+    deadline = time.monotonic() + max(0, timeout_ms) / 1000.0
+    attempts = 0
+    final_evidence: dict[str, object] = {"ok": False, "count": 0, "matches": []}
+    while True:
+        remaining_ms = max(0, round((deadline - time.monotonic()) * 1000))
+        if remaining_ms <= 0:
+            return final_evidence, attempts, True
+        attempts += 1
+        try:
+            final_evidence = lookup(remaining_ms)
+        except Exception as exc:  # noqa: BLE001 - retained as final bounded-wait evidence
+            final_evidence = {
+                "ok": False,
+                "count": 0,
+                "matches": [],
+                "error": str(exc),
+                "errorType": type(exc).__name__,
+            }
+        if final_evidence.get("ok") is True and int(final_evidence.get("count") or 0) > 0:
+            return final_evidence, attempts, False
+        remaining_ms = max(0, round((deadline - time.monotonic()) * 1000))
+        if remaining_ms <= 0:
+            return final_evidence, attempts, True
+        time.sleep(min(max(1, poll_ms), remaining_ms) / 1000.0)
+
+
+def print_wait_result(
+    command_name: str,
+    result: dict[str, object],
+    attempts: int,
+    timed_out: bool,
+    waited_ms: int | float,
+) -> int:
+    if timed_out:
+        return fail(
+            f"{command_name} reached its deadline without a match.",
+            2,
+            command=command_name,
+            reason="timeout",
+            attempts=attempts,
+            waitedMs=round(waited_ms, 3),
+            finalEvidence=result,
+        )
+    print_json(
+        {
+            "ok": True,
+            "command": command_name,
+            "attempts": attempts,
+            "waitedMs": round(waited_ms, 3),
+            "count": result.get("count"),
+            "matches": result.get("matches"),
+        }
+    )
+    return 0
+
+
+def command_wait(args: argparse.Namespace, command_name: str, lookup) -> int:
+    started = time.perf_counter()
+    try:
+        result, attempts, timed_out = poll_until_match(args.timeout_ms, args.poll_ms, lookup)
+        return print_wait_result(command_name, result, attempts, timed_out, elapsed_ms_since(started))
+    except Exception as exc:  # noqa: BLE001 - CLI boundary
+        return fail(
+            str(exc),
+            2,
+            command=command_name,
+            reason="wait-failed",
+            waitedMs=elapsed_ms_since(started),
+        )
+
+
+def command_wait_window(args: argparse.Namespace) -> int:
+    return command_wait(args, "wait-window", lambda _remaining: build_windows_list_response(args))
+
+
+def command_wait_form(args: argparse.Namespace) -> int:
+    return command_wait(
+        args,
+        "wait-form",
+        lambda remaining: build_bridge_forms_response(args, remaining, True),
+    )
+
+
+def command_wait_control(args: argparse.Namespace) -> int:
+    return command_wait(
+        args,
+        "wait-control",
+        lambda remaining: build_bridge_find_response(args, remaining, True),
+    )
+
+
 def hwnd_to_int(hwnd: object) -> int:
     value = getattr(hwnd, "value", hwnd)
     return int(value or 0)
@@ -739,6 +980,7 @@ def window_info(hwnd: wintypes.HWND, include_title: bool = True) -> dict[str, ob
         "title": get_window_text(hwnd) if include_title else "",
         "className": get_class_name(hwnd),
         "visible": bool(user32.IsWindowVisible(hwnd)),
+        "enabled": bool(user32.IsWindowEnabled(hwnd)),
         "foreground": foreground,
         "rect": get_window_rect(hwnd),
     }
@@ -1781,6 +2023,19 @@ def add_semantic_control_arguments(parser: argparse.ArgumentParser, include_down
         parser.add_argument("--down-ms", type=int, default=40)
 
 
+def add_discovery_filter_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--name")
+    parser.add_argument("--caption-contains")
+    parser.add_argument("--class-name")
+    parser.add_argument("--visible", choices=["true", "false"])
+    parser.add_argument("--fields")
+
+
+def add_wait_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--timeout-ms", type=int, default=5000)
+    parser.add_argument("--poll-ms", type=int, default=100)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Safe Windows desktop control helper.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1863,8 +2118,49 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--timeout-ms", type=int, default=5000)
     p.set_defaults(func=command_bridge_controls_info)
 
+    p = sub.add_parser("bridge-forms")
+    p.add_argument("--pipe-name", required=True)
+    p.add_argument("--timeout-ms", type=int, default=5000)
+    add_discovery_filter_arguments(p)
+    p.set_defaults(ref=None, pid=None, func=command_bridge_forms)
+
+    p = sub.add_parser("bridge-find")
+    p.add_argument("--pipe-name", required=True)
+    p.add_argument("--form-name")
+    p.add_argument("--control-name")
+    p.add_argument("--ref")
+    p.add_argument("--timeout-ms", type=int, default=5000)
+    add_discovery_filter_arguments(p)
+    p.set_defaults(pid=None, func=command_bridge_find)
+
     p = sub.add_parser("foreground-window")
     p.set_defaults(func=command_foreground_window)
+
+    p = sub.add_parser("windows-list")
+    p.add_argument("--pid", type=int)
+    add_discovery_filter_arguments(p)
+    p.set_defaults(ref=None, func=command_windows_list)
+
+    p = sub.add_parser("wait-window")
+    p.add_argument("--pid", type=int)
+    add_discovery_filter_arguments(p)
+    add_wait_arguments(p)
+    p.set_defaults(ref=None, func=command_wait_window)
+
+    p = sub.add_parser("wait-form")
+    p.add_argument("--pipe-name", required=True)
+    add_discovery_filter_arguments(p)
+    add_wait_arguments(p)
+    p.set_defaults(ref=None, pid=None, func=command_wait_form)
+
+    p = sub.add_parser("wait-control")
+    p.add_argument("--pipe-name", required=True)
+    p.add_argument("--form-name")
+    p.add_argument("--control-name")
+    p.add_argument("--ref")
+    add_discovery_filter_arguments(p)
+    add_wait_arguments(p)
+    p.set_defaults(pid=None, func=command_wait_control)
 
     p = sub.add_parser("win32-map")
     p.add_argument("--focused", action="store_true")

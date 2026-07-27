@@ -394,6 +394,30 @@ begin
   end;
 end;
 
+procedure AssertPipeControlResolveIsNarrow(aForm: TForm; const aPipeName: string);
+var
+  lControl: TJSONObject;
+  lRequest: string;
+  lResponse: string;
+  lResponseJson: TJSONObject;
+begin
+  lRequest := '{"cmd":"control.resolve","target":{"formName":"' + aForm.Name +
+    '","controlName":"PipeButton"},"detail":"target"}';
+  lResponse := RequestPipeLineFromWorker(aPipeName, lRequest);
+  lResponseJson := JsonObjectFrom(lResponse);
+  try
+    Assert.AreEqual('true', JsonText(lResponseJson, 'ok'), lResponse);
+    Assert.AreEqual('control.resolve', JsonText(lResponseJson, 'cmd'));
+    Assert.IsNull(lResponseJson.GetValue('controls'), 'Narrow pipe resolution serialized a complete control map.');
+    lControl := TJSONObject(lResponseJson.GetValue('control')); //PALOFF STWA6 response contract checked below
+    Assert.IsNotNull(lControl, lResponse);
+    Assert.AreEqual('PipeButton', JsonText(lControl, 'name'));
+    Assert.AreEqual('PipeBridgeForm', JsonText(lControl, 'formName'));
+  finally
+    lResponseJson.Free;
+  end;
+end;
+
 procedure TAccessibilityAgentBridgePipeServerTests.PipeFormMapCapturesOnMainThreadAndSerializesOnWorker;
 var
   lForm: TForm;
@@ -407,6 +431,7 @@ begin
     try
       AssertPipeHelloEquivalent(lPipeName);
       AssertPipeFormMapTiming(lForm, lPipeName);
+      AssertPipeControlResolveIsNarrow(lForm, lPipeName);
     finally
       TAccessibilityAgentBridgePipeServer.Stop;
     end;

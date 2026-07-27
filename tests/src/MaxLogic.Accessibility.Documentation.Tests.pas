@@ -165,6 +165,12 @@ begin
   RequireText(lText, '"cmd":"form.map"', 'agent bridge documentation');
   RequireText(lText, '"detail":"geometry"', 'agent bridge documentation');
   RequireText(lText, '"cmd":"controls.info"', 'agent bridge documentation');
+  RequireText(lText, '"cmd":"control.resolve"', 'agent bridge documentation');
+  RequireText(lText, 'mutationSemantics', 'agent bridge documentation');
+  RequireText(lText, 'raw-property-assignment', 'agent bridge documentation');
+  RequireText(lText, 'userInputEventsGenerated', 'agent bridge documentation');
+  RequireText(lText, 'mayBlockSynchronously', 'agent bridge documentation');
+  RequireText(lText, 'recommendedFallback', 'agent bridge documentation');
   RequireText(lText, 'hundreds or thousands of client/provider boundary calls', 'agent bridge documentation');
   RequireText(lText, 'CacheRequest', 'agent bridge documentation');
   RequireText(lText, '"cmd":"hitTest"', 'agent bridge documentation');

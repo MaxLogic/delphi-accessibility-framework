@@ -51,6 +51,12 @@ type
     [Test]
     procedure ControlInfoEnrichesOneSnapshotRefWithoutFullMapScan;
     [Test]
+    procedure ControlResolveFindsNamedControlWithoutFullFormMap;
+    [Test]
+    procedure ControlResolveReportsMdiChildHostContext;
+    [Test]
+    procedure FocusFailureReportsEffectiveVclContext;
+    [Test]
     procedure ControlInfoReusesSnapshotRectangleForMappedControl;
     [Test]
     procedure ControlsInfoBatchesSnapshotRefsWithOneFocusProbe;
@@ -1804,6 +1810,175 @@ begin
   end;
 end;
 
+procedure TAccessibilityAgentBridgeTests.ControlResolveReportsMdiChildHostContext;
+var
+  lButton: TButton;
+  lChild: TForm;
+  lControl: TJSONObject;
+  lHost: TForm;
+  lResponse: TJSONObject;
+begin
+  lHost := nil;
+  Application.CreateForm(TForm, lHost);
+  lHost.Name := 'MdiHostForm';
+  lHost.FormStyle := fsMDIForm;
+  lHost.Show;
+  lChild := TForm.Create(Application);
+  try
+    lChild.Name := 'MdiChildForm';
+    lChild.FormStyle := fsMDIChild;
+    lButton := TButton.Create(lChild);
+    lButton.Name := 'MdiApplyButton';
+    lButton.Parent := lChild;
+    lChild.Show;
+    Application.ProcessMessages;
+
+    lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+      '{"cmd":"control.resolve","target":{"formName":"MdiChildForm","controlName":"MdiApplyButton"},' +
+      '"detail":"target"}'));
+    try
+      AssertOk(lResponse);
+      lControl := JsonObjectValue(lResponse, 'control');
+      Assert.AreEqual('true', JsonText(lControl, 'mdiChild'));
+      Assert.AreEqual(UIntToStr(NativeUInt(lChild.Handle)), JsonText(lControl, 'formHandle'));
+      Assert.AreEqual(UIntToStr(NativeUInt(lHost.Handle)), JsonText(lControl, 'rootHandle'));
+    finally
+      lResponse.Free;
+    end;
+  finally
+    lChild.Free;
+    lHost.Free;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.ControlResolveFindsNamedControlWithoutFullFormMap;
+var
+  lButton: TButton;
+  lControl: TJSONObject;
+  lEdit: TEdit;
+  lForm: TForm;
+  lRef: string;
+  lResponse: TJSONObject;
+  lSnapshotId: Integer;
+begin
+  BuildBridgeTestForm(lForm, lEdit, lButton);
+  lForm.Show;
+  Application.ProcessMessages;
+  try
+    lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+      '{"cmd":"control.resolve","target":{"formName":"BridgeForm","controlName":"ApplyButton"},' +
+      '"detail":"target"}'));
+    try
+      AssertOk(lResponse);
+      Assert.AreEqual('control.resolve', JsonText(lResponse, 'cmd'));
+      Assert.AreEqual('snapshot', JsonText(lResponse, 'refModel'));
+      Assert.AreEqual('true', JsonText(lResponse, 'snapshotReplaced'));
+      Assert.IsFalse(JsonHasValue(lResponse, 'controls'), 'A narrow resolve must not serialize a full form map.');
+      lSnapshotId := JsonInt(lResponse, 'snapshotId');
+      Assert.IsTrue(lSnapshotId > 0);
+
+      lControl := JsonObjectValue(lResponse, 'control');
+      lRef := JsonText(lControl, 'ref');
+      Assert.AreEqual('@a0', lRef);
+      Assert.AreEqual('ApplyButton', JsonText(lControl, 'name'));
+      Assert.AreEqual('TButton', JsonText(lControl, 'className'));
+      Assert.AreEqual('BridgeForm', JsonText(lControl, 'formName'));
+      Assert.AreEqual(UIntToStr(NativeUInt(lForm.Handle)), JsonText(lControl, 'formHandle'));
+      Assert.AreEqual(UIntToStr(NativeUInt(GetAncestor(lForm.Handle, GA_ROOT))), JsonText(lControl, 'rootHandle'));
+      Assert.AreEqual(lForm.PixelsPerInch, JsonInt(lControl, 'pixelsPerInch'));
+      Assert.AreEqual('screen-physical-pixels', JsonText(lControl, 'coordinateSpace'));
+      Assert.AreEqual('true', JsonText(lControl, 'valid'));
+      Assert.IsTrue(JsonHasValue(lControl, 'canFocus'));
+      Assert.IsTrue(JsonHasValue(lControl, 'activeForm'));
+      Assert.IsTrue(JsonHasValue(lControl, 'screenRect'));
+      Assert.IsTrue(JsonHasValue(lControl, 'targetPoints'));
+      Assert.IsFalse(JsonHasValue(lControl, 'caption'), 'Target detail must not read full control state.');
+    finally
+      lResponse.Free;
+    end;
+
+    lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+      '{"cmd":"control.resolve","ref":"' + lRef + '","detail":"target"}'));
+    try
+      AssertOk(lResponse);
+      Assert.AreEqual('false', JsonText(lResponse, 'snapshotReplaced'));
+      Assert.AreEqual(lSnapshotId, JsonInt(lResponse, 'snapshotId'));
+      Assert.AreEqual(lRef, JsonText(JsonObjectValue(lResponse, 'control'), 'ref'));
+    finally
+      lResponse.Free;
+    end;
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.FocusFailureReportsEffectiveVclContext;
+var
+  lAncestors: TJSONArray;
+  lControl: TJSONObject;
+  lEdit: TEdit;
+  lForm: TForm;
+  lPanel: TPanel;
+  lRef: string;
+  lResponse: TJSONObject;
+begin
+  lForm := TForm.Create(nil);
+  lForm.Name := 'FocusContextForm';
+  lForm.SetBounds(200, 150, 360, 200);
+  lPanel := TPanel.Create(lForm);
+  lPanel.Name := 'DisabledParent';
+  lPanel.SetBounds(8, 8, 240, 80);
+  lPanel.Parent := lForm;
+  lEdit := TEdit.Create(lForm);
+  lEdit.Name := 'BlockedEdit';
+  lEdit.SetBounds(8, 8, 140, 24);
+  lEdit.Parent := lPanel;
+  lForm.Show;
+  Application.ProcessMessages;
+  lPanel.Enabled := False;
+  try
+    lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+      '{"cmd":"control.resolve","target":{"formName":"FocusContextForm","controlName":"BlockedEdit"},' +
+      '"detail":"target"}'));
+    try
+      AssertOk(lResponse);
+      lRef := JsonText(JsonObjectValue(lResponse, 'control'), 'ref');
+    finally
+      lResponse.Free;
+    end;
+
+    TAccessibilityAgentBridge.SetMutationEnabled(True);
+    try
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.focus","ref":"' + lRef + '"}'));
+      try
+        Assert.AreEqual('false', JsonText(lResponse, 'ok'));
+        Assert.AreEqual('focus_failed', JsonText(lResponse, 'errorCode'));
+        Assert.IsTrue(Pos('guarded OS click', JsonText(lResponse, 'recommendedFallback')) > 0);
+        lControl := JsonObjectValue(lResponse, 'control');
+        Assert.AreEqual('true', JsonText(lControl, 'visible'));
+        Assert.AreEqual('true', JsonText(lControl, 'enabled'));
+        Assert.AreEqual('false', JsonText(lControl, 'canFocus'));
+        Assert.AreEqual(UIntToStr(NativeUInt(lEdit.Handle)), JsonText(lControl, 'handle'));
+        Assert.AreEqual(UIntToStr(NativeUInt(GetAncestor(lForm.Handle, GA_ROOT))), JsonText(lControl, 'rootHandle'));
+        Assert.IsTrue(JsonHasValue(lControl, 'activeForm'));
+        Assert.IsTrue(JsonHasValue(lControl, 'formEnabled'));
+        Assert.IsTrue(JsonHasValue(lControl, 'mdiChild'));
+        lAncestors := JsonArrayValue(lResponse, 'ancestors');
+        Assert.IsTrue(lAncestors.Count >= 2);
+        Assert.AreEqual('DisabledParent', JsonText(TJSONObject(lAncestors.Items[0]), 'name'));
+        Assert.AreEqual('false', JsonText(TJSONObject(lAncestors.Items[0]), 'enabled'));
+      finally
+        lResponse.Free;
+      end;
+    finally
+      TAccessibilityAgentBridge.SetMutationEnabled(False);
+    end;
+  finally
+    lForm.Free;
+  end;
+end;
+
 procedure TAccessibilityAgentBridgeTests.ControlInfoReusesSnapshotRectangleForMappedControl;
 var
   lButton: TButton;
@@ -2144,6 +2319,9 @@ begin
       try
         AssertOk(lResponse);
         Assert.AreEqual('true', JsonText(lResponse, 'snapshotInvalidated'));
+        Assert.AreEqual('vcl-focus-request', JsonText(lResponse, 'mutationSemantics'));
+        Assert.AreEqual('false', JsonText(lResponse, 'humanEquivalent'));
+        Assert.AreEqual('false', JsonText(lResponse, 'userInputEventsGenerated'));
         Assert.AreSame(lEdit, lForm.ActiveControl);
       finally
         lResponse.Free;
@@ -2153,6 +2331,9 @@ begin
         '{"cmd":"control.setText","ref":"' + lEditRef + '","text":"base"}'));
       try
         AssertOk(lResponse);
+        Assert.AreEqual('raw-property-assignment', JsonText(lResponse, 'mutationSemantics'));
+        Assert.AreEqual('false', JsonText(lResponse, 'humanEquivalent'));
+        Assert.AreEqual('false', JsonText(lResponse, 'userInputEventsGenerated'));
         Assert.AreEqual('base', lEdit.Text);
       finally
         lResponse.Free;
@@ -2162,6 +2343,9 @@ begin
         '{"cmd":"control.typeText","ref":"' + lEditRef + '","text":" plus"}'));
       try
         AssertOk(lResponse);
+        Assert.AreEqual('raw-property-assignment', JsonText(lResponse, 'mutationSemantics'));
+        Assert.AreEqual('false', JsonText(lResponse, 'humanEquivalent'));
+        Assert.AreEqual('false', JsonText(lResponse, 'userInputEventsGenerated'));
         Assert.AreEqual('base plus', lEdit.Text);
       finally
         lResponse.Free;
@@ -2170,6 +2354,9 @@ begin
       lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute('{"cmd":"keyboard.tab"}'));
       try
         AssertOk(lResponse);
+        Assert.AreEqual('keyboard-equivalent-navigation', JsonText(lResponse, 'mutationSemantics'));
+        Assert.AreEqual('false', JsonText(lResponse, 'humanEquivalent'));
+        Assert.AreEqual('false', JsonText(lResponse, 'userInputEventsGenerated'));
         Assert.AreSame(lButton, lForm.ActiveControl);
       finally
         lResponse.Free;
@@ -2179,6 +2366,10 @@ begin
         '{"cmd":"control.click","ref":"' + lButtonRef + '"}'));
       try
         AssertOk(lResponse);
+        Assert.AreEqual('vcl-event-invocation', JsonText(lResponse, 'mutationSemantics'));
+        Assert.AreEqual('false', JsonText(lResponse, 'humanEquivalent'));
+        Assert.AreEqual('false', JsonText(lResponse, 'userInputEventsGenerated'));
+        Assert.AreEqual('true', JsonText(lResponse, 'mayBlockSynchronously'));
         Assert.AreEqual(1, lClickRecorder.Clicks);
       finally
         lResponse.Free;

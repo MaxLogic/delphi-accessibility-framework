@@ -45,6 +45,7 @@ const
 type
   TAgentBridgeCheckBoxAccess = class(TCustomCheckBox);
   TAgentBridgeControlAccess = class(TControl);
+  TAgentBridgeFormAccess = class(TCustomForm);
   TAgentBridgeWinControlAccess = class(TWinControl);
 
   TAgentBridgeRttiPropertyCache = class
@@ -89,6 +90,8 @@ type
     fSnapshotId: Integer;
     function BuildControlInfo(aControl: TControl; aIncludeAccessibility: Boolean;
       aDetail: TAccessibilityAgentBridgeMapDetail): TJSONObject;
+    function BuildControlTarget(aControl: TControl): TJSONObject;
+    function BuildControlAncestors(aControl: TControl): TJSONArray;
     function BuildControlsInfo(aRefs: TJSONArray; aIncludeAccessibility: Boolean;
       aDetail: TAccessibilityAgentBridgeMapDetail): TJSONObject;
     function BuildFormMap(aForm: TCustomForm; aIncludeAccessibility: Boolean; aVisibleOnly: Boolean;
@@ -107,6 +110,7 @@ type
     function ControlScreenRectFromSnapshot(aControl: TControl): TRect;
     function ExecuteClick(aRequest: TJSONObject): TJSONObject;
     function ExecuteControlInfo(aRequest: TJSONObject): TJSONObject;
+    function ExecuteControlResolve(aRequest: TJSONObject): TJSONObject;
     function ExecuteControlsInfo(aRequest: TJSONObject): TJSONObject;
     function ExecuteFocus(aRequest: TJSONObject): TJSONObject;
     function ExecuteFormMap(aRequest: TJSONObject): TJSONObject;
@@ -119,12 +123,16 @@ type
     function ExecuteSetText(aRequest: TJSONObject; aAppend: Boolean): TJSONObject;
     function ExecuteWindowInfo(aRequest: TJSONObject): TJSONObject;
     function Failure(const aErrorCode: string; const aMessage: string): TJSONObject;
+    function FocusFailure(aControl: TControl; const aMessage: string): TJSONObject;
+    function FindControlByName(aOwner: TComponent; const aName: string): TControl;
+    function FindFormByName(const aName: string): TCustomForm;
     function FormSummaryJson(aForm: TCustomForm): TJSONObject;
     function HitControlAt(const aPoint: TPoint): TControl;
     procedure AddChildControls(aParent: TWinControl; const aParentRef: string; aDepth: Integer;
       const aParentClientOrigin: TPoint; var aContext: TAgentBridgeFormMapContext);
     procedure AddControlState(aJson: TJSONObject; aControl: TControl; const aTree: IAccessibilityScanTree;
       aRttiCache: TAgentBridgeRttiPropertyCache);
+    procedure AddControlResolutionContext(aJson: TJSONObject; aControl: TControl);
     procedure AddControlTargeting(aJson: TJSONObject; aControl: TControl; const aScreenRect: TRect;
       aFocusedHandle: HWND);
     procedure ClearSnapshot;
@@ -134,7 +142,8 @@ type
     function ResolveControl(aRequest: TJSONObject; out aControl: TControl): Boolean;
     function ResolveForm(aRequest: TJSONObject): TCustomForm;
     function SuccessCommand(const aCommand: string): TJSONObject;
-    function SuccessMutation: TJSONObject;
+    function SuccessMutation(const aCommand: string; const aSemantics: string;
+      aMayBlockSynchronously: Boolean = False): TJSONObject;
     function WindowInfoJson(aForm: TCustomForm): TJSONObject;
     procedure FocusWinControl(aControl: TWinControl);
   public
@@ -270,6 +279,19 @@ begin
   if lValue is TJSONArray then
   begin
     Exit(TJSONArray(lValue));
+  end;
+
+  Result := nil;
+end;
+
+function RequestObject(aRequest: TJSONObject; const aName: string): TJSONObject;
+var
+  lValue: TJSONValue;
+begin
+  lValue := aRequest.GetValue(aName);
+  if lValue is TJSONObject then
+  begin
+    Exit(TJSONObject(lValue));
   end;
 
   Result := nil;
@@ -1281,6 +1303,99 @@ begin
   AddNativeControlState(aJson, aControl, aRttiCache);
 end;
 
+function TAccessibilityAgentBridgeState.BuildControlAncestors(aControl: TControl): TJSONArray;
+var
+  lAncestor: TWinControl;
+  lAncestorJson: TJSONObject;
+  lWindowHandle: HWND;
+begin
+  Result := TJSONArray.Create;
+  lAncestor := aControl.Parent;
+  while lAncestor <> nil do
+  begin
+    lAncestorJson := TJSONObject.Create;
+    lAncestorJson.AddPair('name', lAncestor.Name);
+    lAncestorJson.AddPair('className', lAncestor.ClassName);
+    AddBool(lAncestorJson, 'visible', lAncestor.Visible);
+    AddBool(lAncestorJson, 'enabled', lAncestor.Enabled);
+    AddBool(lAncestorJson, 'canFocus', lAncestor.CanFocus);
+    lWindowHandle := 0;
+    if lAncestor.HandleAllocated then
+    begin
+      lWindowHandle := TAgentBridgeWinControlAccess(lAncestor).WindowHandle;
+    end;
+    AddUInt(lAncestorJson, 'handle', UInt64(NativeUInt(lWindowHandle))); //PALOFF WARN63 explicit handle-width conversion
+    Result.AddElement(lAncestorJson);
+    lAncestor := lAncestor.Parent;
+  end;
+end;
+
+function TAccessibilityAgentBridgeState.BuildControlTarget(aControl: TControl): TJSONObject;
+var
+  lFocusedHandle: HWND;
+  lRect: TRect;
+  lRef: string;
+begin
+  lRect := ControlScreenRect(aControl);
+  TAccessibilityDiagnostics.RecordAgentBridgeFocusProbe;
+  lFocusedHandle := GetFocus;
+  Result := ControlJson(aControl, '', 0, lRect, nil, abmdGeometry, lFocusedHandle, nil, lRef);
+  AddControlResolutionContext(Result, aControl);
+end;
+
+procedure TAccessibilityAgentBridgeState.AddControlResolutionContext(aJson: TJSONObject; aControl: TControl);
+var
+  lForm: TCustomForm;
+  lFormHandle: HWND;
+  lRootHandle: HWND;
+begin
+  if aControl is TCustomForm then
+  begin
+    lForm := TCustomForm(aControl);
+  end else begin
+    lForm := GetParentForm(aControl, False);
+  end;
+
+  lFormHandle := 0;
+  if (lForm <> nil) and lForm.HandleAllocated then
+  begin
+    lFormHandle := TAgentBridgeWinControlAccess(lForm).WindowHandle;
+  end;
+  lRootHandle := 0;
+  if lFormHandle <> 0 then
+  begin
+    lRootHandle := GetAncestor(lFormHandle, GA_ROOT);
+    if lRootHandle = 0 then
+    begin
+      lRootHandle := lFormHandle;
+    end;
+  end;
+
+  if lForm <> nil then
+  begin
+    aJson.AddPair('formName', lForm.Name);
+    aJson.AddPair('formClassName', lForm.ClassName);
+    AddBool(aJson, 'formVisible', lForm.Visible);
+    AddBool(aJson, 'formEnabled', lForm.Enabled);
+    AddBool(aJson, 'activeForm', Screen.ActiveCustomForm = lForm);
+    AddBool(aJson, 'mdiChild', TAgentBridgeFormAccess(lForm).FormStyle = fsMDIChild);
+    AddInt(aJson, 'pixelsPerInch', lForm.PixelsPerInch);
+  end else begin
+    aJson.AddPair('formName', '');
+    aJson.AddPair('formClassName', '');
+    AddBool(aJson, 'formVisible', False);
+    AddBool(aJson, 'formEnabled', False);
+    AddBool(aJson, 'activeForm', False);
+    AddBool(aJson, 'mdiChild', False);
+    AddInt(aJson, 'pixelsPerInch', 0);
+  end;
+  AddUInt(aJson, 'formHandle', UInt64(NativeUInt(lFormHandle))); //PALOFF WARN63 explicit handle-width conversion
+  AddUInt(aJson, 'rootHandle', UInt64(NativeUInt(lRootHandle))); //PALOFF WARN63 explicit handle-width conversion
+  AddBool(aJson, 'canFocus', (aControl is TWinControl) and TWinControl(aControl).CanFocus);
+  AddBool(aJson, 'valid', not (csDestroying in aControl.ComponentState) and (lForm <> nil));
+  aJson.AddPair('coordinateSpace', 'screen-physical-pixels');
+end;
+
 procedure TAccessibilityAgentBridgeState.AddControlTargeting(aJson: TJSONObject; aControl: TControl;
   const aScreenRect: TRect; aFocusedHandle: HWND);
 var
@@ -1648,6 +1763,9 @@ begin
   end else if lCommand = 'control.info' then
   begin
     Result := ExecuteControlInfo(aRequest);
+  end else if lCommand = 'control.resolve' then
+  begin
+    Result := ExecuteControlResolve(aRequest);
   end else if lCommand = 'controls.info' then
   begin
     Result := ExecuteControlsInfo(aRequest);
@@ -1709,7 +1827,7 @@ begin
   if lControl is TButton then
   begin
     TButton(lControl).Click;
-    Exit(SuccessMutation);
+    Exit(SuccessMutation('control.click', 'vcl-event-invocation', True));
   end;
 
   if not (lControl is TWinControl) then
@@ -1723,7 +1841,7 @@ begin
   lMouseParam := MakeLParam(Word(lPoint.X), Word(lPoint.Y)); //PALOFF STWA6 Win32 LPARAM packing
   lWinControl.Perform(WM_LBUTTONDOWN, MK_LBUTTON, lMouseParam);
   lWinControl.Perform(WM_LBUTTONUP, 0, lMouseParam);
-  Result := SuccessMutation;
+  Result := SuccessMutation('control.click', 'synthetic-vcl-mouse-messages', True);
 end;
 
 function TAccessibilityAgentBridgeState.ExecuteControlInfo(aRequest: TJSONObject): TJSONObject;
@@ -1737,6 +1855,65 @@ begin
 
   Result := BuildControlInfo(lControl, RequestBool(aRequest, 'includeAccessibility', False),
     RequestMapDetail(aRequest));
+end;
+
+function TAccessibilityAgentBridgeState.ExecuteControlResolve(aRequest: TJSONObject): TJSONObject;
+var
+  lControl: TControl;
+  lControlJson: TJSONObject;
+  lControlName: string;
+  lForm: TCustomForm;
+  lFormName: string;
+  lResponse: TJSONObject;
+  lSnapshotReplaced: Boolean;
+  lTarget: TJSONObject;
+begin
+  lSnapshotReplaced := False;
+  if not ResolveControl(aRequest, lControl) then
+  begin
+    lTarget := RequestObject(aRequest, 'target');
+    if lTarget = nil then
+    begin
+      Exit(Failure('invalid_request', 'control.resolve requires a current ref or target object.'));
+    end;
+
+    lFormName := RequestString(lTarget, 'formName');
+    lControlName := RequestString(lTarget, 'controlName');
+    if (lFormName = '') or (lControlName = '') then
+    begin
+      Exit(Failure('invalid_request', 'control.resolve target requires formName and controlName.'));
+    end;
+
+    lForm := FindFormByName(lFormName);
+    if lForm = nil then
+    begin
+      Exit(Failure('form_not_found', 'Requested form was not found: ' + lFormName));
+    end;
+
+    lControl := FindControlByName(lForm, lControlName);
+    if lControl = nil then
+    begin
+      Exit(Failure('control_not_found', 'Requested control was not found: ' + lControlName));
+    end;
+
+    ClearSnapshot;
+    Inc(fSnapshotId);
+    fForm := lForm;
+    lSnapshotReplaced := True;
+  end;
+
+  lControlJson := BuildControlTarget(lControl);
+
+  lResponse := TJSONObject.Create;
+  AddBool(lResponse, 'ok', True);
+  lResponse.AddPair('cmd', 'control.resolve');
+  AddInt(lResponse, 'protocolVersion', 1);
+  AddInt(lResponse, 'snapshotId', fSnapshotId);
+  lResponse.AddPair('refModel', 'snapshot');
+  AddBool(lResponse, 'snapshotReplaced', lSnapshotReplaced);
+  lResponse.AddPair('detail', 'target');
+  lResponse.AddPair('control', lControlJson);
+  Result := lResponse;
 end;
 
 function TAccessibilityAgentBridgeState.ExecuteControlsInfo(aRequest: TJSONObject): TJSONObject;
@@ -1766,9 +1943,21 @@ begin
   end;
 
   lWinControl := TWinControl(lControl); //PALOFF STWA6 guarded by is TWinControl
-  FocusWinControl(lWinControl);
+  if not lWinControl.CanFocus then
+  begin
+    Exit(FocusFailure(lControl, 'VCL reports that the control cannot receive focus in its current context.'));
+  end;
 
-  Result := SuccessMutation;
+  try
+    FocusWinControl(lWinControl);
+  except
+    on lError: Exception do
+    begin
+      Exit(FocusFailure(lControl, 'VCL focus failed: ' + lError.Message));
+    end;
+  end;
+
+  Result := SuccessMutation('control.focus', 'vcl-focus-request');
 end;
 
 function TAccessibilityAgentBridgeState.ExecuteFormMap(aRequest: TJSONObject): TJSONObject;
@@ -1904,7 +2093,7 @@ begin
     Exit(Failure('no_tab_target', 'No tab-stop controls were found.'));
   end;
 
-  Result := SuccessMutation;
+  Result := SuccessMutation('keyboard.tab', 'keyboard-equivalent-navigation');
 end;
 
 function TAccessibilityAgentBridgeState.ExecuteProviderHotspots: TJSONObject;
@@ -1956,7 +2145,12 @@ begin
     Exit(Failure('unsupported_control', 'Control does not expose a writable Text property.'));
   end;
 
-  Result := SuccessMutation;
+  if aAppend then
+  begin
+    Result := SuccessMutation('control.typeText', 'raw-property-assignment');
+  end else begin
+    Result := SuccessMutation('control.setText', 'raw-property-assignment');
+  end;
 end;
 
 function TAccessibilityAgentBridgeState.ExecuteWindowInfo(aRequest: TJSONObject): TJSONObject;
@@ -1981,6 +2175,61 @@ end;
 function TAccessibilityAgentBridgeState.Failure(const aErrorCode: string; const aMessage: string): TJSONObject;
 begin
   Result := FailureJson(aErrorCode, aMessage);
+end;
+
+function TAccessibilityAgentBridgeState.FocusFailure(aControl: TControl; const aMessage: string): TJSONObject;
+begin
+  Result := Failure('focus_failed', aMessage);
+  Result.AddPair('control', BuildControlTarget(aControl));
+  Result.AddPair('ancestors', BuildControlAncestors(aControl));
+  Result.AddPair('recommendedFallback',
+    'Activate rootHandle, resolve again, and use a guarded OS click only if the refreshed target is actionable.');
+end;
+
+function TAccessibilityAgentBridgeState.FindControlByName(aOwner: TComponent; const aName: string): TControl;
+var
+  i: Integer;
+  lComponent: TComponent;
+begin
+  Result := nil;
+  if aOwner = nil then
+  begin
+    Exit;
+  end;
+
+  if (aOwner is TControl) and SameText(aOwner.Name, aName) then
+  begin
+    Exit(TControl(aOwner));
+  end;
+
+  for i := 0 to Pred(aOwner.ComponentCount) do
+  begin
+    lComponent := aOwner.Components[i];
+    if (lComponent is TControl) and SameText(lComponent.Name, aName) then
+    begin
+      Exit(TControl(lComponent));
+    end;
+
+    Result := FindControlByName(lComponent, aName);
+    if Result <> nil then
+    begin
+      Exit;
+    end;
+  end;
+end;
+
+function TAccessibilityAgentBridgeState.FindFormByName(const aName: string): TCustomForm;
+var
+  i: Integer;
+begin
+  Result := nil;
+  for i := 0 to Pred(Screen.CustomFormCount) do
+  begin
+    if SameText(Screen.CustomForms[i].Name, aName) then
+    begin
+      Exit(Screen.CustomForms[i]);
+    end;
+  end;
 end;
 
 function TAccessibilityAgentBridgeState.FormSummaryJson(aForm: TCustomForm): TJSONObject;
@@ -2161,13 +2410,20 @@ begin
   Result := lResponse;
 end;
 
-function TAccessibilityAgentBridgeState.SuccessMutation: TJSONObject;
+function TAccessibilityAgentBridgeState.SuccessMutation(const aCommand: string; const aSemantics: string;
+  aMayBlockSynchronously: Boolean): TJSONObject;
 var
   lResponse: TJSONObject;
 begin
   lResponse := TJSONObject.Create;
   AddBool(lResponse, 'ok', True);
+  lResponse.AddPair('cmd', aCommand);
+  AddInt(lResponse, 'protocolVersion', 1);
   AddBool(lResponse, 'snapshotInvalidated', True);
+  lResponse.AddPair('mutationSemantics', aSemantics);
+  AddBool(lResponse, 'humanEquivalent', False);
+  AddBool(lResponse, 'userInputEventsGenerated', False);
+  AddBool(lResponse, 'mayBlockSynchronously', aMayBlockSynchronously);
   Result := lResponse;
 end;
 

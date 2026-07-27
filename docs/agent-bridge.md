@@ -99,6 +99,8 @@ The response includes `ok`, `protocolVersion`, `frameworkName`, `processId`, and
 {"cmd":"control.info","ref":"@a2"}
 {"cmd":"control.info","ref":"@a2","includeAccessibility":true}
 {"cmd":"controls.info","refs":["@a1","@a2","@a3"]}
+{"cmd":"control.resolve","target":{"formName":"MainForm","controlName":"SaveButton"},"detail":"target"}
+{"cmd":"control.resolve","ref":"@a2","detail":"target"}
 {"cmd":"hitTest","x":500,"y":300}
 ```
 
@@ -125,6 +127,8 @@ The desktop-control helper's `fast-map` command automatically tries the framewor
 Use `control.info` after a geometry map when automation needs details for only one or a few controls. It resolves a current snapshot `ref` and returns the same process-local targeting fields plus caption, value, hint, and native role-specific state for that control only. `includeAccessibility` defaults to `false` for this command, so the common enrichment path uses direct VCL/RTL reads and RTTI fallbacks without scanning the whole form. Set `includeAccessibility:true` only when validating accessible names or help text.
 
 Use `controls.info` after a geometry map when automation needs details for several known refs. It returns a `controls` array in request order and shares one focused-HWND read, one RTTI cache, and, when `includeAccessibility:true` is requested, one accessibility scan for the batch. The default remains `includeAccessibility:false`, so the fast path enriches selected controls through process-local VCL/RTL reads without UIA traversal.
+
+Use `control.resolve` when automation already knows a VCL form and control name and does not need a complete form map. An identity lookup replaces the current snapshot and returns one fresh ref; a current-ref lookup retains the snapshot. The target response includes form/control identity, HWND and root HWND, DPI, current screen rectangle and center point, direct visibility/enabled state, effective `canFocus`, active-form state, MDI-child state, and validity. Re-resolve after activation, movement, modal transitions, or any mutation before using coordinates.
 
 A UIA `TreeWalker` sample is still useful when validating what UIA exposes, but the node count is not the real cost. Even a small visible tree can trigger hundreds or thousands of client/provider boundary calls (`Navigate`, `GetPropertyValue`, `GetProviderOptions`, `GetRuntimeId`, and host-provider queries), plus helper process startup when the probe is launched from a one-shot script. Provider-hotspot elapsed ticks measure only our in-process callback work; if those ticks are tiny while the external sample is slow, the correct optimization is to bypass the UIA tree walk with `form.map`, `fast-semantic-map`, `provider.map`, or `win32-map --detail geometry`, not to micro-optimize Delphi property reads. If `fast-semantic-map` returns a slow cached UIA result, inspect `fallbackAttempts` before treating the result as the preferred path. When a UIA tree really must be sampled, start from the target HWND, cap branch breadth, and use the desktop-control helper's default cached `uia-map` path so .NET UIAutomation passes a `CacheRequest` into the TreeWalker child/sibling calls and reads common descendant properties from cache instead of reading `Current.Name`, `Current.ClassName`, and similar properties one by one in the traversal loop. Use `uia-map --plain` only when comparing or debugging the slower Python `uiautomation` traversal.
 
@@ -170,7 +174,13 @@ Supported mutation commands:
 {"cmd":"keyboard.tab"}
 ```
 
-Mutation responses include `snapshotInvalidated: true`. Automation should request a fresh `form.map` after a mutation before making coordinate-sensitive decisions.
+Mutation responses include `snapshotInvalidated: true`, `mutationSemantics`, `humanEquivalent`, `userInputEventsGenerated`, and `mayBlockSynchronously`. Automation should resolve again after a mutation before making coordinate-sensitive decisions.
+
+`control.setText` and the historically named `control.typeText` both report `mutationSemantics:"raw-property-assignment"`. The latter appends to the VCL `Text` property; neither command represents human typing or guarantees keyboard input events (`userInputEventsGenerated:false`). Use guarded operating-system input when normal key processing is part of the proof.
+
+`control.click` invokes VCL behavior synchronously and reports `mayBlockSynchronously:true`; do not use it to open a modal dialog on a pipe connection that must remain responsive. Use guarded operating-system input and discover the modal through a separate request instead. `keyboard.tab` performs keyboard-equivalent VCL navigation but does not synthesize a Tab key.
+
+A failed `control.focus` returns `focus_failed` with a fresh narrow `control` target, relevant `ancestors`, and a `recommendedFallback`. Treat it as a refusal: inspect disabled/hidden parent or form state, activate the reported root HWND, resolve again, and use a guarded OS click only when the refreshed target is actionable.
 
 Framework mutations are diagnostic helpers. End-to-end acceptance tests should still prefer real OS input for user actions, then use the bridge to cross-check coordinates, labels, focus state, and logs.
 

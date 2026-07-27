@@ -192,6 +192,246 @@ class WindowsDesktopControlTests(unittest.TestCase):
             helper.activate_hwnd = original_activate_hwnd
             helper.window_info = original_window_info
 
+    def test_semantic_control_actions_refresh_after_activation_and_dispatch_requested_pointer_action(self) -> None:
+        helper = load_helper_module()
+        requests = []
+        dispatched = []
+        responses = [
+            {
+                "ok": True,
+                "snapshotId": 10,
+                "control": {
+                    "ref": "@a0",
+                    "name": "ApplyButton",
+                    "className": "TButton",
+                    "formName": "MdiChildForm",
+                    "formHandle": 501,
+                    "rootHandle": 500,
+                    "visible": True,
+                    "enabled": True,
+                    "formVisible": True,
+                    "formEnabled": True,
+                    "valid": True,
+                    "screenRect": {"left": 10, "top": 20, "right": 50, "bottom": 40, "width": 40, "height": 20},
+                    "targetPoints": {"center": {"x": 30, "y": 30}},
+                },
+            },
+            {
+                "ok": True,
+                "snapshotId": 11,
+                "control": {
+                    "ref": "@a0",
+                    "name": "ApplyButton",
+                    "className": "TButton",
+                    "formName": "MdiChildForm",
+                    "formHandle": 501,
+                    "rootHandle": 500,
+                    "visible": True,
+                    "enabled": True,
+                    "formVisible": True,
+                    "formEnabled": True,
+                    "valid": True,
+                    "screenRect": {"left": 110, "top": 120, "right": 150, "bottom": 140, "width": 40, "height": 20},
+                    "targetPoints": {"center": {"x": 130, "y": 130}},
+                },
+            },
+        ]
+
+        class FakeUser32:
+            # Foreground ownership and real pointer dispatch are session-dependent and unsafe in this unit test.
+            @staticmethod
+            def GetForegroundWindow():
+                return helper.int_to_hwnd(500)
+
+        original_user32 = helper.user32
+        original_bridge_request = helper.bridge_request
+        original_activate_hwnd = helper.activate_hwnd
+        original_dispatch_pointer_action = helper.dispatch_pointer_action
+        original_window_info = helper.window_info
+        try:
+            helper.user32 = FakeUser32()
+            helper.bridge_request = (
+                lambda _pipe, request, _timeout: requests.append(json.loads(request)) or responses.pop(0)
+            )
+            helper.activate_hwnd = lambda hwnd, _timeout: helper.hwnd_to_int(hwnd) == 500
+            helper.window_info = lambda hwnd: {
+                "hwnd": helper.hwnd_to_int(hwnd),
+                "pid": 42,
+                "title": "KFZMeister",
+                "foreground": helper.hwnd_to_int(hwnd) == 500,
+            }
+            helper.dispatch_pointer_action = (
+                lambda action, point, button, count, down_ms: dispatched.append(
+                    (action, point.copy(), button, count, down_ms)
+                )
+            )
+            args = SimpleNamespace(
+                pipe_name="Bridge.42",
+                form_name="MdiChildForm",
+                control_name="ApplyButton",
+                ref=None,
+                timeout_ms=500,
+                down_ms=0,
+            )
+            output = StringIO()
+            with redirect_stdout(output):
+                result = helper.command_semantic_control_action(args, "double-click-control", "left", 2)
+
+            self.assertEqual(0, result)
+            self.assertEqual(2, len(requests))
+            self.assertEqual("control.resolve", requests[0]["cmd"])
+            self.assertEqual("MdiChildForm", requests[0]["target"]["formName"])
+            self.assertEqual("ApplyButton", requests[1]["target"]["controlName"])
+            self.assertEqual([("double-click-control", {"x": 130, "y": 130}, "left", 2, 0)], dispatched)
+            payload = json.loads(output.getvalue())
+            self.assertTrue(payload["ok"])
+            self.assertEqual(30, payload["before"]["targetPoint"]["x"])
+            self.assertEqual(130, payload["after"]["target"]["targetPoint"]["x"])
+            self.assertEqual(500, payload["action"]["activatedRoot"]["hwnd"])
+            self.assertTrue(payload["action"]["modalSafe"])
+            self.assertNotIn("screenRect", payload["action"])
+        finally:
+            helper.user32 = original_user32
+            helper.bridge_request = original_bridge_request
+            helper.activate_hwnd = original_activate_hwnd
+            helper.dispatch_pointer_action = original_dispatch_pointer_action
+            helper.window_info = original_window_info
+
+    def test_semantic_control_action_refuses_activation_stale_ref_and_changed_ownership_before_input(self) -> None:
+        helper = load_helper_module()
+        dispatched = []
+
+        def target_response(root_handle=500, form_name="MdiChildForm"):
+            return {
+                "ok": True,
+                "snapshotId": 1,
+                "control": {
+                    "ref": "@a0",
+                    "name": "ApplyButton",
+                    "className": "TButton",
+                    "formName": form_name,
+                    "formHandle": 501,
+                    "rootHandle": root_handle,
+                    "visible": True,
+                    "enabled": True,
+                    "formVisible": True,
+                    "formEnabled": True,
+                    "valid": True,
+                    "targetPoints": {"center": {"x": 30, "y": 30}},
+                },
+            }
+
+        foreground = [500]
+
+        class FakeUser32:
+            # Foreground ownership and real pointer dispatch are session-dependent and unsafe in this unit test.
+            @staticmethod
+            def GetForegroundWindow():
+                return helper.int_to_hwnd(foreground[0])
+
+        original_user32 = helper.user32
+        original_bridge_request = helper.bridge_request
+        original_activate_hwnd = helper.activate_hwnd
+        original_dispatch_pointer_action = helper.dispatch_pointer_action
+        original_window_info = helper.window_info
+        try:
+            helper.user32 = FakeUser32()
+            helper.window_info = lambda hwnd: {"hwnd": helper.hwnd_to_int(hwnd), "pid": 42, "title": "KFZMeister"}
+            helper.dispatch_pointer_action = lambda *items: dispatched.append(items)
+            args = SimpleNamespace(
+                pipe_name="Bridge.42",
+                form_name=None,
+                control_name=None,
+                ref="@a0",
+                timeout_ms=500,
+                down_ms=0,
+            )
+
+            cases = [
+                (False, 500, [target_response()], "foreground-activation-failed"),
+                (True, 500, [target_response(), {"ok": False, "errorCode": "stale_ref"}], "stale_ref"),
+                (True, 500, [target_response(), target_response(root_handle=600)], "target-ownership-changed"),
+                (
+                    True,
+                    500,
+                    [
+                        target_response(),
+                        {
+                            **target_response(),
+                            "control": {**target_response()["control"], "enabled": False},
+                        },
+                    ],
+                    "target-not-actionable",
+                ),
+                (True, 700, [target_response(), target_response()], "foreground-mismatch"),
+            ]
+            for activates, foreground_hwnd, responses, reason in cases:
+                with self.subTest(reason=reason):
+                    foreground[0] = foreground_hwnd
+                    helper.activate_hwnd = lambda _hwnd, _timeout, value=activates: value
+                    pending = list(responses)
+                    helper.bridge_request = lambda _pipe, _request, _timeout: pending.pop(0)
+                    output = StringIO()
+                    with redirect_stdout(output):
+                        result = helper.command_semantic_control_action(args, "click-control", "left", 1)
+                    self.assertEqual(2, result)
+                    self.assertEqual(reason, json.loads(output.getvalue())["reason"])
+                    self.assertEqual([], dispatched)
+        finally:
+            helper.user32 = original_user32
+            helper.bridge_request = original_bridge_request
+            helper.activate_hwnd = original_activate_hwnd
+            helper.dispatch_pointer_action = original_dispatch_pointer_action
+            helper.window_info = original_window_info
+
+    def test_semantic_control_commands_and_pointer_buttons_are_wired(self) -> None:
+        for command in ["move-to-control", "click-control", "double-click-control", "right-click-control"]:
+            with self.subTest(command=command):
+                result = self.run_helper(command, "--help")
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertIn("--pipe-name", result.stdout)
+                self.assertIn("--form-name", result.stdout)
+                self.assertIn("--control-name", result.stdout)
+                self.assertIn("--ref", result.stdout)
+
+        helper = load_helper_module()
+        calls = []
+
+        class FakeUser32:
+            # Real pointer input is unsafe in a unit test; this verifies the exact Win32 flag boundary.
+            @staticmethod
+            def SetCursorPos(x, y):
+                calls.append(("move", x, y))
+                return True
+
+            @staticmethod
+            def mouse_event(*args):
+                calls.append(("mouse", *args))
+
+        original_user32 = helper.user32
+        original_sleep = helper.time.sleep
+        try:
+            helper.user32 = FakeUser32()
+            helper.time.sleep = lambda _seconds: None
+            helper.dispatch_pointer_action("right-click-control", {"x": 7, "y": 9}, "right", 1, 0)
+            helper.dispatch_pointer_action("double-click-control", {"x": 11, "y": 13}, "left", 2, 0)
+        finally:
+            helper.user32 = original_user32
+            helper.time.sleep = original_sleep
+
+        mouse_flags = [call[1] for call in calls if call[0] == "mouse"]
+        self.assertEqual(
+            [
+                helper.MOUSEEVENTF_RIGHTDOWN,
+                helper.MOUSEEVENTF_RIGHTUP,
+                helper.MOUSEEVENTF_LEFTDOWN,
+                helper.MOUSEEVENTF_LEFTUP,
+                helper.MOUSEEVENTF_LEFTDOWN,
+                helper.MOUSEEVENTF_LEFTUP,
+            ],
+            mouse_flags,
+        )
+
     def test_send_input_structure_matches_win32_layout(self) -> None:
         helper = load_helper_module()
         expected_size = 40 if ctypes.sizeof(ctypes.c_void_p) == 8 else 28

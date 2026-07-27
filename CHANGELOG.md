@@ -5,6 +5,7 @@
 - Windows desktop-control input commands can now refuse mouse or keyboard input unless the expected foreground PID and/or HWND owns focus, returning the actual foreground window without dispatching input.
 - `activate-window` now resolves child and MDI-child HWNDs to their activatable top-level host and reports requested and activated window identities separately.
 - The agent bridge can now resolve one named VCL control without serializing a full form map, reports effective focus-failure context, and labels every diagnostic mutation with its actual VCL/input semantics.
+- Windows desktop control now offers guarded move, left-click, right-click, and double-click actions by VCL form/control identity or fresh bridge ref, with post-activation retargeting and concise refusal evidence.
 
 ## 2026-07-23
 ### Added

@@ -43,6 +43,8 @@ KEYEVENTF_EXTENDEDKEY = 0x0001
 KEYEVENTF_UNICODE = 0x0004
 MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
+MOUSEEVENTF_RIGHTDOWN = 0x0008
+MOUSEEVENTF_RIGHTUP = 0x0010
 PW_RENDERFULLCONTENT = 0x00000002
 SRCCOPY = 0x00CC0020
 SW_RESTORE = 9
@@ -484,6 +486,203 @@ def command_bridge_controls_info(args: argparse.Namespace) -> int:
         return 0 if result.get("ok") is not False else 2
     except Exception as exc:  # noqa: BLE001 - CLI boundary
         return fail(str(exc))
+
+
+def build_bridge_control_resolve_request(args: argparse.Namespace) -> str:
+    payload: dict[str, object] = {"cmd": "control.resolve", "detail": "target"}
+    if args.ref:
+        payload["ref"] = args.ref
+    else:
+        if not args.form_name or not args.control_name:
+            raise ValueError("Provide --ref or both --form-name and --control-name.")
+        payload["target"] = {"formName": args.form_name, "controlName": args.control_name}
+    return json.dumps(payload, separators=(",", ":"))
+
+
+def concise_control_target(response: dict[str, object]) -> dict[str, object]:
+    control = response.get("control")
+    if not isinstance(control, dict):
+        raise ValueError("Bridge response did not contain a control target.")
+    target_points = control.get("targetPoints")
+    center = target_points.get("center") if isinstance(target_points, dict) else None
+    return {
+        "snapshotId": response.get("snapshotId"),
+        "ref": control.get("ref"),
+        "name": control.get("name"),
+        "className": control.get("className"),
+        "formName": control.get("formName"),
+        "formHandle": control.get("formHandle"),
+        "rootHandle": control.get("rootHandle"),
+        "visible": control.get("visible"),
+        "enabled": control.get("enabled"),
+        "formVisible": control.get("formVisible"),
+        "formEnabled": control.get("formEnabled"),
+        "valid": control.get("valid"),
+        "targetPoint": center,
+    }
+
+
+def dispatch_pointer_action(
+    action: str,
+    point: dict[str, object],
+    button: str | None,
+    count: int,
+    down_ms: int,
+) -> None:
+    x = int(point["x"])
+    y = int(point["y"])
+    if not user32.SetCursorPos(x, y):
+        raise OSError(f"SetCursorPos failed: {ctypes.get_last_error()}")
+    if action == "move-to-control":
+        return
+    flags = {
+        "left": (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
+        "right": (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
+    }
+    if button not in flags:
+        raise ValueError(f"Unsupported mouse button: {button}")
+    down_flag, up_flag = flags[button]
+    for _index in range(count):
+        user32.mouse_event(down_flag, 0, 0, 0, 0)
+        time.sleep(max(0, down_ms) / 1000.0)
+        user32.mouse_event(up_flag, 0, 0, 0, 0)
+
+
+def command_semantic_control_action(
+    args: argparse.Namespace,
+    command_name: str,
+    button: str | None,
+    count: int,
+) -> int:
+    before: dict[str, object] | None = None
+    action: dict[str, object] = {"name": command_name, "modalSafe": True}
+    try:
+        request = build_bridge_control_resolve_request(args)
+        initial_response = bridge_request(args.pipe_name, request, args.timeout_ms)
+        if initial_response.get("ok") is not True:
+            return fail(
+                str(initial_response.get("message") or "Control resolution failed."),
+                2,
+                reason=str(initial_response.get("errorCode") or "control-resolve-failed"),
+                before=None,
+                action=action,
+                after={"response": initial_response},
+            )
+        before = concise_control_target(initial_response)
+        root_handle = int(before.get("rootHandle") or 0)
+        if root_handle == 0:
+            return fail(
+                "The resolved control has no activatable root HWND.",
+                2,
+                reason="missing-root-hwnd",
+                before=before,
+                action=action,
+                after=None,
+            )
+
+        root = window_info(int_to_hwnd(root_handle))
+        action["requestedRoot"] = root
+        if not activate_hwnd(int_to_hwnd(root_handle), args.timeout_ms):
+            return fail(
+                "The target root window could not be activated. Input was not sent.",
+                2,
+                reason="foreground-activation-failed",
+                before=before,
+                action=action,
+                after={"actualForeground": window_info(user32.GetForegroundWindow())},
+            )
+        root = window_info(int_to_hwnd(root_handle))
+        action["activatedRoot"] = root
+
+        refreshed_response = bridge_request(args.pipe_name, request, args.timeout_ms)
+        if refreshed_response.get("ok") is not True:
+            return fail(
+                str(refreshed_response.get("message") or "Control refresh failed."),
+                2,
+                reason=str(refreshed_response.get("errorCode") or "control-refresh-failed"),
+                before=before,
+                action=action,
+                after={"response": refreshed_response},
+            )
+        refreshed = concise_control_target(refreshed_response)
+        ownership_fields = ("name", "formName", "formHandle", "rootHandle")
+        if any(before.get(field) != refreshed.get(field) for field in ownership_fields):
+            return fail(
+                "The control changed form or root ownership after activation. Input was not sent.",
+                2,
+                reason="target-ownership-changed",
+                before=before,
+                action=action,
+                after={"target": refreshed},
+            )
+        actionability_fields = ("visible", "enabled", "formVisible", "formEnabled", "valid")
+        if not all(refreshed.get(field) is True for field in actionability_fields):
+            return fail(
+                "The refreshed control is not visible, enabled, and valid. Input was not sent.",
+                2,
+                reason="target-not-actionable",
+                before=before,
+                action=action,
+                after={"target": refreshed},
+            )
+        point = refreshed.get("targetPoint")
+        if not isinstance(point, dict) or "x" not in point or "y" not in point:
+            return fail(
+                "The refreshed control has no target point. Input was not sent.",
+                2,
+                reason="missing-target-point",
+                before=before,
+                action=action,
+                after={"target": refreshed},
+            )
+
+        actual_foreground = window_info(user32.GetForegroundWindow())
+        if (
+            int(actual_foreground.get("hwnd") or 0) != root_handle
+            or int(actual_foreground.get("pid") or 0) != int(root["pid"])
+        ):
+            return fail(
+                "Foreground ownership changed before dispatch. Input was not sent.",
+                2,
+                reason="foreground-mismatch",
+                before=before,
+                action=action,
+                after={"target": refreshed, "actualForeground": actual_foreground},
+            )
+
+        action.update({"button": button, "clickCount": count, "targetPoint": point})
+        dispatch_pointer_action(command_name, point, button, count, getattr(args, "down_ms", 40))
+        print_json(
+            {
+                "ok": True,
+                "command": command_name,
+                "before": before,
+                "action": action,
+                "after": {
+                    "target": refreshed,
+                    "actualForeground": window_info(user32.GetForegroundWindow()),
+                },
+            }
+        )
+        return 0
+    except Exception as exc:  # noqa: BLE001 - CLI boundary
+        return fail(str(exc), 2, reason="semantic-action-failed", before=before, action=action, after=None)
+
+
+def command_move_to_control(args: argparse.Namespace) -> int:
+    return command_semantic_control_action(args, "move-to-control", None, 0)
+
+
+def command_click_control(args: argparse.Namespace) -> int:
+    return command_semantic_control_action(args, "click-control", "left", 1)
+
+
+def command_double_click_control(args: argparse.Namespace) -> int:
+    return command_semantic_control_action(args, "double-click-control", "left", 2)
+
+
+def command_right_click_control(args: argparse.Namespace) -> int:
+    return command_semantic_control_action(args, "right-click-control", "right", 1)
 
 
 def hwnd_to_int(hwnd: object) -> int:
@@ -1572,6 +1771,16 @@ def add_foreground_guard_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--require-foreground-hwnd", type=int)
 
 
+def add_semantic_control_arguments(parser: argparse.ArgumentParser, include_down_ms: bool) -> None:
+    parser.add_argument("--pipe-name", required=True)
+    parser.add_argument("--form-name")
+    parser.add_argument("--control-name")
+    parser.add_argument("--ref")
+    parser.add_argument("--timeout-ms", type=int, default=3000)
+    if include_down_ms:
+        parser.add_argument("--down-ms", type=int, default=40)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Safe Windows desktop control helper.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1699,6 +1908,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--title-contains")
     p.add_argument("--timeout-ms", type=int, default=3000)
     p.set_defaults(func=command_activate_window)
+
+    p = sub.add_parser("move-to-control")
+    add_semantic_control_arguments(p, False)
+    p.set_defaults(func=command_move_to_control)
+
+    p = sub.add_parser("click-control")
+    add_semantic_control_arguments(p, True)
+    p.set_defaults(func=command_click_control)
+
+    p = sub.add_parser("double-click-control")
+    add_semantic_control_arguments(p, True)
+    p.set_defaults(func=command_double_click_control)
+
+    p = sub.add_parser("right-click-control")
+    add_semantic_control_arguments(p, True)
+    p.set_defaults(func=command_right_click_control)
 
     p = sub.add_parser("screenshot-window")
     p.add_argument("--hwnd", type=int)

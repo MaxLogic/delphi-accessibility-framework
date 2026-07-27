@@ -4,16 +4,20 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import ctypes
 from ctypes import wintypes
 import json
+import os
 from pathlib import Path
 import queue
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+import uuid
 import winsound
 
 
@@ -57,6 +61,9 @@ GA_ROOTOWNER = 3
 GW_HWNDNEXT = 2
 GW_OWNER = 4
 GW_CHILD = 5
+SYNCHRONIZE = 0x00100000
+WAIT_TIMEOUT = 0x00000102
+DEFAULT_SESSION_STATE_PATH = Path(tempfile.gettempdir()) / "maxlogic-windows-desktop-control-lease.json"
 
 VK_CODES = {
     "backspace": 0x08,
@@ -166,6 +173,12 @@ gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HGDIOBJ]
 gdi32.SelectObject.restype = wintypes.HGDIOBJ
 kernel32.GetCurrentThreadId.argtypes = []
 kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+kernel32.CloseHandle.restype = wintypes.BOOL
+kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+kernel32.OpenProcess.restype = wintypes.HANDLE
+kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+kernel32.WaitForSingleObject.restype = wintypes.DWORD
 user32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
 user32.AttachThreadInput.restype = wintypes.BOOL
 user32.BringWindowToTop.argtypes = [wintypes.HWND]
@@ -259,17 +272,21 @@ def elapsed_ms_since(started: float) -> float:
     return round((time.perf_counter() - started) * 1000.0, 3)
 
 
+def play_announcement(asset: str, dry_run: bool) -> dict[str, object]:
+    file_name, text, sleep_after = ANNOUNCEMENTS[asset]
+    path = ANNOUNCEMENT_DIR / file_name
+    if not path.exists():
+        raise FileNotFoundError(f"Announcement asset is missing: {path}")
+    if not dry_run:
+        winsound.PlaySound(str(path), winsound.SND_FILENAME)
+        if sleep_after > 0:
+            time.sleep(sleep_after)
+    return {"provider": "asset", "asset": asset, "path": str(path), "text": text}
+
+
 def command_announce(args: argparse.Namespace) -> int:
     try:
-        file_name, text, sleep_after = ANNOUNCEMENTS[args.asset]
-        path = ANNOUNCEMENT_DIR / file_name
-        if not path.exists():
-            return fail(f"Announcement asset is missing: {path}")
-        if not args.dry_run:
-            winsound.PlaySound(str(path), winsound.SND_FILENAME)
-            if sleep_after > 0:
-                time.sleep(sleep_after)
-        print_json({"ok": True, "provider": "asset", "asset": args.asset, "path": str(path), "text": text})
+        print_json({"ok": True, **play_announcement(args.asset, args.dry_run)})
         return 0
     except Exception as exc:  # noqa: BLE001 - CLI boundary
         return fail(str(exc), provider="asset")
@@ -283,6 +300,296 @@ def command_takeover(args: argparse.Namespace) -> int:
 def command_release(args: argparse.Namespace) -> int:
     args.asset = "release"
     return command_announce(args)
+
+
+def epoch_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def process_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if pid == os.getpid():
+        return True
+    handle = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+    if not handle:
+        return False
+    try:
+        return kernel32.WaitForSingleObject(handle, 0) == WAIT_TIMEOUT
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def session_state_path(args: argparse.Namespace) -> Path:
+    return Path(getattr(args, "state_path", None) or DEFAULT_SESSION_STATE_PATH).resolve()
+
+
+def session_lock_path(path: Path) -> Path:
+    return path.with_name(path.name + ".lock")
+
+
+@contextmanager
+def lock_session(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = session_lock_path(path)
+    deadline = time.monotonic() + 2.0
+    while True:
+        try:
+            descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(descriptor, str(os.getpid()).encode("ascii"))
+            os.close(descriptor)
+            break
+        except FileExistsError:
+            try:
+                owner_text = lock_path.read_text(encoding="ascii").strip()
+                if owner_text and not process_alive(int(owner_text)):
+                    lock_path.unlink()
+                    continue
+            except (FileNotFoundError, OSError, ValueError):
+                pass
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"Timed out waiting for foreground-session lock: {lock_path}")
+            time.sleep(0.01)
+    try:
+        yield
+    finally:
+        try:
+            lock_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def read_session(path: Path) -> dict[str, object] | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else None
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+
+
+def write_session(path: Path, value: dict[str, object]) -> None:
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    temporary.write_text(json.dumps(value, ensure_ascii=True), encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def append_session_event(path_text: object, event: str, session_id: str, **extra: object) -> None:
+    if not path_text:
+        return
+    path = Path(str(path_text)).resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"event": event, "sessionId": session_id, "atMs": epoch_ms(), **extra}
+    with path.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
+
+
+def spawn_session_watchdog(path: Path, session_id: str) -> int:
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "foreground-session",
+        "_watchdog",
+        "--session-id",
+        session_id,
+        "--state-path",
+        str(path),
+    ]
+    flags = (
+        getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        | getattr(subprocess, "DETACHED_PROCESS", 0)
+        | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    )
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=flags,
+        close_fds=True,
+    )
+    return process.pid
+
+
+def command_foreground_session_start(args: argparse.Namespace) -> int:
+    path = session_state_path(args)
+    ttl_ms = max(1, int(args.ttl_ms))
+    try:
+        with lock_session(path):
+            existing = read_session(path)
+            if existing is not None and (
+                int(existing.get("expiresAtMs") or 0) > epoch_ms()
+                and process_alive(int(existing.get("controllerPid") or 0))
+            ):
+                same_owner = (
+                    int(existing.get("targetPid") or 0) == args.target_pid
+                    and int(existing.get("targetHwnd") or 0) == args.target_hwnd
+                    and int(existing.get("controllerPid") or 0) == args.controller_pid
+                )
+                if not same_owner:
+                    return fail(
+                        "Another foreground session is active.",
+                        2,
+                        reason="session-active",
+                        activeSession=existing,
+                    )
+                print_json(
+                    {
+                        "ok": True,
+                        "action": "foreground-session-start",
+                        "sessionId": existing["sessionId"],
+                        "watchdogPid": existing.get("watchdogPid"),
+                        "expiresAtMs": existing["expiresAtMs"],
+                        "reused": True,
+                        "announcementPlayed": False,
+                    }
+                )
+                return 0
+
+            if existing is not None:
+                return fail(
+                    "The prior foreground session is awaiting watchdog release.",
+                    2,
+                    reason="session-release-pending",
+                    activeSession=existing,
+                )
+
+            session_id = uuid.uuid4().hex
+            state: dict[str, object] = {
+                "sessionId": session_id,
+                "targetPid": args.target_pid,
+                "targetHwnd": args.target_hwnd,
+                "controllerPid": args.controller_pid,
+                "expiresAtMs": epoch_ms() + ttl_ms,
+                "eventPath": str(Path(args.event_path).resolve()) if args.event_path else None,
+                "dryRun": bool(args.dry_run),
+            }
+            write_session(path, state)
+            watchdog_pid = spawn_session_watchdog(path, session_id)
+            state["watchdogPid"] = watchdog_pid
+            write_session(path, state)
+            append_session_event(state.get("eventPath"), "takeover", session_id)
+        announcement = play_announcement("takeover", args.dry_run)
+        print_json(
+            {
+                "ok": True,
+                "action": "foreground-session-start",
+                "sessionId": session_id,
+                "watchdogPid": watchdog_pid,
+                "expiresAtMs": state["expiresAtMs"],
+                "reused": False,
+                "announcementPlayed": True,
+                "announcement": announcement,
+            }
+        )
+        return 0
+    except Exception as exc:  # noqa: BLE001 - CLI boundary
+        return fail(str(exc), 2, reason="session-start-failed")
+
+
+def command_foreground_session_renew(args: argparse.Namespace) -> int:
+    path = session_state_path(args)
+    try:
+        with lock_session(path):
+            state = read_session(path)
+            if state is None:
+                return fail("No foreground session is active.", 2, reason="session-absent")
+            if state.get("sessionId") != args.session_id:
+                return fail("The foreground session ID does not match.", 2, reason="session-mismatch")
+            if int(state.get("expiresAtMs") or 0) <= epoch_ms():
+                return fail("The foreground session has expired.", 2, reason="session-expired")
+            if not process_alive(int(state.get("controllerPid") or 0)):
+                return fail("The foreground session controller has exited.", 2, reason="session-controller-exited")
+            state["expiresAtMs"] = epoch_ms() + max(1, int(args.ttl_ms))
+            write_session(path, state)
+        print_json(
+            {
+                "ok": True,
+                "action": "foreground-session-renew",
+                "sessionId": args.session_id,
+                "expiresAtMs": state["expiresAtMs"],
+            }
+        )
+        return 0
+    except Exception as exc:  # noqa: BLE001 - CLI boundary
+        return fail(str(exc), 2, reason="session-renew-failed")
+
+
+def command_foreground_session_release(args: argparse.Namespace) -> int:
+    path = session_state_path(args)
+    try:
+        with lock_session(path):
+            state = read_session(path)
+            if state is None:
+                print_json(
+                    {
+                        "ok": True,
+                        "action": "foreground-session-release",
+                        "sessionId": args.session_id,
+                        "alreadyReleased": True,
+                        "announcementPlayed": False,
+                    }
+                )
+                return 0
+            if state.get("sessionId") != args.session_id:
+                return fail("The foreground session ID does not match.", 2, reason="session-mismatch")
+            path.unlink()
+            event_path = args.event_path or state.get("eventPath")
+            append_session_event(event_path, "release", args.session_id, reason="normal")
+        announcement = play_announcement("release", bool(state.get("dryRun")))
+        print_json(
+            {
+                "ok": True,
+                "action": "foreground-session-release",
+                "sessionId": args.session_id,
+                "alreadyReleased": False,
+                "announcementPlayed": True,
+                "announcement": announcement,
+            }
+        )
+        return 0
+    except Exception as exc:  # noqa: BLE001 - CLI boundary
+        return fail(str(exc), 2, reason="session-release-failed")
+
+
+def command_foreground_session_status(args: argparse.Namespace) -> int:
+    path = session_state_path(args)
+    state = read_session(path)
+    active = bool(
+        state is not None
+        and int(state.get("expiresAtMs") or 0) > epoch_ms()
+        and process_alive(int(state.get("controllerPid") or 0))
+    )
+    print_json({"ok": True, "action": "foreground-session-status", "active": active, "lease": state})
+    return 0
+
+
+def command_foreground_session_watchdog(args: argparse.Namespace) -> int:
+    path = session_state_path(args)
+    while True:
+        state = read_session(path)
+        if state is None or state.get("sessionId") != args.session_id:
+            return 0
+        expired = int(state.get("expiresAtMs") or 0) <= epoch_ms()
+        controller_exited = not process_alive(int(state.get("controllerPid") or 0))
+        if not expired and not controller_exited:
+            time.sleep(0.05)
+            continue
+        with lock_session(path):
+            state = read_session(path)
+            if state is None or state.get("sessionId") != args.session_id:
+                return 0
+            expired = int(state.get("expiresAtMs") or 0) <= epoch_ms()
+            controller_exited = not process_alive(int(state.get("controllerPid") or 0))
+            if not expired and not controller_exited:
+                continue
+            path.unlink()
+            reason = "controller-exited" if controller_exited else "expired"
+            append_session_event(state.get("eventPath"), "release", args.session_id, reason=reason)
+        try:
+            play_announcement("release", bool(state.get("dryRun")))
+        except Exception:
+            return 1
+        return 0
 
 
 def normalize_pipe_path(pipe_name: str) -> str:
@@ -668,6 +975,9 @@ def command_semantic_control_action(
                 after={"target": refreshed, "actualForeground": actual_foreground},
             )
 
+        guard_result = guard_real_input(args)
+        if guard_result is not None:
+            return guard_result
         action.update({"button": button, "clickCount": count, "targetPoint": point})
         dispatch_pointer_action(command_name, point, button, count, getattr(args, "down_ms", 40))
         print_json(
@@ -680,6 +990,7 @@ def command_semantic_control_action(
                     "target": refreshed,
                     "actualForeground": window_info(user32.GetForegroundWindow()),
                 },
+                **foreground_session_evidence(args),
             }
         )
         return 0
@@ -1561,6 +1872,27 @@ def command_screenshot_window(args: argparse.Namespace) -> int:
 def guard_real_input(args: argparse.Namespace) -> int | None:
     required_pid = getattr(args, "require_foreground_pid", None)
     required_hwnd = getattr(args, "require_foreground_hwnd", None)
+    session_id = getattr(args, "session_id", None)
+    session: dict[str, object] | None = None
+    if session_id:
+        session = read_session(session_state_path(args))
+        if session is None:
+            return fail("No foreground session is active. Input was not sent.", 2, reason="session-absent")
+        if session.get("sessionId") != session_id:
+            return fail("The foreground session ID does not match. Input was not sent.", 2, reason="session-mismatch")
+        if int(session.get("expiresAtMs") or 0) <= epoch_ms():
+            return fail("The foreground session has expired. Input was not sent.", 2, reason="session-expired")
+        if not process_alive(int(session.get("controllerPid") or 0)):
+            return fail("The foreground session controller has exited. Input was not sent.", 2, reason="session-controller-exited")
+        session_pid = int(session.get("targetPid") or 0)
+        session_hwnd = int(session.get("targetHwnd") or 0)
+        if required_pid is not None and required_pid != session_pid:
+            return fail("The required PID does not match the foreground session. Input was not sent.", 2, reason="session-pid-mismatch")
+        if required_hwnd is not None and required_hwnd != session_hwnd:
+            return fail("The required HWND does not match the foreground session. Input was not sent.", 2, reason="session-hwnd-mismatch")
+        required_pid = session_pid
+        required_hwnd = session_hwnd
+
     if required_pid is None and required_hwnd is None:
         return None
 
@@ -1576,8 +1908,21 @@ def guard_real_input(args: argparse.Namespace) -> int | None:
             requiredForegroundPid=required_pid,
             requiredForegroundHwnd=required_hwnd,
             actualForeground=actual,
+            sessionId=session_id,
         )
+    if session is not None:
+        args._active_foreground_session = {
+            "sessionId": session["sessionId"],
+            "targetPid": session["targetPid"],
+            "targetHwnd": session["targetHwnd"],
+            "expiresAtMs": session["expiresAtMs"],
+        }
     return None
+
+
+def foreground_session_evidence(args: argparse.Namespace) -> dict[str, object]:
+    session = getattr(args, "_active_foreground_session", None)
+    return {"foregroundSession": session} if session is not None else {}
 
 
 def move_cursor(x: int, y: int, duration_ms: int) -> None:
@@ -1625,7 +1970,16 @@ def command_move(args: argparse.Namespace) -> int:
     try:
         duration_ms = getattr(args, "duration_ms", 0)
         move_cursor(int(args.x), int(args.y), duration_ms)
-        print_json({"ok": True, "action": "move", "x": args.x, "y": args.y, "durationMs": duration_ms})
+        print_json(
+            {
+                "ok": True,
+                "action": "move",
+                "x": args.x,
+                "y": args.y,
+                "durationMs": duration_ms,
+                **foreground_session_evidence(args),
+            }
+        )
         return 0
     except Exception as exc:  # noqa: BLE001 - CLI boundary
         return fail(str(exc))
@@ -1655,6 +2009,7 @@ def command_click(args: argparse.Namespace) -> int:
                 "y": args.y,
                 "button": button,
                 "count": count,
+                **foreground_session_evidence(args),
             }
         )
         return 0
@@ -1745,7 +2100,7 @@ def command_press(args: argparse.Namespace) -> int:
     try:
         key = args.key.lower()
         send_key_chord([virtual_key_for_name(key)], args.down_ms)
-        print_json({"ok": True, "action": "press", "key": key})
+        print_json({"ok": True, "action": "press", "key": key, **foreground_session_evidence(args)})
         return 0
     except Exception as exc:  # noqa: BLE001 - CLI boundary
         return fail(str(exc))
@@ -1758,7 +2113,7 @@ def command_tab(args: argparse.Namespace) -> int:
     try:
         keys = [VK_CODES["shift"], VK_CODES["tab"]] if args.shift else [VK_CODES["tab"]]
         send_key_chord(keys, 0)
-        print_json({"ok": True, "action": "tab", "shift": args.shift})
+        print_json({"ok": True, "action": "tab", "shift": args.shift, **foreground_session_evidence(args)})
         return 0
     except Exception as exc:  # noqa: BLE001 - CLI boundary
         return fail(str(exc))
@@ -1770,7 +2125,9 @@ def command_type_text(args: argparse.Namespace) -> int:
         return guard_result
     try:
         type_unicode_text(args.text, args.delay_ms)
-        print_json({"ok": True, "action": "type-text", "length": len(args.text)})
+        print_json(
+            {"ok": True, "action": "type-text", "length": len(args.text), **foreground_session_evidence(args)}
+        )
         return 0
     except Exception as exc:  # noqa: BLE001 - CLI boundary
         return fail(str(exc))
@@ -1790,6 +2147,7 @@ def command_key_chord(args: argparse.Namespace) -> int:
                 "keys": args.keys,
                 "humanEquivalent": True,
                 "userInputEventsGenerated": True,
+                **foreground_session_evidence(args),
             }
         )
         return 0
@@ -1813,6 +2171,7 @@ def command_clear_and_type(args: argparse.Namespace) -> int:
                 "mutationSemantics": "os-keyboard-input",
                 "humanEquivalent": True,
                 "userInputEventsGenerated": True,
+                **foreground_session_evidence(args),
             }
         )
         return 0
@@ -2191,6 +2550,8 @@ def command_uia_map(args: argparse.Namespace) -> int:
 def add_foreground_guard_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--require-foreground-pid", type=int)
     parser.add_argument("--require-foreground-hwnd", type=int)
+    parser.add_argument("--session-id")
+    parser.add_argument("--session-state-path", dest="state_path")
 
 
 def add_semantic_control_arguments(parser: argparse.ArgumentParser, include_down_ms: bool) -> None:
@@ -2199,6 +2560,7 @@ def add_semantic_control_arguments(parser: argparse.ArgumentParser, include_down
     parser.add_argument("--control-name")
     parser.add_argument("--ref")
     parser.add_argument("--timeout-ms", type=int, default=3000)
+    add_foreground_guard_arguments(parser)
     if include_down_ms:
         parser.add_argument("--down-ms", type=int, default=40)
 
@@ -2233,6 +2595,41 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("release")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=command_release)
+
+    p = sub.add_parser("foreground-session")
+    session_sub = p.add_subparsers(dest="session_command", required=True)
+
+    session = session_sub.add_parser("start")
+    session.add_argument("--target-pid", type=int, required=True)
+    session.add_argument("--target-hwnd", type=int, required=True)
+    session.add_argument("--controller-pid", type=int, required=True)
+    session.add_argument("--ttl-ms", type=int, default=30000)
+    session.add_argument("--state-path")
+    session.add_argument("--event-path")
+    session.add_argument("--dry-run", action="store_true")
+    session.set_defaults(func=command_foreground_session_start)
+
+    session = session_sub.add_parser("renew")
+    session.add_argument("--session-id", required=True)
+    session.add_argument("--ttl-ms", type=int, default=30000)
+    session.add_argument("--state-path")
+    session.set_defaults(func=command_foreground_session_renew)
+
+    session = session_sub.add_parser("release")
+    session.add_argument("--session-id", required=True)
+    session.add_argument("--state-path")
+    session.add_argument("--event-path")
+    session.add_argument("--dry-run", action="store_true")
+    session.set_defaults(func=command_foreground_session_release)
+
+    session = session_sub.add_parser("status")
+    session.add_argument("--state-path")
+    session.set_defaults(func=command_foreground_session_status)
+
+    session = session_sub.add_parser("_watchdog", help=argparse.SUPPRESS)
+    session.add_argument("--session-id", required=True)
+    session.add_argument("--state-path")
+    session.set_defaults(func=command_foreground_session_watchdog)
 
     p = sub.add_parser("bridge-request")
     p.add_argument("--pipe-name", required=True)

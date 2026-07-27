@@ -882,6 +882,246 @@ class WindowsDesktopControlTests(unittest.TestCase):
         self.assertIn("--button", result.stdout)
         self.assertIn("--count", result.stdout)
 
+    def test_foreground_session_start_renew_release_is_idempotent_and_announces_once(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "lease.json"
+            event_path = Path(directory) / "events.jsonl"
+            start_args = [
+                "foreground-session",
+                "start",
+                "--target-pid",
+                str(os.getpid()),
+                "--target-hwnd",
+                "500",
+                "--controller-pid",
+                str(os.getpid()),
+                "--ttl-ms",
+                "2000",
+                "--state-path",
+                str(state_path),
+                "--event-path",
+                str(event_path),
+                "--dry-run",
+            ]
+            started = self.run_helper(*start_args)
+            self.assertEqual(0, started.returncode, started.stderr)
+            start_payload = json.loads(started.stdout)
+            session_id = start_payload["sessionId"]
+            watchdog_pid = start_payload["watchdogPid"]
+
+            duplicate = self.run_helper(*start_args)
+            self.assertEqual(0, duplicate.returncode, duplicate.stderr)
+            duplicate_payload = json.loads(duplicate.stdout)
+            self.assertEqual(session_id, duplicate_payload["sessionId"])
+            self.assertTrue(duplicate_payload["reused"])
+            self.assertFalse(duplicate_payload["announcementPlayed"])
+
+            renewed = self.run_helper(
+                "foreground-session",
+                "renew",
+                "--session-id",
+                session_id,
+                "--ttl-ms",
+                "3000",
+                "--state-path",
+                str(state_path),
+            )
+            self.assertEqual(0, renewed.returncode, renewed.stderr)
+            self.assertTrue(json.loads(renewed.stdout)["ok"])
+
+            released = self.run_helper(
+                "foreground-session",
+                "release",
+                "--session-id",
+                session_id,
+                "--state-path",
+                str(state_path),
+                "--event-path",
+                str(event_path),
+                "--dry-run",
+            )
+            self.assertEqual(0, released.returncode, released.stderr)
+            self.assertTrue(json.loads(released.stdout)["announcementPlayed"])
+            duplicate_release = self.run_helper(
+                "foreground-session",
+                "release",
+                "--session-id",
+                session_id,
+                "--state-path",
+                str(state_path),
+                "--event-path",
+                str(event_path),
+                "--dry-run",
+            )
+            self.assertEqual(0, duplicate_release.returncode, duplicate_release.stderr)
+            self.assertTrue(json.loads(duplicate_release.stdout)["alreadyReleased"])
+
+            events = [json.loads(line) for line in event_path.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(1, sum(event["event"] == "takeover" for event in events))
+            self.assertEqual(1, sum(event["event"] == "release" for event in events))
+
+            helper = load_helper_module()
+            deadline = helper.time.monotonic() + 2
+            while helper.process_alive(watchdog_pid) and helper.time.monotonic() < deadline:
+                helper.time.sleep(0.02)
+            self.assertFalse(helper.process_alive(watchdog_pid))
+
+    def test_foreground_session_watchdog_releases_expired_and_abandoned_leases(self) -> None:
+        helper = load_helper_module()
+        with tempfile.TemporaryDirectory() as directory:
+            for reason in ["expired", "controller-exited"]:
+                with self.subTest(reason=reason):
+                    state_path = Path(directory) / f"{reason}.json"
+                    event_path = Path(directory) / f"{reason}.jsonl"
+                    controller = None
+                    controller_pid = os.getpid()
+                    ttl_ms = 120
+                    if reason == "controller-exited":
+                        controller = subprocess.Popen(
+                            [sys.executable, "-c", "import time; time.sleep(30)"],
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                        )
+                        controller_pid = controller.pid
+                        ttl_ms = 5000
+                    started = self.run_helper(
+                        "foreground-session",
+                        "start",
+                        "--target-pid",
+                        str(os.getpid()),
+                        "--target-hwnd",
+                        "500",
+                        "--controller-pid",
+                        str(controller_pid),
+                        "--ttl-ms",
+                        str(ttl_ms),
+                        "--state-path",
+                        str(state_path),
+                        "--event-path",
+                        str(event_path),
+                        "--dry-run",
+                    )
+                    self.assertEqual(0, started.returncode, started.stderr)
+                    watchdog_pid = json.loads(started.stdout)["watchdogPid"]
+                    if controller is not None:
+                        controller.terminate()
+                        controller.wait(timeout=2)
+
+                    deadline = helper.time.monotonic() + 3
+                    while state_path.exists() and helper.time.monotonic() < deadline:
+                        helper.time.sleep(0.02)
+                    self.assertFalse(state_path.exists())
+                    events = [json.loads(line) for line in event_path.read_text(encoding="utf-8").splitlines()]
+                    releases = [event for event in events if event["event"] == "release"]
+                    self.assertEqual([reason], [event["reason"] for event in releases])
+                    while helper.process_alive(watchdog_pid) and helper.time.monotonic() < deadline:
+                        helper.time.sleep(0.02)
+                    self.assertFalse(helper.process_alive(watchdog_pid))
+
+    def test_foreground_session_guard_rejects_invalid_lease_and_reports_active_lease(self) -> None:
+        helper = load_helper_module()
+
+        class FakeUser32:
+            # Real foreground focus and cursor input are unsafe and nondeterministic in this unit test.
+            @staticmethod
+            def GetForegroundWindow():
+                return helper.int_to_hwnd(500)
+
+            @staticmethod
+            def SetCursorPos(_x, _y):
+                return True
+
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "lease.json"
+            session_id = "expected-session"
+            valid_state = {
+                "sessionId": session_id,
+                "targetPid": 42,
+                "targetHwnd": 500,
+                "controllerPid": os.getpid(),
+                "expiresAtMs": helper.epoch_ms() + 5000,
+            }
+            original_user32 = helper.user32
+            original_window_info = helper.window_info
+            try:
+                helper.user32 = FakeUser32()
+                helper.window_info = lambda _hwnd: {"hwnd": 500, "pid": 42, "title": "Target"}
+                cases = [
+                    (None, session_id, "session-absent"),
+                    (valid_state, "wrong-session", "session-mismatch"),
+                    ({**valid_state, "expiresAtMs": helper.epoch_ms() - 1}, session_id, "session-expired"),
+                    ({**valid_state, "targetPid": 43}, session_id, "foreground-mismatch"),
+                ]
+                for state, supplied_id, reason in cases:
+                    with self.subTest(reason=reason):
+                        if state is None:
+                            state_path.unlink(missing_ok=True)
+                        else:
+                            helper.write_session(state_path, state)
+                        args = SimpleNamespace(
+                            x=10,
+                            y=20,
+                            duration_ms=0,
+                            require_foreground_pid=None,
+                            require_foreground_hwnd=None,
+                            session_id=supplied_id,
+                            state_path=str(state_path),
+                        )
+                        output = StringIO()
+                        with redirect_stdout(output):
+                            result = helper.command_move(args)
+                        self.assertEqual(2, result)
+                        self.assertEqual(reason, json.loads(output.getvalue())["reason"])
+
+                helper.write_session(state_path, valid_state)
+                args.session_id = session_id
+                output = StringIO()
+                with redirect_stdout(output):
+                    result = helper.command_move(args)
+                self.assertEqual(0, result)
+                self.assertEqual(session_id, json.loads(output.getvalue())["foregroundSession"]["sessionId"])
+            finally:
+                helper.user32 = original_user32
+                helper.window_info = original_window_info
+
+    def test_foreground_session_recovers_lock_abandoned_by_dead_process(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "lease.json"
+            lock_path = state_path.with_name(state_path.name + ".lock")
+            controller = subprocess.Popen(
+                [sys.executable, "-c", "pass"],
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            controller.wait(timeout=2)
+            lock_path.write_text(str(controller.pid), encoding="ascii")
+
+            started = self.run_helper(
+                "foreground-session",
+                "start",
+                "--target-pid",
+                str(os.getpid()),
+                "--target-hwnd",
+                "500",
+                "--controller-pid",
+                str(os.getpid()),
+                "--ttl-ms",
+                "2000",
+                "--state-path",
+                str(state_path),
+                "--dry-run",
+            )
+            self.assertEqual(0, started.returncode, started.stderr)
+            payload = json.loads(started.stdout)
+            released = self.run_helper(
+                "foreground-session",
+                "release",
+                "--session-id",
+                payload["sessionId"],
+                "--state-path",
+                str(state_path),
+                "--dry-run",
+            )
+            self.assertEqual(0, released.returncode, released.stderr)
+
     def test_send_input_structure_matches_win32_layout(self) -> None:
         helper = load_helper_module()
         expected_size = 40 if ctypes.sizeof(ctypes.c_void_p) == 8 else 28

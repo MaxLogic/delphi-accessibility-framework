@@ -8,6 +8,7 @@
 - Windows desktop control now offers guarded move, left-click, right-click, and double-click actions by VCL form/control identity or fresh bridge ref, with post-activation retargeting and concise refusal evidence.
 - Windows desktop control now provides filtered bridge form/control and top-level window discovery plus deadline-bounded waits, including owner/root/z-order and likely-modal evidence without full control maps.
 - Windows desktop control now supports cleanup-safe key chords, common navigation/function keys, guarded clear-and-type, left/right/middle and double clicks, and optional visible-duration pointer movement.
+- Windows desktop control now supports bounded foreground leases with one takeover announcement, shared guarded actions, renewal, idempotent release, and an independent watchdog release when the lease expires or its controller exits.
 
 ## 2026-07-23
 ### Added

@@ -2254,6 +2254,11 @@ end;
 function TAccessibilityVclFormProviderRoot.DoGetPropertyValue(aPropertyId: PROPERTYID;
   out aValue: OleVariant): Boolean;
 begin
+  if aPropertyId = UIA_NamePropertyId then
+  begin
+    aValue := TAccessibilityText.Clean(fForm.Caption);
+    Exit(True);
+  end;
   if aPropertyId = UIA_HelpTextPropertyId then
   begin
     aValue := TAccessibilityTextExtractor.Extract(fForm).HelpText;
@@ -5961,7 +5966,6 @@ begin
   lTree := TAccessibilityScanner.ScanForm(aForm, lRegistry);
   lFormRoot := TAccessibilityVclFormProviderRoot.Create(aForm, lRegistry, aApi);
   Result := lFormRoot as IAccessibilityProviderNode;
-  Result.SetProperty(UIA_NamePropertyId, lTree.Root.Name);
   Result.SetProperty(UIA_ControlTypePropertyId, UIA_WindowControlTypeId);
   Result.SetProperty(UIA_ClassNamePropertyId, aForm.ClassName);
 

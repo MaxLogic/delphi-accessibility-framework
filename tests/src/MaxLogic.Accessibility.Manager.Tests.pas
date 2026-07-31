@@ -42,8 +42,8 @@ type
     [Test]
     procedure FormInstallIsScopedAndIdempotent;
     [Test]
-    [Category('AccessibilityManager,FormCaptionChangeUpdatesInstalledProviderAndRaisesNameEvents')]
-    procedure FormCaptionChangeUpdatesInstalledProviderAndRaisesNameEvents;
+    [Category('AccessibilityManager,FormCaptionChangeUsesLiveNameWithoutSupplementalEvents')]
+    procedure FormCaptionChangeUsesLiveNameWithoutSupplementalEvents;
     [Test]
     [Category('AccessibilityManager,WindowHandleRecreation')]
     procedure FormWindowRecreationRefreshesProviderHandleAndHostCache;
@@ -2584,7 +2584,7 @@ begin
   end;
 end;
 
-procedure TAccessibilityManagerTests.FormCaptionChangeUpdatesInstalledProviderAndRaisesNameEvents;
+procedure TAccessibilityManagerTests.FormCaptionChangeUsesLiveNameWithoutSupplementalEvents;
 var
   lApi: IManagerTestUiaApi;
   lDone: Boolean;
@@ -2620,37 +2620,29 @@ begin
 
     Assert.AreEqual('Running tasks',
       ProviderStringProperty(FragmentFromSimple(lProvider), UIA_NamePropertyId));
-    Assert.AreEqual(1, lApi.PropertyChangedCalls);
-    Assert.AreEqual(UIA_NamePropertyId, lApi.LastPropertyChangedPropertyId);
-    Assert.AreEqual('Paused tasks', string(lApi.LastPropertyChangedOldValue));
-    Assert.AreEqual('Running tasks', string(lApi.LastPropertyChangedNewValue));
-    Assert.IsTrue(lApi.LastPropertyChangedProvider = lProvider);
-    Assert.AreEqual(1, lWinEvents.Calls);
-    Assert.AreEqual(EVENT_OBJECT_NAMECHANGE, lWinEvents.LastEvent);
-    Assert.AreEqual(lForm.Handle, lWinEvents.LastHwnd);
-    Assert.AreEqual(Cardinal($FFFFFFFC), lWinEvents.LastObjectId);
-    Assert.AreEqual(Cardinal(CHILDID_SELF), lWinEvents.LastChildId);
+    Assert.AreEqual(0, lApi.PropertyChangedCalls);
+    Assert.AreEqual(0, lWinEvents.Calls);
     lDone := True;
     Application.OnIdle(Application, lDone);
-    Assert.AreEqual(1, lApi.PropertyChangedCalls);
-    Assert.AreEqual(1, lWinEvents.Calls);
+    Assert.AreEqual(0, lApi.PropertyChangedCalls);
+    Assert.AreEqual(0, lWinEvents.Calls);
 
     lForm.Caption := '&Running tasks';
-    Assert.AreEqual(1, lApi.PropertyChangedCalls);
-    Assert.AreEqual(1, lWinEvents.Calls);
+    Assert.AreEqual(0, lApi.PropertyChangedCalls);
+    Assert.AreEqual(0, lWinEvents.Calls);
 
     lForm.Caption := 'R&unning tasks';
     Assert.AreEqual('Running tasks',
       ProviderStringProperty(FragmentFromSimple(lProvider), UIA_NamePropertyId));
-    Assert.AreEqual(1, lApi.PropertyChangedCalls);
-    Assert.AreEqual(1, lWinEvents.Calls);
+    Assert.AreEqual(0, lApi.PropertyChangedCalls);
+    Assert.AreEqual(0, lWinEvents.Calls);
 
     TAccessibilityManager.Uninstall;
     Assert.AreEqual(UIA_E_ELEMENTNOTAVAILABLE,
       lProvider.GetPropertyValue(UIA_NamePropertyId, lValue));
     lForm.Caption := 'Stopped tasks';
-    Assert.AreEqual(1, lApi.PropertyChangedCalls);
-    Assert.AreEqual(1, lWinEvents.Calls);
+    Assert.AreEqual(0, lApi.PropertyChangedCalls);
+    Assert.AreEqual(0, lWinEvents.Calls);
   finally
     lForm.Free;
     ResetManager;

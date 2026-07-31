@@ -135,6 +135,7 @@ type
     fApi: IAccessibilityUiaApi;
     fChildHooks: TList<TAccessibilityControlWindowHook>;
     fChildHooksByControl: TDictionary<Pointer, TAccessibilityControlWindowHook>;
+    fDirtyProviders: TDictionary<Pointer, IRawElementProviderSimple>;
     fForm: TCustomForm;
     fHoverCache: THoverCache;
     fMsaaAccessible: IAccessible;
@@ -161,14 +162,15 @@ type
     procedure NotifyProviderWinEvent(const aProvider: IRawElementProviderSimple; aEvent: DWORD);
     procedure PruneRuntimeGridNames;
     procedure PruneRuntimePropertySnapshots(const aTree: IAccessibilityScanTree);
-    procedure ReconcileRuntimeHierarchy;
+    function ReconcileRuntimeHierarchy: Boolean;
     function Passivate: Boolean;
     procedure ReleaseChildHooks;
     procedure ReleaseObsoleteChildHooks;
     procedure RefreshRuntimeProperties(aPublishChanges: Boolean);
+    function RuntimeGridPropertiesChanged: Boolean;
+    procedure MarkRuntimePropertiesDirty(const aProvider: IRawElementProviderSimple);
     procedure SynchronizeProviderProperties(const aProvider: IRawElementProviderSimple; aIsRoot: Boolean;
-      aPublishChanges: Boolean);
-    procedure SynchronizeFormName;
+      aPublishChanges: Boolean; aRecurseChildren: Boolean);
     procedure SynchronizeRuntimeProperties;
   protected
     procedure Notification(aComponent: TComponent; aOperation: TOperation); override;
@@ -185,6 +187,7 @@ type
     fApi: IAccessibilityUiaApi;
     fControl: TWinControl;
     fControlKey: Pointer;
+    fFormHook: TAccessibilityFormWindowHook;
     fHasLastGridCell: Boolean;
     fHasLastListBoxIndex: Boolean;
     fHasLastRaisedProviderState: Boolean;
@@ -239,7 +242,7 @@ type
     class procedure ReleaseRetainedHooks; static;
     constructor Create(aControl: TWinControl; const aProvider: IRawElementProviderSimple;
       const aApi: IAccessibilityUiaApi; const aRootProvider: IRawElementProviderSimple;
-      aPreserveNativeWindowAccessibility: Boolean); reintroduce;
+      aPreserveNativeWindowAccessibility: Boolean; aFormHook: TAccessibilityFormWindowHook); reintroduce;
     destructor Destroy; override;
     procedure WindowProc(var aMessage: TMessage);
   end;
@@ -607,6 +610,17 @@ begin
     CM_CHANGED, CM_CONTROLCHANGE, CM_CONTROLLISTCHANGE, CM_ENABLEDCHANGED, CM_ENTER, CM_EXIT, CM_FOCUSCHANGED,
     CM_SHOWINGCHANGED, CM_TEXTCHANGED, CM_VISIBLECHANGED, WM_ENABLE, WM_KILLFOCUS, WM_MOVE, WM_SETFOCUS,
     WM_SETTEXT, WM_SHOWWINDOW, WM_SIZE, WM_WINDOWPOSCHANGED:
+      Result := True;
+  else
+    Result := False;
+  end;
+end;
+
+function RuntimePropertyDirtyingMessage(aMessageId: Cardinal): Boolean;
+begin
+  case aMessageId of
+    CM_ENABLEDCHANGED, CM_SHOWINGCHANGED, CM_TEXTCHANGED, CM_VISIBLECHANGED,
+    WM_ENABLE, WM_MOVE, WM_SETTEXT, WM_SHOWWINDOW, WM_SIZE, WM_WINDOWPOSCHANGED:
       Result := True;
   else
     Result := False;
@@ -1775,6 +1789,7 @@ begin
   fApi := aApi;
   fChildHooks := TList<TAccessibilityControlWindowHook>.Create;
   fChildHooksByControl := TDictionary<Pointer, TAccessibilityControlWindowHook>.Create;
+  fDirtyProviders := TDictionary<Pointer, IRawElementProviderSimple>.Create;
   fForm := aForm;
   fProvider := aProvider;
   fRuntimeGridNames := TDictionary<IUnknown, string>.Create;
@@ -1807,6 +1822,7 @@ begin
   fRuntimeProperties.Free;
   fRuntimeGridVisited.Free;
   fRuntimeGridNames.Free;
+  fDirtyProviders.Free;
   fChildHooksByControl.Free;
   fChildHooks.Free;
   inherited Destroy;
@@ -1885,7 +1901,7 @@ begin
   end;
 
   lHook := TAccessibilityControlWindowHook.Create(aControl, aProvider, fApi, fProvider.RawElementProvider,
-    aPreserveNativeWindowAccessibility);
+    aPreserveNativeWindowAccessibility, Self);
   fChildHooks.Add(lHook);
   fChildHooksByControl.AddOrSetValue(lHook.fControlKey, lHook);
 end;
@@ -2159,41 +2175,6 @@ begin
   end;
 end;
 
-procedure TAccessibilityFormWindowHook.SynchronizeFormName;
-var
-  lHwnd: HWND;
-  lNewName: string;
-  lOldName: string;
-  lRawProvider: IRawElementProviderSimple;
-begin
-  if fPassive or (fForm = nil) or (fProvider = nil) or fProvider.IsDisconnected then
-  begin
-    Exit;
-  end;
-
-  lRawProvider := fProvider.RawElementProvider;
-  lOldName := ProviderName(lRawProvider);
-  lNewName := TAccessibilityText.Clean(fForm.Caption);
-  if lOldName = lNewName then
-  begin
-    Exit;
-  end;
-
-  lHwnd := 0;
-  if fForm.HandleAllocated then
-  begin
-    lHwnd := fForm.Handle;
-  end;
-  fProvider.SetProperty(UIA_NamePropertyId, lNewName);
-  TAccessibilityProviderEvents.RaiseAutomationPropertyChanged(
-    lRawProvider, UIA_NamePropertyId,
-    lOldName, lNewName, fApi); //PALOFF event delivery is best effort
-  if lHwnd <> 0 then
-  begin
-    NotifyAccessibilityWinEvent(EVENT_OBJECT_NAMECHANGE, lHwnd, cMsaaObjIdClient, CHILDID_SELF);
-  end;
-end;
-
 function SameUiaRect(const aLeft: UiaRect; const aRight: UiaRect): Boolean;
 begin
   Result := (aLeft.Left = aRight.Left) and (aLeft.Top = aRight.Top) and
@@ -2347,12 +2328,33 @@ begin
   end;
 end;
 
-procedure TAccessibilityFormWindowHook.ReconcileRuntimeHierarchy;
+procedure TAccessibilityFormWindowHook.MarkRuntimePropertiesDirty(
+  const aProvider: IRawElementProviderSimple);
+var
+  lControlInfo: IAccessibilityVclControlProviderInfo;
+  lKey: Pointer;
+begin
+  if fPassive or (aProvider = nil) then
+  begin
+    Exit;
+  end;
+
+  lKey := Pointer(fForm);
+  if Supports(aProvider, IAccessibilityVclControlProviderInfo, lControlInfo) and
+    (lControlInfo.Control <> nil) then
+  begin
+    lKey := Pointer(lControlInfo.Control);
+  end;
+  fDirtyProviders.AddOrSetValue(lKey, aProvider);
+end;
+
+function TAccessibilityFormWindowHook.ReconcileRuntimeHierarchy: Boolean;
 var
   lRevision: Integer;
   lRuntime: IAccessibilityVclProviderRuntimeInternal;
   lTree: IAccessibilityScanTree;
 begin
+  Result := False;
   if (fObservedScan = nil) or (fProvider = nil) or fProvider.IsDisconnected or
     not Supports(fProvider, IAccessibilityVclProviderRuntimeInternal, lRuntime) then
   begin
@@ -2365,6 +2367,7 @@ begin
     Exit;
   end;
 
+  Result := True;
   lTree := fObservedScan.Tree;
   if lRuntime.ReconcileProviderHierarchy(lTree) then
   begin
@@ -2396,7 +2399,7 @@ begin
   end;
   try
     fRuntimeGridVisited.Clear;
-    SynchronizeProviderProperties(fProvider.RawElementProvider, True, aPublishChanges);
+    SynchronizeProviderProperties(fProvider.RawElementProvider, True, aPublishChanges, True);
     PruneRuntimeGridNames;
   finally
     if aPublishChanges then
@@ -2407,7 +2410,8 @@ begin
 end;
 
 procedure TAccessibilityFormWindowHook.SynchronizeProviderProperties(
-  const aProvider: IRawElementProviderSimple; aIsRoot: Boolean; aPublishChanges: Boolean);
+  const aProvider: IRawElementProviderSimple; aIsRoot: Boolean; aPublishChanges: Boolean;
+  aRecurseChildren: Boolean);
 var
   i: Integer;
   lChild: IRawElementProviderSimple;
@@ -2580,7 +2584,7 @@ begin
   end;
   fRuntimeProperties.AddOrSetValue(Pointer(lObject), lNewSnapshot);
 
-  if not Supports(aProvider, IAccessibilityProviderChildAccess, lChildAccess) or
+  if not aRecurseChildren or not Supports(aProvider, IAccessibilityProviderChildAccess, lChildAccess) or
     (lChildAccess.DirectChildCount(lChildCount) <> S_OK) then
   begin
     Exit;
@@ -2591,14 +2595,89 @@ begin
     lChild := nil;
     if lChildAccess.DirectChildAt(i, lChild) = S_OK then
     begin
-      SynchronizeProviderProperties(lChild, False, aPublishChanges);
+      SynchronizeProviderProperties(lChild, False, aPublishChanges, True);
     end;
   end;
 end;
 
-procedure TAccessibilityFormWindowHook.SynchronizeRuntimeProperties;
+function TAccessibilityFormWindowHook.RuntimeGridPropertiesChanged: Boolean;
+var
+  lColumnCount: Integer;
+  lDirectAccess: IAccessibilityProviderDirectAccess;
+  lGridPattern: IGridProvider;
+  lIdentity: IUnknown;
+  lName: string;
+  lProvider: IRawElementProviderSimple;
+  lRowCount: Integer;
+  lSnapshot: TRuntimeProviderSnapshot;
 begin
-  RefreshRuntimeProperties(True);
+  for lIdentity in fRuntimeGridNames.Keys do
+  begin
+    if not Supports(lIdentity, IRawElementProviderSimple, lProvider) or
+      not Supports(lProvider, IAccessibilityProviderDirectAccess, lDirectAccess) or
+      not lDirectAccess.TryGetStringProperty(UIA_NamePropertyId, lName) or
+      (lName <> fRuntimeGridNames[lIdentity]) then
+    begin
+      Exit(True);
+    end;
+  end;
+
+  for lSnapshot in fRuntimeProperties.Values do
+  begin
+    if not lSnapshot.HasGridShape then
+    begin
+      Continue;
+    end;
+    if not Supports(lSnapshot.Provider, IGridProvider, lGridPattern) or
+      (lGridPattern.Get_ColumnCount(lColumnCount) <> S_OK) or
+      (lGridPattern.Get_RowCount(lRowCount) <> S_OK) or
+      (lColumnCount <> lSnapshot.ColumnCount) or (lRowCount <> lSnapshot.RowCount) then
+    begin
+      Exit(True);
+    end;
+  end;
+  Result := False;
+end;
+
+procedure TAccessibilityFormWindowHook.SynchronizeRuntimeProperties;
+var
+  lProvider: IRawElementProviderSimple;
+  lProviders: TArray<IRawElementProviderSimple>;
+begin
+  if fPassive or (fProvider = nil) or fProvider.IsDisconnected then
+  begin
+    Exit;
+  end;
+
+  if ReconcileRuntimeHierarchy then
+  begin
+    fDirtyProviders.Clear;
+    RefreshRuntimeProperties(True);
+    Exit;
+  end;
+  if RuntimeGridPropertiesChanged then
+  begin
+    fDirtyProviders.Clear;
+    RefreshRuntimeProperties(True);
+    Exit;
+  end;
+  if fDirtyProviders.Count = 0 then
+  begin
+    Exit;
+  end;
+
+  lProviders := fDirtyProviders.Values.ToArray;
+  fDirtyProviders.Clear;
+  TAccessibilityProviderEvents.BeginEventBatch;
+  try
+    for lProvider in lProviders do
+    begin
+      SynchronizeProviderProperties(lProvider,
+        ProvidersAreSame(lProvider, fProvider.RawElementProvider), True, ProviderIsGrid(lProvider));
+    end;
+  finally
+    TAccessibilityProviderEvents.EndEventBatch;
+  end;
 end;
 
 procedure TAccessibilityFormWindowHook.WindowProc(var aMessage: TMessage);
@@ -2608,7 +2687,7 @@ var
   lIsMouseMoveMessage: Boolean;
   lMouseParam: LPARAM;
   lResult: Winapi.Windows.LRESULT;
-  lSynchronizeName: Boolean;
+  lTitleMessage: Boolean;
 begin
   lDestroyedHwnd := 0;
   if (aMessage.Msg = WM_DESTROY) and fUiaProviderReturned and (fForm <> nil) and fForm.HandleAllocated then
@@ -2624,7 +2703,7 @@ begin
   end;
 
   lIsMouseMoveMessage := (aMessage.Msg = WM_MOUSEMOVE) or (aMessage.Msg = WM_NCMOUSEMOVE);
-  lSynchronizeName := (aMessage.Msg = WM_SETTEXT) or (aMessage.Msg = CM_TEXTCHANGED);
+  lTitleMessage := (aMessage.Msg = WM_SETTEXT) or (aMessage.Msg = CM_TEXTCHANGED);
   if HoverMissCacheInvalidatingMessage(aMessage.Msg) then
   begin
     fHoverCache.ClearMiss;
@@ -2673,9 +2752,9 @@ begin
       RefreshProviderNativeWindowHandle(fProvider.RawElementProvider, 0);
     end;
   end;
-  if lSynchronizeName then
+  if not lTitleMessage and RuntimePropertyDirtyingMessage(aMessage.Msg) and (fProvider <> nil) then
   begin
-    SynchronizeFormName;
+    MarkRuntimePropertiesDirty(fProvider.RawElementProvider);
   end;
   if (not fPassive) and (fForm <> nil) and (fProvider <> nil) and lIsMouseMoveMessage then
   begin
@@ -2704,7 +2783,7 @@ end;
 constructor TAccessibilityControlWindowHook.Create(aControl: TWinControl;
   const aProvider: IRawElementProviderSimple; const aApi: IAccessibilityUiaApi;
   const aRootProvider: IRawElementProviderSimple;
-  aPreserveNativeWindowAccessibility: Boolean);
+  aPreserveNativeWindowAccessibility: Boolean; aFormHook: TAccessibilityFormWindowHook);
 begin
   inherited Create(nil);
   if aControl = nil then
@@ -2715,6 +2794,7 @@ begin
   fApi := aApi;
   fControl := aControl;
   fControlKey := Pointer(aControl);
+  fFormHook := aFormHook;
   fProvider := aProvider;
   fProviderIsGrid := ProviderIsGrid(fProvider);
   fProviderTracksControlWindow := aControl.HandleAllocated and
@@ -2764,6 +2844,7 @@ begin
 
     fControl.RemoveFreeNotification(Self);
     fControl := nil;
+    fFormHook := nil;
   end;
 end;
 
@@ -3091,6 +3172,7 @@ begin
   fMsaaAccessible := nil;
   fHoverCache.Clear;
   fApi := nil;
+  fFormHook := nil;
   fListBoxSelectionTracker := nil;
   fProvider := nil;
   fProviderIsGrid := False;
@@ -3493,6 +3575,12 @@ begin
     begin
       NotifyListBoxSelectionMayHaveChanged;
     end;
+  end;
+  if (fFormHook <> nil) and (fProvider <> nil) and
+    (RuntimePropertyDirtyingMessage(aMessage.Msg) or (fProviderIsGrid and (aMessage.Msg = CM_CHANGED))) and
+    not ((fControl is TCustomListBox) and (aMessage.Msg = CM_CHANGED)) then
+  begin
+    fFormHook.MarkRuntimePropertiesDirty(fProvider);
   end;
   if lIsBlurMessage or lIsFocusMessage or lIsOuterProviderStateMessage or lIsGridNavigationMessage or
     (fProviderIsGrid and (aMessage.Msg = CM_CHANGED)) or lIsListBoxSelectionMessage or lIsRadioNavigationMessage then

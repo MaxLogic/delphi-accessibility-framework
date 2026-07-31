@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-07-31
+### Fixed
+- Native `TListBox` and `TCheckListBox` navigation no longer triggers a full accessibility-provider sweep on the following application-idle cycle; runtime changes are coalesced to affected providers and real hierarchy revisions.
+- Form providers now return the current VCL window caption when UI Automation requests the Name property, relying on the native HWND title-change event instead of an idle-updated cache and duplicate framework events.
+
 ## 2026-07-27
 ### Fixed
 - Windows desktop-control input commands can now refuse mouse or keyboard input unless the expected foreground PID and/or HWND owns focus, returning the actual foreground window without dispatching input.

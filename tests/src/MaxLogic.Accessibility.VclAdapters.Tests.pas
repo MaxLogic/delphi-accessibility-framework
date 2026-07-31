@@ -122,6 +122,9 @@ type
     procedure StringGridProviderUsesCurrentNameAndHelpText;
     [Test]
     [Category('VclAdapters,RuntimePropertySynchronization')]
+    procedure FormProviderUsesCurrentName;
+    [Test]
+    [Category('VclAdapters,RuntimePropertySynchronization')]
     procedure FormProviderUsesCurrentHelpText;
     [Test]
     procedure RootHitTestingReturnsDeepestNonWindowedLabel;
@@ -2728,6 +2731,28 @@ begin
 
     Assert.AreEqual('Updated form help',
       ProviderStringProperty(lProvider.FragmentProvider, UIA_HelpTextPropertyId));
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityVclAdaptersTests.FormProviderUsesCurrentName;
+var
+  lForm: TForm;
+  lProvider: IAccessibilityProviderNode;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lForm.Caption := 'Initial window title';
+    lForm.HandleNeeded;
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm);
+    Assert.AreEqual('Initial window title',
+      ProviderStringProperty(lProvider.FragmentProvider, UIA_NamePropertyId));
+
+    lForm.Caption := 'Updated window title';
+
+    Assert.AreEqual('Updated window title',
+      ProviderStringProperty(lProvider.FragmentProvider, UIA_NamePropertyId));
   finally
     lForm.Free;
   end;

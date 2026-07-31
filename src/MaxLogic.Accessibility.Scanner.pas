@@ -110,6 +110,7 @@ type
     Bounds: TRect;
     Control: TControl;
     FocusControl: TControl;
+    Hint: string;
     IsLabel: Boolean;
     Parent: TWinControl;
     Text: string;
@@ -445,25 +446,23 @@ begin
   for i := 0 to High(lChildren) do
   begin
     lChild := lChildren[i];
-    if IsLabelControl(lChild) or IsTextInputControl(lChild) then
+    lState := Default(TScannerLabelRelationshipState);
+    lState.ActiveVisible := ControlIsInActiveVisibleTree(lChild);
+    lState.Bounds := lChild.BoundsRect;
+    lState.Control := lChild;
+    lState.IsLabel := IsLabelControl(lChild);
+    lState.Hint := lChild.Hint;
+    lState.Parent := lChild.Parent;
+    if lState.IsLabel then
     begin
-      lState := Default(TScannerLabelRelationshipState);
-      lState.ActiveVisible := ControlIsInActiveVisibleTree(lChild);
-      lState.Bounds := lChild.BoundsRect;
-      lState.Control := lChild;
-      lState.IsLabel := IsLabelControl(lChild);
-      lState.Parent := lChild.Parent;
-      if lState.IsLabel then
+      lState.Text := TAccessibilityTextExtractor.Extract(lChild).Name;
+      lFocusControl := ReadObjectProperty(lChild, 'FocusControl');
+      if lFocusControl is TControl then
       begin
-        lState.Text := TAccessibilityTextExtractor.Extract(lChild).Name;
-        lFocusControl := ReadObjectProperty(lChild, 'FocusControl');
-        if lFocusControl is TControl then
-        begin
-          lState.FocusControl := TControl(lFocusControl); //PALOFF STWA6 guarded by is TControl
-        end;
+        lState.FocusControl := TControl(lFocusControl); //PALOFF STWA6 guarded by is TControl
       end;
-      aState.Add(lState);
     end;
+    aState.Add(lState);
 
     if lChild is TWinControl then
     begin
@@ -474,10 +473,17 @@ end;
 
 function CaptureLabelRelationshipState(aForm: TCustomForm): TArray<TScannerLabelRelationshipState>;
 var
+  lFormState: TScannerLabelRelationshipState;
   lState: TList<TScannerLabelRelationshipState>;
 begin
   lState := TList<TScannerLabelRelationshipState>.Create;
   try
+    lFormState := Default(TScannerLabelRelationshipState);
+    lFormState.ActiveVisible := True;
+    lFormState.Bounds := aForm.BoundsRect;
+    lFormState.Control := aForm;
+    lFormState.Hint := aForm.Hint;
+    lState.Add(lFormState);
     CollectLabelRelationshipState(aForm, lState);
     Result := lState.ToArray;
   finally
@@ -485,27 +491,43 @@ begin
   end;
 end;
 
-function SameLabelRelationshipState(const aLeft, aRight: TArray<TScannerLabelRelationshipState>): Boolean;
+function CurrentLabelRelationshipStateMatches(
+  const aState: TArray<TScannerLabelRelationshipState>): Boolean;
 var
   i: Integer;
+  lControl: TControl;
+  lFocusControl: TControl;
+  lFocusObject: TObject;
+  lIsLabel: Boolean;
+  lRelationshipControl: Boolean;
+  lText: string;
 begin
-  if Length(aLeft) <> Length(aRight) then
+  for i := 0 to High(aState) do
   begin
-    Exit(False);
-  end;
-
-  for i := 0 to High(aLeft) do
-  begin
-    if (aLeft[i].ActiveVisible <> aRight[i].ActiveVisible) or
-      (aLeft[i].Bounds.Left <> aRight[i].Bounds.Left) or
-      (aLeft[i].Bounds.Top <> aRight[i].Bounds.Top) or
-      (aLeft[i].Bounds.Right <> aRight[i].Bounds.Right) or
-      (aLeft[i].Bounds.Bottom <> aRight[i].Bounds.Bottom) or
-      (aLeft[i].Control <> aRight[i].Control) or
-      (aLeft[i].FocusControl <> aRight[i].FocusControl) or
-      (aLeft[i].IsLabel <> aRight[i].IsLabel) or
-      (aLeft[i].Parent <> aRight[i].Parent) or
-      (aLeft[i].Text <> aRight[i].Text) then
+    lControl := aState[i].Control;
+    if (lControl = nil) or (csDestroying in lControl.ComponentState) then
+    begin
+      Exit(False);
+    end;
+    lIsLabel := IsLabelControl(lControl);
+    lRelationshipControl := lIsLabel or IsTextInputControl(lControl);
+    lFocusControl := nil;
+    lText := '';
+    if lIsLabel then
+    begin
+      lText := TAccessibilityTextExtractor.Extract(lControl).Name;
+      lFocusObject := ReadObjectProperty(lControl, 'FocusControl');
+      if lFocusObject is TControl then
+      begin
+        lFocusControl := TControl(lFocusObject); //PALOFF STWA6 guarded by is TControl
+      end;
+    end;
+    if (aState[i].Hint <> lControl.Hint) or (aState[i].IsLabel <> lIsLabel) or
+      (lRelationshipControl and
+      ((aState[i].ActiveVisible <> ControlIsInActiveVisibleTree(lControl)) or
+      not EqualRect(aState[i].Bounds, lControl.BoundsRect) or
+      (aState[i].FocusControl <> lFocusControl) or (aState[i].Parent <> lControl.Parent) or
+      (aState[i].Text <> lText))) then
     begin
       Exit(False);
     end;
@@ -1226,13 +1248,10 @@ begin
 end;
 
 procedure TAccessibilityObservedFormScan.EnsureFresh;
-var
-  lState: TArray<TScannerLabelRelationshipState>; //PALOFF OPTI10 explicit snapshot lifetime aids comparison
 begin
   if not fRefreshPending then
   begin
-    lState := CaptureLabelRelationshipState(fForm);
-    fRefreshPending := not SameLabelRelationshipState(fLabelRelationshipState, lState);
+    fRefreshPending := not CurrentLabelRelationshipStateMatches(fLabelRelationshipState);
   end;
   if fRefreshPending then
   begin

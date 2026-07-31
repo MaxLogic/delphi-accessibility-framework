@@ -2426,6 +2426,7 @@ end;
 procedure TAccessibilityListBoxPerformanceTests.ListBoxNativeHwndNavigationDoesNotUseFrameworkNotificationPath;
 var
   lApi: IListBoxPerformanceTestUiaApi;
+  lDone: Boolean;
   lForm: TForm;
   lListBox: TCheckListBox;
   lMetrics: TAccessibilityListBoxFocusMetrics;
@@ -2459,6 +2460,9 @@ begin
     TAccessibilityDiagnostics.ResetListBoxFocusMetrics;
     TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
     lListBox.Perform(WM_KEYDOWN, VK_DOWN, 0);
+    Assert.IsTrue(Assigned(Application.OnIdle));
+    lDone := True;
+    Application.OnIdle(Application, lDone);
     lMetrics := TAccessibilityDiagnostics.ListBoxFocusMetrics;
     lProviderMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
 
@@ -2476,6 +2480,8 @@ begin
       'Native-HWND listbox movement should not capture custom provider state.');
     Assert.AreEqual(0, lProviderMetrics.ProviderGetPropertyValueCount,
       'Native-HWND listbox movement should not query framework provider properties.');
+    Assert.AreEqual(0, lProviderMetrics.ProviderEventBatchCount,
+      'The following idle cycle should not traverse and synchronize the complete provider tree.');
     Assert.IsTrue(lMetrics.NativeHandlePublicationCheckCount <= 1,
       Format('Listbox focus movement checked native-handle publication %d times; expected at most one cached check.',
       [lMetrics.NativeHandlePublicationCheckCount]));

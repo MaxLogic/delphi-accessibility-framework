@@ -138,6 +138,7 @@ GTAGS
 .codex
 .dak/
 msbuild.log
+/issues/
 
 # Generated from .dproj version info during local Delphi builds
 /projects/*.res

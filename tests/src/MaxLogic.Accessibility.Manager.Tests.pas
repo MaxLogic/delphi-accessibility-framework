@@ -161,6 +161,8 @@ type
     [Test]
     procedure FormInstallLeavesUnsupportedFocusableControlNativeGetObject;
     [Test]
+    procedure FormInstallPreservesNativeMsaaSemanticsForStandardHwndControls;
+    [Test]
     procedure FormInstallHandlesPageControlUiaGetObjectForTabHeaders;
     [Test]
     procedure FormInstallHandlesPageControlMsaaGetObjectForTabHeaders;
@@ -175,7 +177,7 @@ type
     [Test]
     procedure FormInstallObjectFromPointReturnsActiveTabSheetNestedLabel;
     [Test]
-    procedure FormInstallHandlesInputMsaaGetObjectWithLabelAndTextHint;
+    procedure FormInstallLeavesInputNativeGetObjectForBothProtocols;
     [Test]
     procedure FormInstallHandlesStringGridMsaaGetObjectForFocusedCell;
     [Test]
@@ -557,6 +559,21 @@ type
     property Prior: TWndMethod read fPrior write fPrior;
   end;
 
+  TMsaaControlSnapshot = record
+    fDefaultAction: string;
+    fDefaultActionResult: HRESULT;
+    fHwnd: HWND;
+    fName: string;
+    fNameResult: HRESULT;
+    fRole: string;
+    fRoleResult: HRESULT;
+    fState: string;
+    fStateResult: HRESULT;
+    fValue: string;
+    fValueResult: HRESULT;
+    fWindowResult: HRESULT;
+  end;
+
   TDestroyControlOnRecreateProbe = class
   private
     fControl: TControl;
@@ -579,6 +596,15 @@ type
   end;
 
   TNativeAccessibleProbeControl = class(TCustomControl)
+  private
+    fGetObjectCalls: Integer;
+  protected
+    procedure WndProc(var aMessage: TMessage); override;
+  public
+    property GetObjectCalls: Integer read fGetObjectCalls;
+  end;
+
+  TNativeAccessibleProbeEdit = class(TEdit)
   private
     fGetObjectCalls: Integer;
   protected
@@ -897,6 +923,18 @@ begin
   begin
     Inc(fGetObjectCalls);
     aMessage.Result := 13579;
+    Exit;
+  end;
+
+  inherited WndProc(aMessage);
+end;
+
+procedure TNativeAccessibleProbeEdit.WndProc(var aMessage: TMessage);
+begin
+  if aMessage.Msg = WM_GETOBJECT then
+  begin
+    Inc(fGetObjectCalls);
+    aMessage.Result := 64200;
     Exit;
   end;
 
@@ -1711,8 +1749,57 @@ function AccessibleFromLResult(aResult: LRESULT; aWParam: WPARAM): IAccessible;
 begin
   Result := nil;
   Assert.IsTrue(aResult <> 0, 'MSAA WM_GETOBJECT did not return an object result.');
-  Assert.AreEqual(S_OK, ObjectFromLresult(aResult, IID_IAccessible, aWParam, Result));
+  Assert.AreEqual<HRESULT>(S_OK,
+    ObjectFromLresult(aResult, IID_IAccessible, aWParam, Result));
   Assert.IsNotNull(Result);
+end;
+
+procedure AssertMsaaSnapshotMatches(const aExpected: TMsaaControlSnapshot;
+  const aActual: TMsaaControlSnapshot; const aContext: string);
+begin
+  Assert.AreEqual<HRESULT>(aExpected.fDefaultActionResult, aActual.fDefaultActionResult,
+    aContext + ' default-action result');
+  Assert.AreEqual(aExpected.fDefaultAction, aActual.fDefaultAction, aContext + ' default action');
+  Assert.AreEqual<HWND>(aExpected.fHwnd, aActual.fHwnd, aContext + ' HWND');
+  Assert.AreEqual<HRESULT>(aExpected.fNameResult, aActual.fNameResult, aContext + ' name result');
+  Assert.AreEqual(aExpected.fName, aActual.fName, aContext + ' name');
+  Assert.AreEqual<HRESULT>(aExpected.fRoleResult, aActual.fRoleResult, aContext + ' role result');
+  Assert.AreEqual(aExpected.fRole, aActual.fRole, aContext + ' role');
+  Assert.AreEqual<HRESULT>(aExpected.fStateResult, aActual.fStateResult, aContext + ' state result');
+  Assert.AreEqual(aExpected.fState, aActual.fState, aContext + ' state');
+  Assert.AreEqual<HRESULT>(aExpected.fValueResult, aActual.fValueResult, aContext + ' value result');
+  Assert.AreEqual(aExpected.fValue, aActual.fValue, aContext + ' value');
+  Assert.AreEqual<HRESULT>(aExpected.fWindowResult, aActual.fWindowResult, aContext + ' window result');
+end;
+
+function CaptureNativeMsaaSnapshot(aControl: TWinControl): TMsaaControlSnapshot;
+var
+  lAccessible: IAccessible;
+  lChild: OleVariant;
+  lDefaultAction: WideString;
+  lHwnd: THandle;
+  lName: WideString;
+  lRole: OleVariant;
+  lState: OleVariant;
+  lValue: WideString;
+begin
+  Result := Default(TMsaaControlSnapshot);
+  Assert.AreEqual<HRESULT>(S_OK, AccessibleObjectFromWindow(aControl.Handle, OBJID_CLIENT,
+    IID_IAccessible, lAccessible));
+  Assert.IsNotNull(lAccessible);
+  lChild := CHILDID_SELF;
+  Result.fDefaultActionResult := lAccessible.Get_accDefaultAction(lChild, lDefaultAction);
+  Result.fDefaultAction := lDefaultAction;
+  Result.fNameResult := lAccessible.Get_accName(lChild, lName);
+  Result.fName := lName;
+  Result.fRoleResult := lAccessible.Get_accRole(lChild, lRole);
+  Result.fRole := VarToStr(lRole);
+  Result.fStateResult := lAccessible.Get_accState(lChild, lState);
+  Result.fState := VarToStr(lState);
+  Result.fValueResult := lAccessible.Get_accValue(lChild, lValue);
+  Result.fValue := lValue;
+  Result.fWindowResult := WindowFromAccessibleObject(lAccessible, lHwnd);
+  Result.fHwnd := lHwnd;
 end;
 
 function SameAccessibleIdentity(const aFirst: IAccessible; const aSecond: IAccessible): Boolean;
@@ -1996,7 +2083,7 @@ begin
   lMessage.LParam := UiaRootObjectId;
   aForm.WindowProc(lMessage);
 
-  Assert.AreEqual(2468, lMessage.Result);
+  Assert.AreEqual<LRESULT>(2468, lMessage.Result);
   Assert.IsNotNull(aApi.ReturnedProvider);
 
   lRootFragment := FragmentFromSimple(aApi.ReturnedProvider);
@@ -2689,7 +2776,7 @@ begin
     lMessage.Msg := WM_GETOBJECT;
     lMessage.LParam := UiaRootObjectId;
     lForm.WindowProc(lMessage);
-    Assert.AreEqual(2468, lMessage.Result);
+    Assert.AreEqual<LRESULT>(2468, lMessage.Result);
     Assert.IsTrue(lApi.ReturnedProvider = lRootProvider);
     lOldHwnd := lForm.Handle;
     lReturnCalls := lApi.ReturnCalls;
@@ -2716,7 +2803,7 @@ begin
     lMessage.Msg := WM_GETOBJECT;
     lMessage.LParam := UiaRootObjectId;
     lForm.WindowProc(lMessage);
-    Assert.AreEqual(2468, lMessage.Result);
+    Assert.AreEqual<LRESULT>(2468, lMessage.Result);
     Assert.IsTrue(lApi.ReturnedProvider = lRootProvider,
       'WM_GETOBJECT must retain the installed root provider identity.');
 
@@ -2789,7 +2876,7 @@ begin
     lMessage.Msg := WM_GETOBJECT;
     lMessage.LParam := UiaRootObjectId;
     lGrid.WindowProc(lMessage);
-    Assert.AreEqual(2468, lMessage.Result);
+    Assert.AreEqual<LRESULT>(2468, lMessage.Result);
     Assert.IsTrue(lApi.ReturnedProvider = lGridProvider);
     lOldHwnd := lGrid.Handle;
     lReturnCalls := lApi.ReturnCalls;
@@ -2812,7 +2899,7 @@ begin
     lMessage.Msg := WM_GETOBJECT;
     lMessage.LParam := UiaRootObjectId;
     lGrid.WindowProc(lMessage);
-    Assert.AreEqual(2468, lMessage.Result);
+    Assert.AreEqual<LRESULT>(2468, lMessage.Result);
     Assert.IsTrue(lApi.ReturnedProvider = lGridProvider);
     lAfterAccessible := RepeatedMsaaAccessibleFromControl(lGrid);
     Assert.IsTrue(SameAccessibleIdentity(lBeforeAccessible, lAfterAccessible));
@@ -2890,7 +2977,7 @@ begin
     lMessage.Msg := WM_GETOBJECT;
     lMessage.LParam := UiaRootObjectId;
     lForm.WindowProc(lMessage);
-    Assert.AreEqual(2468, lMessage.Result);
+    Assert.AreEqual<LRESULT>(2468, lMessage.Result);
     Assert.IsTrue(lApi.ReturnedProvider = lRootProvider);
   finally
     if (lForm <> nil) and Assigned(lProbe.Prior) then
@@ -2937,7 +3024,7 @@ begin
     lMessage.Msg := WM_GETOBJECT;
     lMessage.LParam := UiaRootObjectId;
     lForm.WindowProc(lMessage);
-    Assert.AreEqual(2468, lMessage.Result);
+    Assert.AreEqual<LRESULT>(2468, lMessage.Result);
     Assert.IsTrue(lApi.ReturnedProvider = lRootProvider);
   finally
     lForm.Free;
@@ -4021,8 +4108,8 @@ begin
     lMarker := lForm.Components[lComponentCountBeforeInstall];
     lFormHook := TFormWindowHookStorageAccess(
       TInstalledFormMarkerStorageAccess(lMarker).fHook); //PALOFF STWA6 test-only private layout mirror
-    Assert.AreEqual(1, lFormHook.fChildHooks.Count, 'initial child hook count'); //PALOFF reviewed live hook-list mirror
-    Assert.AreEqual(1, lFormHook.fChildHooksByControl.Count, 'initial child hook index count'); //PALOFF reviewed live hook-index mirror
+    Assert.AreEqual<NativeInt>(1, lFormHook.fChildHooks.Count, 'initial child hook count'); //PALOFF reviewed live hook-list mirror
+    Assert.AreEqual<NativeInt>(1, lFormHook.fChildHooksByControl.Count, 'initial child hook index count'); //PALOFF reviewed live hook-index mirror
 
     TReleasedControlStorageEdit.RetainNextInstanceStorage;
     lReleasedAddress := Pointer(lEdit);
@@ -4030,8 +4117,8 @@ begin
     lDone := True;
     Application.OnIdle(Application, lDone);
     Assert.IsTrue(lRemovedNode.IsDisconnected);
-    Assert.AreEqual(0, lFormHook.fChildHooks.Count, 'released child hook count');
-    Assert.AreEqual(0, lFormHook.fChildHooksByControl.Count, 'released child hook index count');
+    Assert.AreEqual<NativeInt>(0, lFormHook.fChildHooks.Count, 'released child hook count');
+    Assert.AreEqual<NativeInt>(0, lFormHook.fChildHooksByControl.Count, 'released child hook index count');
 
     TReleasedControlStorageEdit.ReuseRetainedInstanceStorage;
     lEdit := TReleasedControlStorageEdit.Create(lForm);
@@ -4044,8 +4131,8 @@ begin
 
     Assert.IsTrue(lLookup.TryFindProviderForControl(lEdit, lCurrentProvider));
     Assert.IsFalse(lCurrentProvider = lRemovedProvider, 'replacement provider identity');
-    Assert.AreEqual(1, lFormHook.fChildHooks.Count, 'replacement child hook count');
-    Assert.AreEqual(1, lFormHook.fChildHooksByControl.Count, 'replacement child hook index count');
+    Assert.AreEqual<NativeInt>(1, lFormHook.fChildHooks.Count, 'replacement child hook count');
+    Assert.AreEqual<NativeInt>(1, lFormHook.fChildHooksByControl.Count, 'replacement child hook index count');
     lMessage := Default(TMessage);
     lMessage.Msg := WM_SETFOCUS;
     lEdit.WindowProc(lMessage);
@@ -4839,7 +4926,7 @@ begin
     lMessage.LParam := UiaRootObjectId;
     lForm.WindowProc(lMessage);
 
-    Assert.AreEqual(2468, lMessage.Result);
+    Assert.AreEqual<LRESULT>(2468, lMessage.Result);
     Assert.AreEqual(1, lApi.ReturnCalls);
     Assert.AreEqual(lForm.Handle, lApi.LastHwnd);
     Assert.AreEqual(LPARAM(UiaRootObjectId), lApi.LastLParam);
@@ -4879,7 +4966,7 @@ begin
     lMessage.LParam := UiaRootObjectId;
     lStatusBar.WindowProc(lMessage);
 
-    Assert.AreEqual(2468, lMessage.Result);
+    Assert.AreEqual<LRESULT>(2468, lMessage.Result);
     Assert.AreEqual(lStatusBar.Handle, lApi.LastHwnd);
     Assert.IsNotNull(lApi.ReturnedProvider);
     Assert.AreEqual(UIA_StatusBarControlTypeId, ProviderIntProperty(FragmentFromSimple(lApi.ReturnedProvider),
@@ -5127,7 +5214,7 @@ begin
     lMessage.LParam := UiaRootObjectId;
     lForm.WindowProc(lMessage);
 
-    Assert.AreEqual(2468, lMessage.Result);
+    Assert.AreEqual<LRESULT>(2468, lMessage.Result);
     Assert.AreEqual(lForm.Handle, lApi.LastHwnd);
     Assert.IsTrue(Supports(lApi.ReturnedProvider, IRawElementProviderFragmentRoot, lRoot));
     lPoint := ControlScreenCenter(lLabel);
@@ -5141,6 +5228,8 @@ begin
 end;
 
 procedure TAccessibilityManagerTests.FormInstallLeavesCheckBoxAndRadioButtonNativeGetObject;
+const
+  cObjIdClient = LPARAM(OBJID_CLIENT);
 var
   lApi: IManagerTestUiaApi;
   lCheckBox: TNativeAccessibleProbeCheckBox;
@@ -5177,8 +5266,18 @@ begin
     lMessage.LParam := UiaRootObjectId;
     lCheckBox.WindowProc(lMessage);
 
-    Assert.AreEqual(24680, lMessage.Result);
+    Assert.AreEqual<LRESULT>(24680, lMessage.Result);
     Assert.AreEqual(1, lCheckBox.GetObjectCalls);
+    Assert.AreEqual(0, lApi.ReturnCalls);
+
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.WParam := 17;
+    lMessage.LParam := cObjIdClient;
+    lCheckBox.WindowProc(lMessage);
+
+    Assert.AreEqual<LRESULT>(24680, lMessage.Result);
+    Assert.AreEqual(2, lCheckBox.GetObjectCalls);
     Assert.AreEqual(0, lApi.ReturnCalls);
 
     lMessage := Default(TMessage);
@@ -5187,8 +5286,18 @@ begin
     lMessage.LParam := UiaRootObjectId;
     lRadioButton.WindowProc(lMessage);
 
-    Assert.AreEqual(97531, lMessage.Result);
+    Assert.AreEqual<LRESULT>(97531, lMessage.Result);
     Assert.AreEqual(1, lRadioButton.GetObjectCalls);
+    Assert.AreEqual(0, lApi.ReturnCalls);
+
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.WParam := 17;
+    lMessage.LParam := cObjIdClient;
+    lRadioButton.WindowProc(lMessage);
+
+    Assert.AreEqual<LRESULT>(97531, lMessage.Result);
+    Assert.AreEqual(2, lRadioButton.GetObjectCalls);
     Assert.AreEqual(0, lApi.ReturnCalls);
   finally
     lForm.Free;
@@ -5248,6 +5357,8 @@ begin
 end;
 
 procedure TAccessibilityManagerTests.FormInstallLeavesUnsupportedFocusableControlNativeGetObject;
+const
+  cObjIdClient = LPARAM(OBJID_CLIENT);
 var
   lApi: IManagerTestUiaApi;
   lForm: TForm;
@@ -5276,11 +5387,107 @@ begin
     lMessage.LParam := UiaRootObjectId;
     lNativeControl.WindowProc(lMessage);
 
-    Assert.AreEqual(13579, lMessage.Result);
+    Assert.AreEqual<LRESULT>(13579, lMessage.Result);
     Assert.AreEqual(1, lNativeControl.GetObjectCalls);
+    Assert.AreEqual(0, lApi.ReturnCalls);
+
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.WParam := 19;
+    lMessage.LParam := cObjIdClient;
+    lNativeControl.WindowProc(lMessage);
+
+    Assert.AreEqual<LRESULT>(13579, lMessage.Result);
+    Assert.AreEqual(2, lNativeControl.GetObjectCalls);
     Assert.AreEqual(0, lApi.ReturnCalls);
   finally
     lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallPreservesNativeMsaaSemanticsForStandardHwndControls;
+const
+  cControlCount = 4;
+  cControlNames: array[0..Pred(cControlCount)] of string = ('edit', 'button', 'combo box', 'panel');
+var
+  i: Integer;
+  lAfter: array[0..Pred(cControlCount)] of TMsaaControlSnapshot;
+  lApi: IManagerTestUiaApi;
+  lBefore: array[0..Pred(cControlCount)] of TMsaaControlSnapshot;
+  lButton: TButton;
+  lCoInit: HRESULT;
+  lComboBox: TComboBox;
+  lControls: array[0..Pred(cControlCount)] of TWinControl;
+  lEdit: TEdit;
+  lForm: TForm;
+  lMessage: TMessage;
+  lPanel: TPanel;
+begin
+  ResetManager;
+  lCoInit := CoInitialize(nil);
+  lApi := TManagerTestUiaApi.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    Assert.IsTrue((lCoInit = S_OK) or (lCoInit = S_FALSE) or (lCoInit = RPC_E_CHANGED_MODE));
+    lForm.SetBounds(100, 100, 420, 240);
+
+    lEdit := TEdit.Create(lForm);
+    lEdit.Parent := lForm;
+    lEdit.Text := 'customer 42';
+    lEdit.TextHint := 'customer, order, or finding';
+    lEdit.SetBounds(16, 16, 180, 24);
+
+    lButton := TButton.Create(lForm);
+    lButton.Caption := 'Apply';
+    lButton.Parent := lForm;
+    lButton.SetBounds(16, 52, 100, 28);
+
+    lComboBox := TComboBox.Create(lForm);
+    lComboBox.Parent := lForm;
+    lComboBox.Items.Add('Open');
+    lComboBox.Items.Add('Closed');
+    lComboBox.ItemIndex := 1;
+    lComboBox.SetBounds(16, 92, 180, 24);
+
+    lPanel := TPanel.Create(lForm);
+    lPanel.Caption := 'Options';
+    lPanel.Parent := lForm;
+    lPanel.SetBounds(220, 16, 150, 100);
+
+    lForm.HandleNeeded;
+    lControls[0] := lEdit;
+    lControls[1] := lButton;
+    lControls[2] := lComboBox;
+    lControls[3] := lPanel;
+    for i := 0 to Pred(cControlCount) do
+    begin
+      lControls[i].HandleNeeded;
+      lBefore[i] := CaptureNativeMsaaSnapshot(lControls[i]);
+    end;
+
+    TAccessibilityManager.Install(lForm);
+    for i := 0 to Pred(cControlCount) do
+    begin
+      lMessage := Default(TMessage);
+      lMessage.Msg := WM_GETOBJECT;
+      lMessage.WParam := 31;
+      lMessage.LParam := UiaRootObjectId;
+      lControls[i].WindowProc(lMessage);
+      Assert.AreEqual(0, lApi.ReturnCalls, cControlNames[i] + ' direct UIA route');
+
+      lAfter[i] := CaptureNativeMsaaSnapshot(lControls[i]);
+      AssertMsaaSnapshotMatches(lBefore[i], lAfter[i], cControlNames[i]);
+      Assert.AreEqual<HWND>(lControls[i].Handle, lAfter[i].fHwnd,
+        cControlNames[i] + ' native MSAA HWND');
+    end;
+  finally
+    lForm.Free;
+    if (lCoInit = S_OK) or (lCoInit = S_FALSE) then
+    begin
+      CoUninitialize;
+    end;
     ResetManager;
   end;
 end;
@@ -5328,7 +5535,7 @@ begin
     lMessage.LParam := UiaRootObjectId;
     lPageControl.WindowProc(lMessage);
 
-    Assert.AreEqual(2468, lMessage.Result);
+    Assert.AreEqual<LRESULT>(2468, lMessage.Result);
     Assert.AreEqual(lPageControl.Handle, lApi.LastHwnd);
     Assert.IsTrue(Supports(lApi.ReturnedProvider, IRawElementProviderFragmentRoot, lRoot));
 
@@ -5618,16 +5825,22 @@ begin
   end;
 end;
 
-procedure TAccessibilityManagerTests.FormInstallHandlesInputMsaaGetObjectWithLabelAndTextHint;
+procedure TAccessibilityManagerTests.FormInstallLeavesInputNativeGetObjectForBothProtocols;
 const
   cObjIdClient = LPARAM(OBJID_CLIENT);
 var
-  lEdit: TEdit;
+  lApi: IManagerTestUiaApi;
+  lEdit: TNativeAccessibleProbeEdit;
+  lEditProvider: IRawElementProviderSimple;
   lForm: TForm;
   lLabel: TLabel;
+  lLookup: IAccessibilityVclProviderLookup;
   lMessage: TMessage;
+  lRootProvider: IRawElementProviderSimple;
 begin
   ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
   lForm := TForm.Create(nil);
   try
     lForm.SetBounds(100, 100, 320, 180);
@@ -5635,15 +5848,32 @@ begin
     lLabel := TLabel.Create(lForm);
     lLabel.Caption := 'Search text';
     lLabel.Parent := lForm;
-    lLabel.SetBounds(12, 12, 120, 24);
+    lLabel.SetBounds(12, 18, 90, 20);
 
-    lEdit := TEdit.Create(lForm);
+    lEdit := TNativeAccessibleProbeEdit.Create(lForm);
     lEdit.Parent := lForm;
+    lEdit.Hint := 'Search demo orders and audit findings';
     lEdit.TextHint := 'customer, order, or finding';
-    lEdit.SetBounds(12, 40, 180, 24);
+    lEdit.SetBounds(112, 14, 180, 24);
     lEdit.HandleNeeded;
 
     TAccessibilityManager.Install(lForm);
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider));
+    Assert.IsTrue(Supports(lRootProvider, IAccessibilityVclProviderLookup, lLookup));
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lEdit, lEditProvider));
+    Assert.AreEqual('Search text', ProviderStringProperty(FragmentFromSimple(lEditProvider), UIA_NamePropertyId));
+    Assert.AreEqual('customer, order, or finding. Search demo orders and audit findings',
+      ProviderStringProperty(FragmentFromSimple(lEditProvider), UIA_HelpTextPropertyId));
+
+    lMessage := Default(TMessage);
+    lMessage.Msg := WM_GETOBJECT;
+    lMessage.WParam := 23;
+    lMessage.LParam := UiaRootObjectId;
+    lEdit.WindowProc(lMessage);
+
+    Assert.AreEqual<LRESULT>(64200, lMessage.Result);
+    Assert.AreEqual(1, lEdit.GetObjectCalls);
+    Assert.AreEqual(0, lApi.ReturnCalls);
 
     lMessage := Default(TMessage);
     lMessage.Msg := WM_GETOBJECT;
@@ -5651,7 +5881,9 @@ begin
     lMessage.LParam := cObjIdClient;
     lEdit.WindowProc(lMessage);
 
-    Assert.AreNotEqual(0, Integer(lMessage.Result), 'Input hook did not return an MSAA result.');
+    Assert.AreEqual<LRESULT>(64200, lMessage.Result);
+    Assert.AreEqual(2, lEdit.GetObjectCalls);
+    Assert.AreEqual(0, lApi.ReturnCalls);
   finally
     lForm.Free;
     ResetManager;
@@ -7329,7 +7561,7 @@ begin
     lMessage.LParam := UiaRootObjectId;
     lForm.grpViewMode.WindowProc(lMessage);
 
-    Assert.AreEqual(2468, lMessage.Result);
+    Assert.AreEqual<LRESULT>(2468, lMessage.Result);
     Assert.AreEqual(1, lApi.ReturnCalls);
     Assert.AreEqual(lForm.grpViewMode.Handle, lApi.LastHwnd);
     Assert.AreEqual('View mode', ProviderStringProperty(FragmentFromSimple(lApi.ReturnedProvider),
@@ -7343,7 +7575,7 @@ begin
     lMessage.LParam := UiaRootObjectId;
     lForm.radioGroupDensity.WindowProc(lMessage);
 
-    Assert.AreEqual(2468, lMessage.Result);
+    Assert.AreEqual<LRESULT>(2468, lMessage.Result);
     Assert.AreEqual(2, lApi.ReturnCalls);
     Assert.AreEqual(lForm.radioGroupDensity.Handle, lApi.LastHwnd);
     Assert.AreEqual('Density', ProviderStringProperty(FragmentFromSimple(lApi.ReturnedProvider),
@@ -7938,7 +8170,7 @@ begin
     lMessage.LParam := UiaRootObjectId;
     lRadioButton.WindowProc(lMessage);
 
-    Assert.AreEqual(2468, lMessage.Result);
+    Assert.AreEqual<LRESULT>(2468, lMessage.Result);
     Assert.AreEqual(1, lApi.ReturnCalls);
     Assert.AreEqual(lRadioButton.Handle, lApi.LastHwnd);
     Assert.AreEqual('Compact', ProviderStringProperty(FragmentFromSimple(lApi.ReturnedProvider),
@@ -7993,7 +8225,7 @@ begin
     lMessage.LParam := UiaRootObjectId;
     lButton.WindowProc(lMessage);
 
-    Assert.AreEqual(2468, lMessage.Result);
+    Assert.AreEqual<LRESULT>(2468, lMessage.Result);
     Assert.AreEqual(1, lApi.ReturnCalls);
     Assert.AreEqual(lButton.Handle, lApi.LastHwnd);
     Assert.AreEqual('Comfortable', ProviderStringProperty(FragmentFromSimple(lApi.ReturnedProvider),
@@ -8044,7 +8276,7 @@ begin
     lMessage.LParam := UiaRootObjectId;
     lButton.WindowProc(lMessage);
 
-    Assert.AreEqual(2468, lMessage.Result);
+    Assert.AreEqual<LRESULT>(2468, lMessage.Result);
     Assert.AreEqual(1, lApi.ReturnCalls);
     Assert.AreEqual(lButton.Handle, lApi.LastHwnd);
     Assert.AreEqual('Comfortable', ProviderStringProperty(FragmentFromSimple(lApi.ReturnedProvider),
@@ -8115,7 +8347,7 @@ begin
     lMessage.LParam := UiaRootObjectId;
     lButton.WindowProc(lMessage);
 
-    Assert.AreEqual(2468, lMessage.Result);
+    Assert.AreEqual<LRESULT>(2468, lMessage.Result);
     Assert.AreEqual(1, lApi.ReturnCalls);
     Assert.AreEqual(lButton.Handle, lApi.LastHwnd);
     Assert.AreEqual('Comfortable', ProviderStringProperty(FragmentFromSimple(lApi.ReturnedProvider),
@@ -9103,7 +9335,7 @@ begin
 
     Assert.IsTrue(lProbe.Calls > 0);
     Assert.AreEqual(1, lApi.ReturnCalls);
-    Assert.AreEqual(0, lMessage.Result);
+    Assert.AreEqual<LRESULT>(0, lMessage.Result);
   finally
     if (lForm <> nil) and Assigned(lOriginalWindowProc) then
     begin

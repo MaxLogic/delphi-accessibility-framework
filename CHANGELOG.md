@@ -3,6 +3,7 @@
 ## 2026-07-31
 ### Fixed
 - Native `TListBox` and `TCheckListBox` navigation no longer triggers a full accessibility-provider sweep on the following application-idle cycle; runtime changes are coalesced to affected providers and real hierarchy revisions.
+- Standard HWND controls not explicitly owned by a framework provider now keep their native direct MSAA `OBJID_CLIENT` route, matching direct UIA routing; custom and virtual semantic providers remain available through the form root.
 - Form providers now return the current VCL window caption when UI Automation requests the Name property, relying on the native HWND title-change event instead of an idle-updated cache and duplicate framework events.
 
 ## 2026-07-27

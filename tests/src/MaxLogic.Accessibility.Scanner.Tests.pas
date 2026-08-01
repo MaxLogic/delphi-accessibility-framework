@@ -515,7 +515,7 @@ begin
         lNodes := lTree.FlattenedNodes;
       end;
 
-      Assert.AreEqual(cControlCount, Length(lNodes));
+      Assert.AreEqual<NativeInt>(cControlCount, Length(lNodes));
       lMetrics := TAccessibilityDiagnostics.ScannerMetrics;
       Assert.AreEqual(1, lMetrics.FlattenedNodesBuildCount);
       Assert.AreEqual(cControlCount, lMetrics.FlattenedNodesBuildItemCount);
@@ -547,7 +547,7 @@ begin
       lTree := TAccessibilityScanner.ScanForm(lForm);
       lNodes := lTree.FlattenedNodes;
 
-      Assert.AreEqual(cControlCount, Length(lNodes));
+      Assert.AreEqual<NativeInt>(cControlCount, Length(lNodes));
       lMetrics := TAccessibilityDiagnostics.ScannerMetrics;
       Assert.IsTrue(lMetrics.RttiPropertyLookupCount <= cMaxRttiLookups,
         Format('Scanner should cache RTTI property lookups by class/property; got %d lookups for %d controls.',
@@ -578,7 +578,7 @@ begin
       lTree := TAccessibilityScanner.ScanForm(lForm);
       lNodes := lTree.FlattenedNodes;
 
-      Assert.AreEqual(cControlCount, Length(lNodes));
+      Assert.AreEqual<NativeInt>(cControlCount, Length(lNodes));
       lMetrics := TAccessibilityDiagnostics.ScannerMetrics;
       Assert.IsTrue(lMetrics.RttiPropertyCacheKeyBuildCount <= cMaxCompositeKeyBuilds,
         Format('Scanner RTTI cache hits should not build composite string keys per control; got %d builds for %d controls.',
@@ -607,7 +607,7 @@ begin
       TAccessibilityDiagnostics.ResetScannerMetrics;
       lTree := TAccessibilityScanner.ScanForm(lForm);
       lNodes := lTree.FlattenedNodes;
-      Assert.AreEqual(cControlCount, Length(lNodes));
+      Assert.AreEqual<NativeInt>(cControlCount, Length(lNodes));
 
       lMetrics := TAccessibilityDiagnostics.ScannerMetrics;
       Assert.AreEqual(1, lMetrics.SortedChildrenCallCount);
@@ -623,7 +623,7 @@ begin
       TAccessibilityDiagnostics.ResetScannerMetrics;
       lTree := TAccessibilityScanner.ScanForm(lForm);
       lNodes := lTree.FlattenedNodes;
-      Assert.AreEqual(cControlCount, Length(lNodes));
+      Assert.AreEqual<NativeInt>(cControlCount, Length(lNodes));
 
       lMetrics := TAccessibilityDiagnostics.ScannerMetrics;
       Assert.AreEqual(1, lMetrics.SortedChildrenCallCount);
@@ -704,7 +704,7 @@ begin
     lTree := TAccessibilityScanner.ScanForm(lForm);
     lNames := FlattenedNames(lTree);
 
-    Assert.AreEqual(4, Length(lNames));
+    Assert.AreEqual<NativeInt>(4, Length(lNames));
     Assert.AreEqual('Outer', lNames[0]);
     Assert.AreEqual('Group', lNames[1]);
     Assert.AreEqual('Nested', lNames[2]);

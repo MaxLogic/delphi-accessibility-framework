@@ -132,7 +132,8 @@ implementation
 
 uses
   System.Classes, System.Diagnostics, System.Generics.Collections, System.IOUtils, System.JSON, System.SyncObjs,
-  System.SysUtils, Winapi.ActiveX, Winapi.Messages, Winapi.Windows, Vcl.CheckLst, Vcl.Controls, Vcl.Forms, Vcl.Grids,
+  System.SysUtils, Winapi.ActiveX, Winapi.Messages, Winapi.oleacc, Winapi.Windows, Vcl.CheckLst, Vcl.Controls, Vcl.Forms,
+  Vcl.Grids,
   Vcl.StdCtrls, AdvGrid,
   MaxLogic.Accessibility.Diagnostics,
   MaxLogic.Accessibility.Manager, MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.TmsAdvStringGridAdapters,
@@ -2424,18 +2425,28 @@ begin
 end;
 
 procedure TAccessibilityListBoxPerformanceTests.ListBoxNativeHwndNavigationDoesNotUseFrameworkNotificationPath;
+const
+  cMsaaQueryCount = 100;
 var
+  i: Integer;
+  lAccessible: IAccessible;
+  lAccessibleHwnd: THandle;
   lApi: IListBoxPerformanceTestUiaApi;
-  lDone: Boolean;
+  lChildCount: Integer;
+  lCoInit: HRESULT;
+  lDone: Boolean; //PALOFF WARN5 var argument exercises the installed idle handler
   lForm: TForm;
   lListBox: TCheckListBox;
   lMetrics: TAccessibilityListBoxFocusMetrics;
   lProviderMetrics: TAccessibilityProviderHotspotMetrics;
+  lRole: OleVariant;
+  lStopwatch: TStopwatch;
 begin
   ResetManager;
   TAccessibilityDiagnostics.DisableListBoxFocusMetrics;
   TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
   TAccessibilityDiagnostics.ResetListBoxFocusMetrics;
+  lCoInit := CoInitialize(nil);
   lApi := TListBoxPerformanceTestUiaApi.Create;
   TAccessibilityManagerInternals.SetUiaApi(lApi);
   lForm := TForm.Create(nil);
@@ -2450,6 +2461,47 @@ begin
     lForm.ActiveControl := lListBox;
 
     TAccessibilityManager.Install(lForm);
+    TAccessibilityDiagnostics.EnableListBoxFocusMetrics;
+    TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetListBoxFocusMetrics;
+    TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
+    lStopwatch := TStopwatch.StartNew;
+    for i := 1 to cMsaaQueryCount do
+    begin
+      lAccessible := nil;
+      Assert.AreEqual<HRESULT>(S_OK, AccessibleObjectFromWindow(lListBox.Handle, OBJID_CLIENT,
+        IID_IAccessible, lAccessible));
+      Assert.IsNotNull(lAccessible);
+      Assert.AreEqual<HRESULT>(S_OK, lAccessible.Get_accRole(CHILDID_SELF, lRole));
+      Assert.AreEqual(ROLE_SYSTEM_LIST, Integer(lRole));
+      Assert.AreEqual<HRESULT>(S_OK, lAccessible.Get_accChildCount(lChildCount));
+      Assert.AreEqual(3, lChildCount);
+      Assert.AreEqual<HRESULT>(S_OK, WindowFromAccessibleObject(lAccessible, lAccessibleHwnd));
+      Assert.AreEqual<THandle>(lListBox.Handle, lAccessibleHwnd,
+        'OBJID_CLIENT must return the native listbox accessible object.');
+    end;
+    lStopwatch.Stop;
+    lMetrics := TAccessibilityDiagnostics.ListBoxFocusMetrics;
+    lProviderMetrics := TAccessibilityDiagnostics.ProviderHotspotMetrics;
+    Assert.AreEqual(0, lMetrics.GetFocusCount, 'Native MSAA queries must not query framework list focus.');
+    Assert.AreEqual(0, lMetrics.EnsureItemProviderCount,
+      'Native MSAA queries must not prepare framework list items.');
+    Assert.AreEqual(0, lProviderMetrics.ProviderGetPatternProviderCount,
+      'Native MSAA queries must not query framework patterns.');
+    Assert.AreEqual(0, lProviderMetrics.ProviderGetPropertyValueCount,
+      'Native MSAA queries must not query framework properties.');
+    Assert.AreEqual(0, lProviderMetrics.ProviderEventBatchCount,
+      'Native MSAA queries must not publish framework event batches.');
+    Assert.IsTrue(lMetrics.NativeHandlePublicationCheckCount <= 1,
+      Format('Native MSAA queries checked handle publication %d times; expected at most one cached check.',
+      [lMetrics.NativeHandlePublicationCheckCount]));
+    Assert.IsTrue(lStopwatch.ElapsedMilliseconds < 2000,
+      Format('%d native MSAA list queries took %d ms; expected less than 2000 ms.',
+      [cMsaaQueryCount, lStopwatch.ElapsedMilliseconds]));
+
+    TAccessibilityDiagnostics.DisableListBoxFocusMetrics;
+    TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+    TAccessibilityDiagnostics.ResetListBoxFocusMetrics;
     lListBox.Perform(WM_KEYDOWN, VK_DOWN, 0);
     lMetrics := TAccessibilityDiagnostics.ListBoxFocusMetrics;
     Assert.IsFalse(lMetrics.Enabled);
@@ -2490,6 +2542,10 @@ begin
     ResetManager;
     TAccessibilityDiagnostics.DisableListBoxFocusMetrics;
     TAccessibilityDiagnostics.DisableProviderHotspotMetrics;
+    if (lCoInit = S_OK) or (lCoInit = S_FALSE) then
+    begin
+      CoUninitialize;
+    end;
   end;
 end;
 

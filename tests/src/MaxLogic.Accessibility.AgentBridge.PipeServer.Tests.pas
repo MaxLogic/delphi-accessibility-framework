@@ -312,7 +312,7 @@ begin
   TAccessibilityAgentBridgePipeServer.Start(lPipeName);
   try
     lResponses := RequestPipeLinesFromWorker(lPipeName, ['{"cmd":"hello"}', '{"cmd":"hello"}']);
-    Assert.AreEqual(2, Length(lResponses));
+    Assert.AreEqual<NativeInt>(2, Length(lResponses));
     for i := 0 to Pred(Length(lResponses)) do
     begin
       lResponseJson := JsonObjectFrom(lResponses[i]);

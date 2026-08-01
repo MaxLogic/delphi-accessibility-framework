@@ -370,7 +370,8 @@ function AccessibleFromObjectResult(aResult: LRESULT; aWParam: WPARAM): IAccessi
 begin
   Result := nil;
   Assert.IsTrue(aResult <> 0, 'MSAA WM_GETOBJECT did not return an object result.');
-  Assert.AreEqual(S_OK, ObjectFromLresult(aResult, IID_IAccessible, aWParam, Result));
+  Assert.AreEqual<HRESULT>(S_OK,
+    ObjectFromLresult(aResult, IID_IAccessible, aWParam, Result));
   Assert.IsNotNull(Result);
 end;
 

@@ -213,6 +213,7 @@ type
     fRootProvider: IRawElementProviderSimple;
     fUiaProviderReturned: Boolean;
     procedure Detach;
+    function FrameworkOwnsControlWindow: Boolean;
     function GridCellChanged: Boolean;
     procedure InitializeGridCellTracking;
     procedure InitializeListBoxItemTracking;
@@ -2968,9 +2969,19 @@ begin
   Result := fProviderPublishesNativeWindowHandle;
 end;
 
+function TAccessibilityControlWindowHook.FrameworkOwnsControlWindow: Boolean;
+begin
+  Result := (fControl is TPageControl) or ProviderPublishesControlNativeWindowHandle;
+end;
+
 procedure TAccessibilityControlWindowHook.RefreshProviderWindowHandle(aHwnd: HWND);
 begin
   if not fProviderTracksControlWindow then
+  begin
+    Exit;
+  end;
+
+  if fProviderNativeWindowHandleCheckValid and (fProviderNativeWindowHandleCheckHwnd = aHwnd) then
   begin
     Exit;
   end;
@@ -3474,7 +3485,7 @@ begin
   begin
     if aMessage.LParam = LPARAM(UiaRootObjectId) then
     begin
-      if not (fControl is TPageControl) and not ProviderPublishesControlNativeWindowHandle then
+      if not FrameworkOwnsControlWindow then
       begin
         if TAccessibilityDiagnostics.Enabled then
         begin
@@ -3496,7 +3507,7 @@ begin
       end;
     end;
 
-    if (aMessage.LParam = LPARAM(OBJID_CLIENT)) and
+    if (aMessage.LParam = LPARAM(OBJID_CLIENT)) and FrameworkOwnsControlWindow and
       TAccessibilityMsaaBridge.TryHandleGetObject(aMessage.WParam, aMessage.LParam, fProvider, fMsaaAccessible,
       lResult) then
     begin

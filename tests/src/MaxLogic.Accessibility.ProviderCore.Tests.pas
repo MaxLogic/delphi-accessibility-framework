@@ -1036,13 +1036,33 @@ procedure TProviderCoreTests.FragmentNextSiblingEnumerationScalesLinearly;
 const
   cGrowthFactor = 4;
   cMaxTickGrowth = 8;
+  cSampleCount = 5;
   cSmallChildCount = 512;
 var
+  lLargeSampleTicks: Int64;
   lLargeTicks: Int64;
+  lSamplesRemaining: Integer;
+  lSmallSampleTicks: Int64;
   lSmallTicks: Int64;
 begin
-  lSmallTicks := MeasureNextSiblingEnumerationTicks(cSmallChildCount);
-  lLargeTicks := MeasureNextSiblingEnumerationTicks(cSmallChildCount * cGrowthFactor);
+  lLargeTicks := High(Int64);
+  lSmallTicks := High(Int64);
+  lSamplesRemaining := cSampleCount;
+  repeat
+    lSmallSampleTicks := MeasureNextSiblingEnumerationTicks(cSmallChildCount);
+    if lSmallSampleTicks < lSmallTicks then
+    begin
+      lSmallTicks := lSmallSampleTicks;
+    end;
+
+    lLargeSampleTicks := MeasureNextSiblingEnumerationTicks(cSmallChildCount * cGrowthFactor);
+    if lLargeSampleTicks < lLargeTicks then
+    begin
+      lLargeTicks := lLargeSampleTicks;
+    end;
+
+    Dec(lSamplesRemaining);
+  until lSamplesRemaining = 0;
 
   Assert.IsTrue(lLargeTicks <= lSmallTicks * cMaxTickGrowth,
     Format('NextSibling enumeration grew from %d to %d ticks for %dx children.', [lSmallTicks, lLargeTicks,

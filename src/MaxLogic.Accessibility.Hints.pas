@@ -267,7 +267,7 @@ begin
   lReleaseAfterDispatch := (fDispatchDepth = 0) and fReleaseAfterDispatch;
   if lReleaseAfterDispatch then
   begin
-    Free;
+    Free; //FI:W515 - Safe after the detached hook's final dispatch returns.
   end;
 end;
 
@@ -670,7 +670,7 @@ begin
       fRetained := False;
     end;
 
-    Free;
+    Free; //FI:W515 - Safe after the retained controller's final dispatch returns.
   end;
 end;
 

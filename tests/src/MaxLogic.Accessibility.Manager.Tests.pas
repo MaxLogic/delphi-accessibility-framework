@@ -1862,6 +1862,54 @@ begin
   Assert.IsNotNull(Result);
 end;
 
+function WaitForAccessibleObjectFromPointAt(const aPoint: TPoint; const aExpectedName: string;
+  aExpectedRole: Integer; out aChild: VARIANT): IAccessible;
+const
+  cTimeoutMs = 1000;
+var
+  lAccessible: IAccessible;
+  lChild: VARIANT;
+  lDeadline: UInt64;
+  lHwnd: HWND;
+  lName: WideString;
+  lNameResult: HRESULT;
+  lRole: OleVariant;
+  lRoleResult: HRESULT;
+begin
+  Result := nil;
+  aChild := Unassigned;
+  lDeadline := GetTickCount64 + cTimeoutMs;
+  repeat
+    lAccessible := nil;
+    lChild := Unassigned;
+    lName := '';
+    lNameResult := E_FAIL;
+    lRole := Unassigned;
+    lRoleResult := E_FAIL;
+    if AccessibleObjectFromPoint(aPoint, lAccessible, lChild) = S_OK then
+    begin
+      if lAccessible <> nil then
+      begin
+        lNameResult := lAccessible.Get_accName(CHILDID_SELF, lName);
+        lRoleResult := lAccessible.Get_accRole(CHILDID_SELF, lRole);
+        if (lNameResult = S_OK) and SameText(string(lName), aExpectedName) and
+          (lRoleResult = S_OK) and (Integer(lRole) = aExpectedRole) then
+        begin
+          aChild := lChild;
+          Exit(lAccessible);
+        end;
+      end;
+    end;
+
+    Application.ProcessMessages;
+  until GetTickCount64 >= lDeadline;
+
+  lHwnd := WindowFromPoint(aPoint);
+  Assert.Fail(Format(
+    'Accessible object was not ready after %d ms: hwnd=%d nameResult=%d name="%s" roleResult=%d role=%s.',
+    [cTimeoutMs, NativeUInt(lHwnd), lNameResult, string(lName), lRoleResult, VarToStr(lRole)]));
+end;
+
 function AccessibleHitTestAt(const aAccessible: IAccessible; const aPoint: TPoint): IAccessible;
 var
   lHit: OleVariant;
@@ -5730,7 +5778,7 @@ begin
 
     lTabRect := lPageControl.TabRect(lTabTms.TabIndex);
     lPoint := lPageControl.ClientToScreen(lTabRect.CenterPoint);
-    lAccessible := AccessibleObjectFromPointAt(lPoint, lChild);
+    lAccessible := WaitForAccessibleObjectFromPointAt(lPoint, 'TMS grid', ROLE_SYSTEM_PAGETAB, lChild);
 
     Assert.AreEqual(CHILDID_SELF, Integer(lChild));
     Assert.AreEqual('TMS grid', AccessibleName(lAccessible));

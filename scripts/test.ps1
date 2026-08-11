@@ -6,7 +6,9 @@ param(
     [ValidateSet('Win32', 'Win64')]
     [string] $Platform = 'Win32',
 
-    [string] $Filter = ''
+    [string] $Filter = '',
+
+    [string] $LogPath = ''
 )
 
 Set-StrictMode -Version Latest
@@ -27,10 +29,22 @@ if (-not [string]::IsNullOrWhiteSpace($Filter)) {
 }
 
 Write-Output "Running $lTestExe"
-$lOutput = & $lTestExe @lArguments 2>&1
-$lExitCode = $LASTEXITCODE
+$lOutput = @()
+if (-not [string]::IsNullOrWhiteSpace($LogPath)) {
+    $lResolvedLogPath = [System.IO.Path]::GetFullPath($LogPath)
+    $lLogParent = Split-Path -Parent $lResolvedLogPath
+    if (-not (Test-Path -LiteralPath $lLogParent -PathType Container)) {
+        throw "Test log directory not found: $lLogParent"
+    }
 
-$lOutput | ForEach-Object { Write-Output $_ }
+    & $lTestExe @lArguments 2>&1 |
+        Tee-Object -Variable lOutput |
+        Tee-Object -FilePath $lResolvedLogPath
+} else {
+    & $lTestExe @lArguments 2>&1 | Tee-Object -Variable lOutput
+}
+
+$lExitCode = $LASTEXITCODE
 
 if ($lExitCode -ne 0) {
     throw "Test executable failed with exit code $lExitCode"

@@ -131,17 +131,21 @@ type
   private
     fForm: TCustomForm;
     fHitTestRoots: TList<IRawElementProviderFragmentRoot>;
+    fMaterializedTabSheets: THashSet<Pointer>;
     fNextRuntimeId: Integer;
     fProviderNodesByControl: TDictionary<Pointer, IAccessibilityProviderNode>;
     fProvidersByControl: TDictionary<Pointer, IRawElementProviderFragment>;
     fRegistry: IAccessibilityAdapterRegistry;
     fRuntimeApi: IAccessibilityUiaApi;
     function AddMissingProviderChildren(const aParentProvider: IAccessibilityProviderNode;
-      const aScanNode: IAccessibilityScanNode): Boolean;
+      const aScanNode: IAccessibilityScanNode; aConstructedPathsOnly: Boolean): Boolean;
     procedure CollectScanControls(const aScanNode: IAccessibilityScanNode;
       aControls: THashSet<Pointer>);
+    procedure RememberInitiallyMaterializedTabSheets(const aScanNode: IAccessibilityScanNode);
     procedure ReconcileLabeledByRelationships(const aTree: IAccessibilityScanTree);
     function CanUseDirectHitTarget(aControl: TControl): Boolean;
+    function ScanNodeContainsConstructedProvider(const aScanNode: IAccessibilityScanNode): Boolean;
+    function ShouldReconcileChildren(aControl: TControl): Boolean;
     function ControlFromPoint(const aScreenPoint: TPoint): TControl;
     function TryFindControlProvider(aControl: TControl; out aProvider: IRawElementProviderFragment): Boolean;
     function TryFindTabHeaderProviderFromPoint(const aScreenPoint: TPoint;
@@ -1657,6 +1661,18 @@ begin
     ((aControl.Parent is TRadioGroup) or (aControl.Parent is TCustomGroupBox)));
 end;
 
+function ShouldConstructInitialChildren(aControl: TControl): Boolean;
+var
+  lTabSheet: TTabSheet;
+begin
+  Result := True;
+  if aControl is TTabSheet then
+  begin
+    lTabSheet := TTabSheet(aControl);
+    Result := (lTabSheet.PageControl = nil) or (lTabSheet.PageControl.ActivePage = lTabSheet);
+  end;
+end;
+
 function CreateProviderForNode(const aNode: IAccessibilityScanNode; const aRegistry: IAccessibilityAdapterRegistry;
   var aNextRuntimeId: Integer; const aApi: IAccessibilityUiaApi): IAccessibilityProviderNode;
 var
@@ -1702,7 +1718,7 @@ begin
       aRootProvider.AddHitTestRoot(lChildHitTestRoot);
     end;
 
-    if not lChildManagesOwnTree then
+    if not lChildManagesOwnTree and ShouldConstructInitialChildren(aScanNode.Child(i).Control) then
     begin
       AddProviderChildren(lChildProvider, aScanNode.Child(i), aRegistry, aNextRuntimeId, aApi, aRootProvider);
     end;
@@ -2134,7 +2150,8 @@ begin
 end;
 
 function TAccessibilityVclFormProviderRoot.AddMissingProviderChildren(
-  const aParentProvider: IAccessibilityProviderNode; const aScanNode: IAccessibilityScanNode): Boolean;
+  const aParentProvider: IAccessibilityProviderNode; const aScanNode: IAccessibilityScanNode;
+  aConstructedPathsOnly: Boolean): Boolean;
 var
   i: Integer;
   lCurrentParent: IRawElementProviderFragment;
@@ -2154,6 +2171,10 @@ begin
   end;
   for i := 0 to Pred(aScanNode.ChildCount) do
   begin
+    if aConstructedPathsOnly and not ScanNodeContainsConstructedProvider(aScanNode.Child(i)) then
+    begin
+      Continue;
+    end;
     if not fProviderNodesByControl.TryGetValue(Pointer(aScanNode.Child(i).Control), lChildProvider) or
       (lChildProvider = nil) or lChildProvider.IsDisconnected then
     begin
@@ -2203,10 +2224,55 @@ begin
       end;
     end;
 
-    if not lChildManagesOwnTree then
+    if not lChildManagesOwnTree and ShouldReconcileChildren(aScanNode.Child(i).Control) then
     begin
-      Result := AddMissingProviderChildren(lChildProvider, aScanNode.Child(i)) or Result;
+      Result := AddMissingProviderChildren(lChildProvider, aScanNode.Child(i), aConstructedPathsOnly) or Result;
+    end else if not lChildManagesOwnTree and
+      ScanNodeContainsConstructedProvider(aScanNode.Child(i)) then
+    begin
+      Result := AddMissingProviderChildren(lChildProvider, aScanNode.Child(i), True) or Result;
     end;
+  end;
+end;
+
+function TAccessibilityVclFormProviderRoot.ScanNodeContainsConstructedProvider(
+  const aScanNode: IAccessibilityScanNode): Boolean;
+var
+  i: Integer;
+  lProvider: IAccessibilityProviderNode;
+begin
+  if fProviderNodesByControl.TryGetValue(Pointer(aScanNode.Control), lProvider) and
+    (lProvider <> nil) and not lProvider.IsDisconnected then
+  begin
+    Exit(True);
+  end;
+  for i := 0 to Pred(aScanNode.ChildCount) do
+  begin
+    if ScanNodeContainsConstructedProvider(aScanNode.Child(i)) then
+    begin
+      Exit(True);
+    end;
+  end;
+  Result := False;
+end;
+
+procedure TAccessibilityVclFormProviderRoot.RememberInitiallyMaterializedTabSheets(
+  const aScanNode: IAccessibilityScanNode);
+var
+  i: Integer;
+  lTabSheet: TTabSheet;
+begin
+  for i := 0 to Pred(aScanNode.ChildCount) do
+  begin
+    if aScanNode.Child(i).Control is TTabSheet then
+    begin
+      lTabSheet := TTabSheet(aScanNode.Child(i).Control);
+      if (lTabSheet.PageControl = nil) or (lTabSheet.PageControl.ActivePage = lTabSheet) then
+      begin
+        fMaterializedTabSheets.Add(Pointer(lTabSheet));
+      end;
+    end;
+    RememberInitiallyMaterializedTabSheets(aScanNode.Child(i));
   end;
 end;
 
@@ -2238,6 +2304,7 @@ begin
   fRegistry := aRegistry;
   fRuntimeApi := aApi;
   fHitTestRoots := TList<IRawElementProviderFragmentRoot>.Create;
+  fMaterializedTabSheets := THashSet<Pointer>.Create;
   fNextRuntimeId := 1;
   fProviderNodesByControl := TDictionary<Pointer, IAccessibilityProviderNode>.Create;
   fProvidersByControl := TDictionary<Pointer, IRawElementProviderFragment>.Create;
@@ -2248,7 +2315,24 @@ begin
   fProvidersByControl.Free;
   fProviderNodesByControl.Free;
   fHitTestRoots.Free;
+  fMaterializedTabSheets.Free;
   inherited Destroy;
+end;
+
+function TAccessibilityVclFormProviderRoot.ShouldReconcileChildren(aControl: TControl): Boolean;
+var
+  lTabSheet: TTabSheet;
+begin
+  Result := True;
+  if aControl is TTabSheet then
+  begin
+    lTabSheet := TTabSheet(aControl);
+    if (lTabSheet.PageControl = nil) or (lTabSheet.PageControl.ActivePage = lTabSheet) then
+    begin
+      fMaterializedTabSheets.Add(Pointer(lTabSheet));
+    end;
+    Result := fMaterializedTabSheets.Contains(Pointer(lTabSheet));
+  end;
 end;
 
 function TAccessibilityVclFormProviderRoot.DoGetPropertyValue(aPropertyId: PROPERTYID;
@@ -2373,6 +2457,7 @@ begin
   lControlsToRemove := TList<Pointer>.Create;
   try
     CollectScanControls(aTree.Root, lDesiredControls);
+    fMaterializedTabSheets.IntersectWith(lDesiredControls);
     for lControlKey in fProviderNodesByControl.Keys do
     begin
       if not lDesiredControls.Contains(lControlKey) then
@@ -2381,7 +2466,7 @@ begin
       end;
     end;
 
-    Result := AddMissingProviderChildren(Self as IAccessibilityProviderNode, aTree.Root);
+    Result := AddMissingProviderChildren(Self as IAccessibilityProviderNode, aTree.Root, False);
     for i := 0 to Pred(lControlsToRemove.Count) do
     begin
       lControlKey := lControlsToRemove[i];
@@ -5965,6 +6050,7 @@ begin
   EnsureRadioGroupButtonControls(aForm);
   lTree := TAccessibilityScanner.ScanForm(aForm, lRegistry);
   lFormRoot := TAccessibilityVclFormProviderRoot.Create(aForm, lRegistry, aApi);
+  lFormRoot.RememberInitiallyMaterializedTabSheets(lTree.Root);
   Result := lFormRoot as IAccessibilityProviderNode;
   Result.SetProperty(UIA_ControlTypePropertyId, UIA_WindowControlTypeId);
   Result.SetProperty(UIA_ClassNamePropertyId, aForm.ClassName);

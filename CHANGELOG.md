@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-08-11
+### Fixed
+- Large tabbed VCL forms now defer accessibility-provider construction for never-visited inactive tab content, then retain stable provider identity after first activation while preserving live captions, runtime hierarchy changes, native HWND focus, navigation, hit testing, and tab selection.
+
 ## 2026-07-31
 ### Fixed
 - Native `TListBox` and `TCheckListBox` navigation no longer triggers a full accessibility-provider sweep on the following application-idle cycle; runtime changes are coalesced to affected providers and real hierarchy revisions.

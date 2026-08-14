@@ -90,6 +90,7 @@
     <DCCReference Include="src\MaxLogic.Accessibility.Documentation.Tests.pas"/>
     <DCCReference Include="src\MaxLogic.Accessibility.Manager.Tests.pas"/>
     <DCCReference Include="src\MaxLogic.Accessibility.Msaa.Tests.pas"/>
+    <DCCReference Include="src\MaxLogic.Accessibility.ProviderConstruction.Tests.pas"/>
     <DCCReference Include="src\MaxLogic.Accessibility.ProviderCore.Tests.pas"/>
     <DCCReference Include="src\MaxLogic.Accessibility.Scanner.Tests.pas"/>
     <DCCReference Include="src\MaxLogic.Accessibility.ScreenReaders.Tests.pas"/>

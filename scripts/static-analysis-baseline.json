@@ -27,7 +27,7 @@
         "head": "b6bfc003aa0fd37dd539b3e6b02f5b72bf37288e"
       },
       "policy_sha256": "0660a79ea1c983e6d72b24ce0d16e0f7fd22c735d4ba3c26748d49d29fab50ae",
-      "project_manifest_sha256": "514f397e7c0bec8a17a645f2537caf59843de727175580d96a2e01a72f7b4a03",
+      "project_manifest_sha256": "bb5375b446f82541323df8f1e3e0d4abafc5c2795a6433fe125a4e1c3598514d",
       "reporting_policy_origins": {
         "pal_ignore_rules": []
       },
@@ -58,9 +58,9 @@
         "vcs": "git"
       }
     },
-    "sha256": "f3e5ec291eeb6f3cf8bfc717b525913485f5d3cb5b60a7fabacbb978cb79b124"
+    "sha256": "13eca86ed8acd864c4e1eb866175528326b9fad788d0ab99658568c2755c2934"
   },
-  "created_at": "2026-08-10T11:12:42",
+  "created_at": "2026-08-11T12:13:41",
   "fixinsight": {
     "counts_by_code": {},
     "ownership": {
@@ -73,7 +73,7 @@
     "w_hashes": []
   },
   "ownership": {
-    "project": 373,
+    "project": 376,
     "repository": 0,
     "third_party": 0,
     "unknown": 0
@@ -81,7 +81,7 @@
   "pascal_analyzer": {
     "ignored_rule_counts": {},
     "ownership": {
-      "project": 373,
+      "project": 376,
       "repository": 0,
       "third_party": 0,
       "unknown": 0
@@ -122,16 +122,16 @@
       "PAL.warnings.local-variables-that-are-set-but-not-later-used-c0090acc66190877": 19,
       "PAL.warnings.misformed-call-to-format-function-bd92e0dc364232a1": 3,
       "PAL.warnings.mismatch-parameter-value-32-64-bits-6d2b40ac41ce2f4f": 11,
-      "PAL.warnings.mixing-interface-variables-and-objects-bb88926fab131e91": 15,
+      "PAL.warnings.mixing-interface-variables-and-objects-bb88926fab131e91": 16,
       "PAL.warnings.non-public-constructors-destructors-b6b6939913e05c09": 6,
       "PAL.warnings.out-parameter-is-read-before-set-or-never-set-cb42508e87cbd2e8": 253,
       "PAL.warnings.possible-bad-assignment-a70299beea436804": 157,
       "PAL.warnings.possible-bad-object-creation-778204e9b206d6f6": 1,
       "PAL.warnings.possible-orphan-event-handler-8a7c92da13afdf9b": 7,
-      "PAL.warnings.recursive-subprograms-37ef97d9adb66143": 65,
+      "PAL.warnings.recursive-subprograms-37ef97d9adb66143": 69,
       "PAL.warnings.redeclared-identifiers-from-system-unit-ef3451b78b3b6bb6": 58,
       "PAL.warnings.redeclares-ancestor-member-or-method-in-helped-class-record-23cd3f8c917dd9cd": 433,
-      "PAL.warnings.set-before-passed-as-out-parameter-1f0b5be50a52e864": 141,
+      "PAL.warnings.set-before-passed-as-out-parameter-1f0b5be50a52e864": 139,
       "PAL.warnings.short-circuited-if-case-statements-4f8161135a823c31": 1,
       "PAL.warnings.value-parameters-that-are-set-52e235b95810ada4": 270,
       "PAL.warnings.var-parameters-that-are-used-but-never-set-b779d51d7ff20b2b": 14,
@@ -151,9 +151,9 @@
       "PAL.warnings.functions-called-as-procedures-ff895719457103ec": 168,
       "PAL.warnings.interfaces-passed-as-parameters-without-const-directive-1cf934bca89c93d6": 12,
       "PAL.warnings.local-variables-that-are-set-but-not-later-used-c0090acc66190877": 1,
-      "PAL.warnings.mixing-interface-variables-and-objects-bb88926fab131e91": 8,
-      "PAL.warnings.recursive-subprograms-37ef97d9adb66143": 16,
-      "PAL.warnings.set-before-passed-as-out-parameter-1f0b5be50a52e864": 85,
+      "PAL.warnings.mixing-interface-variables-and-objects-bb88926fab131e91": 9,
+      "PAL.warnings.recursive-subprograms-37ef97d9adb66143": 20,
+      "PAL.warnings.set-before-passed-as-out-parameter-1f0b5be50a52e864": 83,
       "PAL.warnings.variables-that-are-set-but-never-referenced-ed998e9ecdb55eb7": 20
     },
     "strong_hashes": [],
@@ -163,7 +163,7 @@
         "section": "Functions called as procedures"
       },
       {
-        "count": 85,
+        "count": 83,
         "section": "Set before passed as out parameter"
       },
       {
@@ -171,19 +171,19 @@
         "section": "Variables that are set, but never referenced"
       },
       {
-        "count": 19,
-        "section": "For-loop variables not used in loop"
+        "count": 20,
+        "section": "Recursive subprograms"
       },
       {
-        "count": 16,
-        "section": "Recursive subprograms"
+        "count": 19,
+        "section": "For-loop variables not used in loop"
       },
       {
         "count": 12,
         "section": "Interfaces passed as parameters without \"const\" directive"
       },
       {
-        "count": 8,
+        "count": 9,
         "section": "Mixing interface variables and objects"
       },
       {
@@ -198,8 +198,8 @@
     "totals": {
       "optimizations": 43,
       "strong_warnings": 0,
-      "total": 373,
-      "warnings": 330
+      "total": 376,
+      "warnings": 333
     },
     "verified_rule_aliases": {},
     "warning_hashes": [
@@ -212,12 +212,14 @@
       "04ef9e957171993bea217ba777c91bd1c4248fd5",
       "05070c9f003abca6796a83c8d252bdd2a6057b02",
       "05afec345950c39e6aac51f7674c876f5a78489f",
+      "05c8123f5003697832bb0ddb07a5e489e8ebce67",
       "060aa6fec30f975aa6506ed987b158f1753573a8",
       "0723c46a768349d1a1f9754902d8c139b312a5f1",
       "07443e5e49c6cdcf91f0de7e36ef09b10a37c895",
       "07e3325d656a00af281373e6e0f4f058a81b500d",
       "087d04aa4c8414347efb573473a47cc0ee81dd59",
       "0938b19bcfe6093b8cd7e4798c3fdde0296bfd45",
+      "0a8eae9809e341a30962e30db65aed10a067ba25",
       "0aef6559f13d9d9352109a8d1ccbdfab179ae65f",
       "0b41903cc88f182866925b1a877d1b9fd44fb1fc",
       "0c993b84325949271a56b6f85b79d13b5efb636b",
@@ -250,11 +252,13 @@
       "2145f6f6b0bb2c022312cfc60ce09e3cacb3ae6d",
       "22056b6da897b6da27c50e46215ffefd843479c2",
       "221a5f6fd46241619a43c90ad5e0a534a48a5250",
+      "227af75402ebb2183e233883b46e0b54606d7e83",
       "232aed76a0b1e8e0ae3509060359ac5ff505c092",
       "233c1d468b2e3d4bb390b69823997449654e37e3",
       "23e1239e8bfd5b9c0cda521fcf39107a8135784c",
       "251e735647ed0a2960220244b98464ce2b4044da",
       "25355c9ece811cf259a9a62c18478edd940a8ff4",
+      "26d24cff16cad0dbd250953288a182dd1a8924d4",
       "2719c90dc49acee052c95fdb928e6658ec840a49",
       "28bdf12667fef729a193241aa9f5edee4c7889ad",
       "2942f99916f6ee2b940344597e0c2889ff96a7bd",
@@ -263,6 +267,7 @@
       "2b43cefaf2500a4bef1402055d3c1b2ede648e1a",
       "2cc6c94dd3915d477098760925df7a5ba787f1d7",
       "2fb6fe7fda36aef237e1df911abf2bcff8159249",
+      "321924ec413a7a50f4a19a5bffe5bdedfa25489d",
       "32222fa7ba3ca95e26ba8eb8a21f48949475d667",
       "3237cf2784248a12380d670bbb0a4278c6523997",
       "327809147170d5122c7bc9a40f4848644ea71556",
@@ -270,6 +275,7 @@
       "3357bb547a3849cf17f6c4a2276bceed7355ccb8",
       "350b55012856b0705761ee330b7fb260c30a277d",
       "351f12160f19395350f79b5cc5ec499f1e31d1ca",
+      "356aed728d4cd92d64306321bfbe096dbf1d9a03",
       "37bbcee9808bfef00cadbfd44703baaca21e8a72",
       "38233157e221c85dc80dc6edca350b17edda2aa6",
       "38703b319a7baf607fb8f3c41f089be121bf1c29",
@@ -285,28 +291,27 @@
       "3eb651daa9ab1ebd64015060d14f25c84aebcf33",
       "413a469925024c1ec9a3b0cc3acd9be82ebfd926",
       "419b6a47a75cab045f5fb42ed824802cb8481df6",
-      "42641df333fb85902ce1c7338be872fdc74d168d",
       "437163e4b448e693eda3e1c6b971ad46aef3b145",
       "43bb68fd60417a9b755cc4dbff95f88c7abb7bb1",
       "449610b11ff2dc875d764b59d0df89aeb0103445",
       "46b47b4c4679271c5604b4b3b009def0fa67bcda",
       "46d057ee4d650ffa2fc7103320ef1a3a526f19ad",
       "46f33649831d6740320a0fb0281e8ce83b5adfc8",
-      "47809c7876c7076658e8ee058d8d133877c6eb29",
+      "47c588833d495302fbb8dca3600bb41868b10892",
       "47ef130f3a1ae46c9a158d2f81dabfc99b042498",
       "491f05b0aa2d138d779c746fa783e6a0406948b8",
       "493b9c0c9f4202da338163436dc9d9dcb13483a1",
       "49666adce4bbdfedb1605b5f1c38a5ff942dc886",
-      "498da945a95845ff8e6421d871b42c3fae018e97",
       "4ac0c586c6b481b74d3e1e0a5f2bb968e071b697",
       "4c05e808b5b1006ddeead31cce656e50170d82eb",
       "4c2135736d89035d20538233c61fde22b9cec0bb",
       "4d55334cf1f4ee051fdf5e2e126afdd54b55de28",
       "4e149afae10edcbbed2becd2976bb529bb321db4",
-      "4ef4494dc9a0ca7feeb302ac1c2571e0b45f42c3",
       "4f47e7da776f284286b23e767a67b23b58637bf9",
       "4fd89863e8de0e5d3aa270ba364299b087a70e93",
+      "50150f91900e05671c49c1452639b309f9e06db4",
       "508833197c2ea9899094ff56a44356604eec72cd",
+      "50f9bb76eabc5bc45c665651b5561d95feeb22d9",
       "51deda8d66520d6ab50ab36bccace7e1f8d41569",
       "52859b9a4d8298ffb6509dc21938c04b96c442dc",
       "528af4cd8ca7462553f4a26a9dea5e4fb58e0e6d",
@@ -325,6 +330,7 @@
       "5adb41ec9ca2c8e74e77c1bb23a516f0427b978e",
       "5b373125d75175a30b0358c08cb873b92e29b434",
       "5baef0f8a4c243e12743d1548771de4c1e56b843",
+      "5d1e924eb8b9e075764defcb6274ecbd92c416c4",
       "5db1744b30db1dcee5f59641a996e775387d3e0e",
       "5e7df856bb902533f4c93813b41e85b3d79b9de1",
       "5f7070cef41436f0841008e2a8f9a1e931c20f41",
@@ -342,8 +348,6 @@
       "6c64b3838418a183e6948592f5a530009d199a3e",
       "6d314c60f99e162e516900b37023f436b27409af",
       "6d64f6b64248b567e9bf3adafb1b2e5732f9155d",
-      "6d6966570c0470bcd991177a4fed9f21c279d3a1",
-      "6d901fd88e3a03ea9b4eb37ed2b7f94a030d6720",
       "6ed092e68dafb486c2d83fe48d0c8ceae3a9d0e4",
       "6f47eb186eee4f891b1e8fa7905d46b159b57272",
       "7037698776bbba991bcc8e460524ef80870c49e0",
@@ -356,6 +360,7 @@
       "73c17ca2dac9e7a4c0a1315ee7546a3067d1a9b0",
       "73e4ea0c8a4cde685e1fb3fdd50a84ceb6bbc1ed",
       "77677f1f3c7b61ae4165bf5f7bb4a00aa0b43bbb",
+      "777ca583934beeddb924fcbb98453afc223e9ef9",
       "77b43cd600caf6d0d0f7bbcfdafab62696cd2d9b",
       "78a7950a45347791747cbc69528828cf42e1edeb",
       "7913491dbba14de426779c2485a2fca23b5c2e97",
@@ -368,16 +373,16 @@
       "7c76736ade7b420d138d38b5a622900f2ab8dde6",
       "7d4f82e967b0a1e2993083737cc452f6b4154b81",
       "7f00888c5601b1317f7c93d16da2d29f6ccc23b8",
-      "812663b55536bfb82f3e8f4bea2c406a681e88cb",
       "8203e7892e3f7d8552a1d1cabb9650efc65d7b6c",
+      "82b0f363f2c784d81d672c7695aaf3a95b29ea50",
       "82fcf15a4926e9a9336c3b6e2d3ee4b731042386",
       "8317cab8904aa18d96cb0c46fb8428baeba01ae7",
       "843a91b7d9cbb76ba13fc28e8948ac15d00c49f8",
       "8448952588ad6891a38262dcd2b066d21676ca9e",
       "851d4b7de67bbbff11a8a40f363b021aa6cbbaec",
-      "8530166b06e232f5ce18715f7082099a2468920c",
       "864e96cfd8b0e0580eb4238d552479a457c43a77",
       "8686e8a28a7a326cd7e79451f4264e64900c86cc",
+      "8801004ca35e1cf514a2ddf1410cdb573601c2aa",
       "88abae2636f8a5f78b8114e5cf5f0c3e87207ab0",
       "8ad5d50c2fefec9aa5974172a1e29140c3f8b469",
       "8b056d778e2e193a76cbc6ee0fc28d43f255da05",
@@ -401,22 +406,22 @@
       "95f6386c130d5befe25bca724910adba03fe98e9",
       "9619ac9cf73f894fc708d4e52b6cec3567193cb5",
       "97053f6fc76d9831b14d04013db0487e72c51628",
-      "9794c0318fc4871dcf16fe3f341a23977cb0a803",
-      "982302492ac238bfdf854d719b1b944bdaa1b71c",
       "9a391ddcd755a314fd9989f85063d441a8a4d2c7",
       "9a440c12240429693c3505c04ee8c02565c403be",
       "9a9d82b928a565a9f598d43aba036ae7f8d74c4e",
       "9b0797ff8bfdeeae4ca993cdec2567338a7d2dd2",
       "9bf56cc199fa2b30df703c9bac8323440dfd64b8",
       "9bfc96a5c430d20530a0bcd14c9274f68d7fe52a",
+      "9c9e834eaf03d110ed9ada3f739567e2bc6f641c",
       "9dc1642efc81851566f44929673e2baa5a2f8f11",
       "9eceacadd5e45bb0ce299f7cc414f3478b578fb9",
+      "9ed200c515a44a94ca674294b5fbb3a568fa7b4e",
       "9f0c3a5d63392b9c1731ba299a7dd5d185d290c7",
       "a03a0c582ac36b9ae31561a8343cde8824bebdfe",
       "a215f2bf4556edcb15f3cbdcd0c6bc24d7ba4d65",
-      "a24f82a5103586680a890c7ea998638faf418231",
       "a27195e1e2082aff39659531d33e93f192342bd5",
       "a375b19ef6da9195c9eca0666e75b8b15f6ca426",
+      "a3e31edad67b77bff4dcaa631ea593dbcfb837a8",
       "a4feb2caa1dd8ad378476dcb4cc85c7479a85374",
       "a57c33369da46451a68461be1cb75d142bd27c35",
       "a5c62054522064e57f417cb88120697bcf81e278",
@@ -424,12 +429,12 @@
       "a60669af041fa712d871e13452ca86fd65b54493",
       "a6110ea8c68ad66fb56e0e4bac1d06abbb6e8b93",
       "a6b0b8f84c2e50d829ea18f344ab016358ff6039",
+      "a726cd46b1d99750b34aab0142036253a6d2bd5d",
       "a8bf4e7fcf4bd0a93dc6bbf9bb2fa6bc2023a847",
       "a91e229b19376c4dee059d72e41d31f09b16295f",
-      "aac5887d5d23882805b16d28701738d72f727fce",
+      "aa4cbcea4c620951f1583af04bd4246e44634df9",
       "ab931c6a4f04aab11e0acee7d83f25f6f4bc57cb",
       "adf25810f655245c20b5713b21168789ad049f8f",
-      "ae372fa6dc1d23db7906d4a0c822294f98d35c87",
       "aea3ea79144bec2c9b5829d2493e9525a79b2f37",
       "aebf745b6063e804159b26d5ff7f3c5ca8cac3b2",
       "aef3b176b06c29325ef544726b275f4655919bb2",
@@ -439,16 +444,14 @@
       "b33ef4b5f3bb9350fbe5026487af0889f319ca5d",
       "b3811b7e857327e65971f7f1e65c2e687b99a17b",
       "b3dfbf751a44092d6afe87f4cc7c499f3623294f",
-      "b5facedac06ec9a9f22cf3030b7bd6e07bdfac04",
       "b809b32330a5afffa2dbfdf7b712a93f07aa873b",
       "bad00dc67afb71c950220455229beeecf7519195",
       "bcb86f90768e55424f37161e227e784213abbc25",
       "bd0322f75a653412019ef0327a76a93f6de5fda8",
       "bd811c671e433b26f8a440c98525efbf654a0c53",
       "bde3cc4e058709ac0bc86ee42a1a3104d109e413",
-      "be680301d475d944182c7cc22ee00497832e183b",
-      "bf484b357771f68ddb416668df9f31ec3e3ec741",
       "bfd70720c42deda6544893e89e937abc033d8e7c",
+      "c09f3706a694ddc3281228eb33af5544985975f1",
       "c0c89f0eaffe49863d92df651e1edbddb9b7016d",
       "c24b262920e6774f732a2d34b9b53bb27879b9b9",
       "c2972219ffe3f28a359b21388c77c5a347361759",
@@ -459,12 +462,13 @@
       "c4114431d0774ed9e81cf1233cfa9b72858b21e5",
       "c4319f270d0d4a0408f9300fa928c6a4ec2042a9",
       "c5123e9e9a4b5497e7e2205fa4fe0f3fa9451c89",
-      "c53df1d114d32e100ec9fdc5721e08438f4b181d",
       "c63727b38492f1a2cd91f5f06aa71016f1169b5a",
+      "c6cd2cf8948e340597ddb84cf3057d05a9af148f",
       "c73333486b18cce81688a71042bf970ac9e7e5d5",
       "c7ffdf6996dfa5fd6cadf6ce79bf9a18a354f8e9",
       "c83de1e21e707652038a6dc2acc986198265e216",
       "ca778a4ec8e92d91ce0b79a9b0375c3f9aad587e",
+      "cb11a53b9e06412c96d28aabeda49c204a51172f",
       "cb5b34d2eb011e50a8b34d9a9ac63f588ca3deba",
       "ccef118a7501887f927e3cb7c509c486ca92caf0",
       "ce5ff4aa291a16ba770505a591fb70ccd564e180",
@@ -475,7 +479,6 @@
       "d15a1f45e4eb308d0f253f0bbc130f14c08596fe",
       "d26bb217be26749d8229e92b115cb26b91f9533f",
       "d29076837cd45feba046eae819cc585d1e7844a1",
-      "d326a4c90a8437fa0035630252a6149867acf7e9",
       "d34335f6d8ed8e8bb9cf09311876afc5244f8acf",
       "d414a59f7af70937e5c64f2022aa6faa106c5cee",
       "d4d8b1fce03d7dc4fe586b778403466baf2c0a56",
@@ -484,11 +487,11 @@
       "d5a60b5a9044586c3fc0e3ba1c4010dcf267006f",
       "d5cb0f8bbf136bc0f4d43868470d664bfcb46bb5",
       "d71493835f064b6cf9ca80902f838b96311493fe",
-      "d92fd4fc12f1a20784265a7259b56ac09736f12e",
       "d9bac27f93425f660b9eab868a4a64c1173bb7cf",
       "da7d09adaa732a98b00a400d08cefb861cef9b79",
       "dab02c6c505ccd39e0a0b9f0f6cc9f110574370c",
       "db7c1c88ae830a8933f34828c36e865222303dd9",
+      "dc4cf9dc4f4beab3ec0c7a6eec14b87ebf5edb81",
       "ddabaa27e14140cba14d0ab575eeaa19540ff989",
       "de0e91ec5d35349bb4ea79d10c6fac2a6997c45d",
       "de483d6f643d188a8b721f766efc585e085c561c",
@@ -510,10 +513,10 @@
       "f1ae1dc309fa741caa09685f8b83652fd264b911",
       "f2eb3cbffd606c7752bb9982ce8878862a3b5a08",
       "f2fca189ca7d8d8866be100fd4d27cd34ae23997",
+      "f31fed9b7217fdb2f8c90534385c01e6d4379125",
       "f362437ed62faa861b95df8697f21a5047764b68",
       "f4330c4f31bd21fe70bb4f0af1cfa374bd50eaf9",
       "f50dff5f3b98c741b4a2989fb8724502d3b3c224",
-      "f5292c5849b9eda3c5f8117421747c0f0acd4c84",
       "f6ada02e9a32e5a58d1772363ccf300a3cfcf7e7",
       "f6c1eef8129e6ee23cbe3123f110a4146e1efd1e",
       "f6f78696c9cc6297930e904401b73430cc27c15a",
@@ -535,7 +538,7 @@
       "ff94bccdf9005f02170889b73bd7652b14213b0f"
     ],
     "warning_ownership": {
-      "project": 330,
+      "project": 333,
       "repository": 0,
       "third_party": 0,
       "unknown": 0
@@ -543,13 +546,13 @@
   },
   "raw": {
     "by_analyzer": {
-      "fixinsight": 459,
-      "pascal_analyzer": 7929
+      "fixinsight": 463,
+      "pascal_analyzer": 7932
     },
     "by_rule": {
       "FI.C101": 107,
       "FI.C102": 10,
-      "FI.C103": 158,
+      "FI.C103": 162,
       "FI.C110": 5,
       "FI.O801": 2,
       "FI.O802": 54,
@@ -593,16 +596,16 @@
       "PAL.warnings.local-variables-that-are-set-but-not-later-used-c0090acc66190877": 19,
       "PAL.warnings.misformed-call-to-format-function-bd92e0dc364232a1": 3,
       "PAL.warnings.mismatch-parameter-value-32-64-bits-6d2b40ac41ce2f4f": 11,
-      "PAL.warnings.mixing-interface-variables-and-objects-bb88926fab131e91": 15,
+      "PAL.warnings.mixing-interface-variables-and-objects-bb88926fab131e91": 16,
       "PAL.warnings.non-public-constructors-destructors-b6b6939913e05c09": 6,
       "PAL.warnings.out-parameter-is-read-before-set-or-never-set-cb42508e87cbd2e8": 253,
       "PAL.warnings.possible-bad-assignment-a70299beea436804": 157,
       "PAL.warnings.possible-bad-object-creation-778204e9b206d6f6": 1,
       "PAL.warnings.possible-orphan-event-handler-8a7c92da13afdf9b": 7,
-      "PAL.warnings.recursive-subprograms-37ef97d9adb66143": 65,
+      "PAL.warnings.recursive-subprograms-37ef97d9adb66143": 69,
       "PAL.warnings.redeclared-identifiers-from-system-unit-ef3451b78b3b6bb6": 58,
       "PAL.warnings.redeclares-ancestor-member-or-method-in-helped-class-record-23cd3f8c917dd9cd": 433,
-      "PAL.warnings.set-before-passed-as-out-parameter-1f0b5be50a52e864": 141,
+      "PAL.warnings.set-before-passed-as-out-parameter-1f0b5be50a52e864": 139,
       "PAL.warnings.short-circuited-if-case-statements-4f8161135a823c31": 1,
       "PAL.warnings.value-parameters-that-are-set-52e235b95810ada4": 270,
       "PAL.warnings.var-parameters-that-are-used-but-never-set-b779d51d7ff20b2b": 14,
@@ -612,17 +615,17 @@
     },
     "by_severity": {
       "hygiene": 149,
-      "maintainability": 280,
+      "maintainability": 284,
       "optimization": 1973,
       "other": 0,
       "strong_warning": 167,
-      "warning": 5819
+      "warning": 5822
     },
     "fixinsight": {
       "by_rule": {
         "FI.C101": 107,
         "FI.C102": 10,
-        "FI.C103": 158,
+        "FI.C103": 162,
         "FI.C110": 5,
         "FI.O801": 2,
         "FI.O802": 54,
@@ -634,22 +637,22 @@
       },
       "by_severity": {
         "hygiene": 149,
-        "maintainability": 280,
+        "maintainability": 284,
         "warning": 30
       },
       "hygiene": 149,
-      "maintainability": 280,
+      "maintainability": 284,
       "ownership": {
-        "project": 328,
+        "project": 332,
         "repository": 0,
         "third_party": 131,
         "unknown": 0
       },
-      "total": 459,
+      "total": 463,
       "warnings": 30
     },
     "ownership": {
-      "project": 701,
+      "project": 708,
       "repository": 0,
       "third_party": 7687,
       "unknown": 0
@@ -691,16 +694,16 @@
         "PAL.warnings.local-variables-that-are-set-but-not-later-used-c0090acc66190877": 19,
         "PAL.warnings.misformed-call-to-format-function-bd92e0dc364232a1": 3,
         "PAL.warnings.mismatch-parameter-value-32-64-bits-6d2b40ac41ce2f4f": 11,
-        "PAL.warnings.mixing-interface-variables-and-objects-bb88926fab131e91": 15,
+        "PAL.warnings.mixing-interface-variables-and-objects-bb88926fab131e91": 16,
         "PAL.warnings.non-public-constructors-destructors-b6b6939913e05c09": 6,
         "PAL.warnings.out-parameter-is-read-before-set-or-never-set-cb42508e87cbd2e8": 253,
         "PAL.warnings.possible-bad-assignment-a70299beea436804": 157,
         "PAL.warnings.possible-bad-object-creation-778204e9b206d6f6": 1,
         "PAL.warnings.possible-orphan-event-handler-8a7c92da13afdf9b": 7,
-        "PAL.warnings.recursive-subprograms-37ef97d9adb66143": 65,
+        "PAL.warnings.recursive-subprograms-37ef97d9adb66143": 69,
         "PAL.warnings.redeclared-identifiers-from-system-unit-ef3451b78b3b6bb6": 58,
         "PAL.warnings.redeclares-ancestor-member-or-method-in-helped-class-record-23cd3f8c917dd9cd": 433,
-        "PAL.warnings.set-before-passed-as-out-parameter-1f0b5be50a52e864": 141,
+        "PAL.warnings.set-before-passed-as-out-parameter-1f0b5be50a52e864": 139,
         "PAL.warnings.short-circuited-if-case-statements-4f8161135a823c31": 1,
         "PAL.warnings.value-parameters-that-are-set-52e235b95810ada4": 270,
         "PAL.warnings.var-parameters-that-are-used-but-never-set-b779d51d7ff20b2b": 14,
@@ -711,20 +714,20 @@
       "by_severity": {
         "optimization": 1973,
         "strong_warning": 167,
-        "warning": 5789
+        "warning": 5792
       },
       "optimizations": 1973,
       "ownership": {
-        "project": 373,
+        "project": 376,
         "repository": 0,
         "third_party": 7556,
         "unknown": 0
       },
       "strong_warnings": 167,
-      "total": 7929,
-      "warnings": 5789
+      "total": 7932,
+      "warnings": 5792
     },
-    "total": 8388
+    "total": 8395
   },
   "run_context": {
     "config": "Release",
@@ -754,7 +757,7 @@
     "fixinsight_top_codes": {
       "C101": 107,
       "C102": 10,
-      "C103": 158,
+      "C103": 162,
       "C110": 5,
       "O801": 2,
       "O802": 54,
@@ -763,16 +766,16 @@
       "W519": 10,
       "W528": 19
     },
-    "fixinsight_total": 459,
+    "fixinsight_total": 463,
     "pal_compiler_target": "Delphi 12 (Win32)",
     "pal_totals": {
       "optimizations": 1973,
       "strong_warnings": 167,
-      "total": 7929,
-      "warnings": 5789
+      "total": 7932,
+      "warnings": 5792
     },
     "pal_version": "9.21.4.0",
-    "path": "C:\\Users\\pawel\\AppData\\Local\\Temp\\dak\\Accessibility-Framework\\static-analysis-20260810-111050-73748\\summary.md",
+    "path": "C:\\Users\\pawel\\AppData\\Local\\Temp\\dak\\Accessibility-Framework\\static-analysis-20260811-121151-36004\\summary.md",
     "project": "F:\\projects\\MaxLogic\\Accessibility-Framework\\tests\\MaxLogicAccessibilityFramework.Tests.dpr",
     "provenance": {
       "dak": {
@@ -802,12 +805,12 @@
           "status": "available"
         },
         "changed_files": [
-          "scripts/static-analysis-baseline.json",
-          "scripts/test.ps1",
-          "scripts/tests/test.Tests.ps1",
-          "src/MaxLogic.Accessibility.Hints.pas",
-          "tests/src/MaxLogic.Accessibility.Manager.Tests.pas",
-          "tests/src/MaxLogic.Accessibility.ProviderCore.Tests.pas"
+          "CHANGELOG.md",
+          "docs/performance-review-2026-07-10.md",
+          "src/MaxLogic.Accessibility.VclAdapters.pas",
+          "tests/MaxLogicAccessibilityFramework.Tests.dpr",
+          "tests/MaxLogicAccessibilityFramework.Tests.dproj",
+          "tests/src/MaxLogic.Accessibility.ProviderConstruction.Tests.pas"
         ],
         "config_manifests": [
           {
@@ -816,15 +819,15 @@
           }
         ],
         "dirty": true,
-        "head": "1c9786715d1003d8c19c1ddd9093d45583f84b0f",
-        "main_source_sha256": "3ed84305f8e80e53b451dd379a503ec33c79231b885f0261494859c3bf0ac6d1",
-        "project_sha256": "514f397e7c0bec8a17a645f2537caf59843de727175580d96a2e01a72f7b4a03",
-        "revision": "1c9786715d1003d8c19c1ddd9093d45583f84b0f",
+        "head": "16eb08c1bcb7ee98582b766a0217e019b4397281",
+        "main_source_sha256": "1fa63aecd5ba9e34bfdcee2c04ce817d7791247f87a7d81cb92b97b348f3cb80",
+        "project_sha256": "bb5375b446f82541323df8f1e3e0d4abafc5c2795a6433fe125a4e1c3598514d",
+        "revision": "16eb08c1bcb7ee98582b766a0217e019b4397281",
         "root": "F:\\projects\\MaxLogic\\Accessibility-Framework",
         "source_inputs": {
-          "file_count": 190,
+          "file_count": 191,
           "scope": "git-delphi-inputs-with-recursive-submodules",
-          "sha256": "f7197d73b9d55476e52d82142f531b3d35899c7963f0946125863d24edfc0a73"
+          "sha256": "59d0270de248b699680f596fcf2181fd37b19526f4f8e9900407d0465fd9faad"
         },
         "status": "complete",
         "submodules": [
@@ -842,7 +845,7 @@
         "vcs": "git"
       }
     },
-    "timestamp": "2026-08-10T11:12:42"
+    "timestamp": "2026-08-11T12:13:41"
   },
   "version": 4
 }

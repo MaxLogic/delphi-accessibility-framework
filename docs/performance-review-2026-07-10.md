@@ -36,6 +36,7 @@ The practical conclusion is that further micro-optimizing already-small provider
 | T-116 | Complete | The built-in pipe transport parses and serializes on its worker while synchronizing only VCL/provider capture and detached response-tree construction. Phase timings and thread IDs are explicit, maps have bounded defaults and caps, AgentBridge passes 32/32, the full Debug suite passes 380/380, shutdown passes 8/8, and the Release Basic UIA probe passes. Defender remained active, so the threading/bounds result is accepted and wall-time acceptance is deferred. |
 | T-117 | Complete | An inserting `CM_CONTROLCHANGE` hooks only the added windowed subtree. A 1,020-control test retains 1,021 hooks with one initial full-tree refresh; Hints passes 25/25 in Debug and Release, the full Debug suite passes 381/381, shutdown passes 8/8, and the Release Hints UIA probe passes. Defender remained active, so the bounded-work result is accepted and wall-time acceptance is deferred. |
 | T-118 | Complete | Opt-in diagnostics count typed supplemental UIA and MSAA fanout without synchronous I/O. Deterministic tests and live NVDA evidence did not prove any event redundant, so all accessibility events remain. T118 passes 12/12 in Debug and Release, the full Debug suite passes 386/386, lifecycle tests pass 9/9, and the Release Basic UIA probe passes. |
+| T-124 | Complete | A real 26-tab, 625-control VCL fixture measured 575 providers in never-visited inactive tab content. Initial construction now creates the 50 tab-header and active-content providers only; first activation materializes current content once, retains identity while controls live, and preserves native HWND focus behavior. |
 
 ### T-110 measurement record
 
@@ -473,9 +474,22 @@ Live NVDA evidence retained captions for both group hovers, radio hover/focus/cl
 
 Final exact-candidate gates: Debug passes 386/386 with zero failures, errors, ignores, or leaks; the nine targeted application-run, passivation, late-hook, destroyed-form, idempotent-uninstall, and active-form-handler lifecycle tests pass; FixInsight remains at 405 and Pascal Analyzer at 7,946 total/218 strong warnings with no semantic addition; normal-path Debug and Release demo rebuilds pass DFM validation; and the Release `BasicVclControls` probe reports `UIA_PROBE_OK`. Exact artifacts are `.agents/runs/t118-event-counter-latency-release-exact-final-defender-20260717.json`, `.agents/runs/t118-external-uia-release-exact-final-defender-20260717.json`, and `.agents/runs/t118-live-nvda-fanout-focused-debug-20260717.json`.
 
+### T-124 measurement record
+
+The self-contained Win32 Release fixture constructs a real `TForm` with 26 `TTabSheet` instances and 598 nested accessible controls. Setup and handle creation are outside the timed region. One warmup precedes seven provider-tree construction samples; structural counts are acceptance evidence and wall time is directional.
+
+| Phase | Constructed active | Constructed inactive | Total | Median | p95 / maximum |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Eager baseline | 50 | 575 | 625 | 20,454 ticks / 2.0454 ms | Not recorded |
+| Deferred final | 50 | 0 | 50 | 8,853 ticks / 0.8853 ms | 9,761 ticks / 0.9761 ms |
+
+Initial provider count fell by 92%. The observed median fell by 56.7%, but the structural reduction is the accepted result because the baseline and final were separate local runs. Correctness tests cover first activation, exactly-once structure invalidation, runtime additions, live captions, destruction/disconnection, reparent identity, path-only destination materialization, fragment navigation, hit testing, tab selection, and native HWND focus ownership.
+
+The lifecycle is deliberately one-way per tab: never-visited inactive descendants are deferred; after first activation, constructed providers remain stable until their VCL controls are destroyed. Moving a constructed control into an unvisited tab creates only the missing ancestor path. Runtime controls added to an unvisited tab remain deferred until activation.
+
 ## Lower-priority opportunities
 
-- Provider construction still scans hidden and inactive controls eagerly. Exposing only the active visible subtree could shrink large tabbed forms, but it requires correct structure-change events and is higher risk than the findings above.
+- Provider construction still scans control metadata eagerly, but provider objects for never-visited inactive tab descendants are now deferred by T-124. Broader deferral for arbitrary hidden containers remains intentionally out of scope until measured against a real semantic need.
 - Adapter resolution and label association repeat some class walks and linear searches during installation. These are startup costs, not the current interaction hot path; measure them before adding caches.
 - Avoid further string/allocation micro-optimization until the blocking and algorithmic findings are resolved. Existing diagnostics show the provider callback bodies are already small relative to external UIA traversal.
 

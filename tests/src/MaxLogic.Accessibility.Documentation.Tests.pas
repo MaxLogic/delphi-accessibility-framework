@@ -33,6 +33,9 @@ type
     procedure AgentBridgeDocumentationDefinesSafeControlWorkflow;
     [Test]
     [Category('AgentBridgeDocumentation')]
+    procedure AgentBridgeDocumentationMakesBackgroundCommandModeDefault;
+    [Test]
+    [Category('AgentBridgeDocumentation')]
     procedure DemoProvidesAgentControlModalScenario;
     [Test]
     procedure DemoShutdownDisarmsAccessibilityHooksAndTimers;
@@ -190,7 +193,7 @@ begin
   RequireText(lText, '"cmd":"diagnostics.providerHotspots"', 'agent bridge documentation');
   RequireText(lText, 'snapshotInvalidated', 'agent bridge documentation');
   RequireText(lText, 'VCL main thread', 'agent bridge documentation');
-  RequireText(lText, 'should continue with generic UIA/Win32 control', 'agent bridge documentation');
+  RequireText(lText, 'Read-only generic UIA/Win32 inspection may continue', 'agent bridge documentation');
 end;
 
 procedure TAccessibilityDocumentationTests.AgentBridgeDocumentationSeparatesAccessibilityControlAndAgentModes;
@@ -208,8 +211,8 @@ begin
   RequireText(lBridgeText, 'Foreground and background are automation modes', 'agent bridge documentation');
   RequireText(lBridgeText, 'Screenshots belong to the desktop-control helper first', 'agent bridge documentation');
   RequireText(lBridgeText, 'window.info', 'agent bridge documentation');
-  RequireText(lSkillText, 'Foreground Drive Mode', 'desktop-control skill');
-  RequireText(lSkillText, 'Background Drive Mode', 'desktop-control skill');
+  RequireText(lSkillText, 'Foreground Input Mode', 'desktop-control skill');
+  RequireText(lSkillText, 'Background Command Mode', 'desktop-control skill');
   RequireText(lSkillText, 'screenshot-window', 'desktop-control skill');
   RequireText(lSkillText, 'bridge-window-info', 'desktop-control skill');
   RequireText(lSkillText, 'bridge-controls-info', 'desktop-control skill');
@@ -230,11 +233,12 @@ begin
   lSkillText := ReadRepoText('agent-skills\windows-desktop-control\SKILL.md');
 
   RequireText(lSkillText, 'Bridge control is not an NVDA test', 'desktop-control skill');
-  RequireText(lSkillText, '`takeover` includes the required three-second safety delay', 'desktop-control skill');
+  RequireText(lSkillText, '`foreground-session start` plays the takeover announcement and includes the ' +
+    'required three-second safety delay', 'desktop-control skill');
   RequireText(lSkillText, 'Activation failure is a hard stop', 'desktop-control skill');
   RequireText(lSkillText, 'Treat refs and geometry as expired', 'desktop-control skill');
   RequireText(lSkillText, '`control.setText` is raw property assignment', 'desktop-control skill');
-  RequireText(lSkillText, 'Do not invoke modal-opening controls through synchronous bridge mutation',
+  RequireText(lSkillText, 'Do not invoke modal-opening controls through synchronous legacy `control.click`',
     'desktop-control skill');
   RequireText(lSkillText, '`foreground-session`', 'desktop-control skill');
   RequireText(lSkillText, 'bounded best-effort stopping rule', 'desktop-control skill');
@@ -248,6 +252,125 @@ begin
   RequireText(lChecklistText, 'Guarded mouse and keyboard input', 'agent-control checklist');
   RequireText(lChecklistText, 'Lease expiry and watchdog release', 'agent-control checklist');
   RequireText(lChecklistText, 'Clean application shutdown', 'agent-control checklist');
+end;
+
+procedure TAccessibilityDocumentationTests.AgentBridgeDocumentationMakesBackgroundCommandModeDefault;
+var
+  lBridgeText: string;
+  lChangelogText: string;
+  lChecklistText: string;
+  lOpenAiText: string;
+  lReadmeText: string;
+  lSkillText: string;
+begin
+  lBridgeText := ReadRepoText('docs\agent-bridge.md');
+  lChangelogText := ReadRepoText('CHANGELOG.md');
+  lChecklistText := ReadRepoText('docs\agent-control-checklist.md');
+  lOpenAiText := ReadRepoText('agent-skills\windows-desktop-control\agents\openai.yaml');
+  lReadmeText := ReadRepoText('README.md');
+  lSkillText := ReadRepoText('agent-skills\windows-desktop-control\SKILL.md');
+
+  RequireText(lSkillText, '## Choose the control mode', 'desktop-control skill');
+  RequireText(lSkillText, 'Routine smoke/regression workflow in a bridge-enabled app',
+    'desktop-control skill');
+  RequireText(lSkillText, 'Inspect, populate, select, invoke, open/dismiss modal, verify state',
+    'desktop-control skill');
+  RequireText(lSkillText, 'Prove actual pointer, key, accelerator, menu, IME, drag/drop, capture, or ' +
+    'screen-reader behavior', 'desktop-control skill');
+  RequireText(lSkillText, 'No bridge and no reliable background semantic API', 'desktop-control skill');
+  RequireText(lSkillText, 'Background Command Mode is pseudo-headless', 'desktop-control skill');
+  RequireText(lSkillText, 'Default to **Background Command Mode** for routine testing',
+    'desktop-control skill');
+  RequireText(lSkillText, 'bridge-invoke', 'desktop-control skill');
+  RequireText(lSkillText, 'bridge-set-text', 'desktop-control skill');
+  RequireText(lSkillText, 'bridge-set-checked', 'desktop-control skill');
+  RequireText(lSkillText, 'bridge-select', 'desktop-control skill');
+  RequireText(lSkillText, 'bridge-focus', 'desktop-control skill');
+  RequireText(lSkillText, 'bridge-tab', 'desktop-control skill');
+  RequireText(lSkillText, 'bridge-operation-status', 'desktop-control skill');
+  RequireText(lSkillText, '`--async`', 'desktop-control skill');
+  RequireText(lSkillText, 'operationId', 'desktop-control skill');
+  RequireText(lSkillText, 'wait-form', 'desktop-control skill');
+  RequireText(lSkillText, '--form-hwnd', 'desktop-control skill');
+  RequireText(lSkillText, 'never silently falls back to Foreground Input Mode', 'desktop-control skill');
+  RequireText(lSkillText, 'after starting an announced `foreground-session` lease',
+    'desktop-control skill');
+  RequireText(lSkillText, 'capabilities needed by the selected target shape',
+    'desktop-control skill');
+  RequireText(lSkillText, '`snapshot-refs-v2` for `--ref`', 'desktop-control skill');
+  RequireText(lSkillText, '`atomic-control-targets` for `--form-name`/`--form-hwnd`',
+    'desktop-control skill');
+  RequireText(lSkillText, 'Every activation, mouse, keyboard, and semantic OS-input command requires ' +
+    'the valid lease.', 'desktop-control skill');
+  RequireText(lSkillText, 'Background Command Mode does not activate the target, move the pointer, ' +
+    'synthesize mouse or keyboard input, or announce takeover.', 'desktop-control skill');
+  RequireText(lSkillText, 'actual mouse, keyboard, accelerator, menu, IME, drag/drop, capture, or ' +
+    'screen-reader behavior', 'desktop-control skill');
+  RequireText(lSkillText, 'Command-mode evidence proves application-semantic state, not real input.',
+    'desktop-control skill');
+  RequireText(lSkillText, 'Foreground-input evidence proves OS mouse/keyboard behavior, not ' +
+    'accessibility output.', 'desktop-control skill');
+  RequireText(lSkillText, 'External UIA behavior requires an external UIA probe.',
+    'desktop-control skill');
+  RequireText(lSkillText, 'NVDA speech requires a live NVDA pass.', 'desktop-control skill');
+  RejectText(lSkillText, 'Foreground Drive Mode', 'desktop-control skill');
+  RejectText(lSkillText, 'Background Drive Mode', 'desktop-control skill');
+  RejectText(lSkillText, '@a1', 'desktop-control skill');
+  Assert.IsTrue(Pos('## Choose the control mode', lSkillText) < Pos('## Helper Script', lSkillText),
+    'The two-mode decision must precede helper details.');
+
+  RequireText(lOpenAiText, 'Background Command Mode by default', 'desktop-control OpenAI prompt');
+  RequireText(lOpenAiText, 'Foreground Input Mode only', 'desktop-control OpenAI prompt');
+  RejectText(lOpenAiText, 'announce takeover, inspect the target app', 'desktop-control OpenAI prompt');
+
+  RequireText(lBridgeText, 'background-command-mode', 'agent bridge documentation');
+  RequireText(lBridgeText, 'snapshot-refs-v2', 'agent bridge documentation');
+  RequireText(lBridgeText, 'atomic-control-targets', 'agent bridge documentation');
+  RequireText(lBridgeText, 'intentional protocol-version-2 compatibility breaks',
+    'agent bridge documentation');
+  RequireText(lBridgeText, 'protocol-v2 refs, atomic targets, and operation-status Boolean fields use ' +
+    'strict JSON types', 'agent bridge documentation');
+  RequireText(lBridgeText, 'default-wait dismiss invocation already consumes its terminal operation',
+    'agent bridge documentation');
+  RequireText(lBridgeText, 'consume only the asynchronous opener operation with ' +
+    '`bridge-operation-status`', 'agent bridge documentation');
+  RequireText(lBridgeText, 'Raw `bridge-request` remains the deliberate escape hatch',
+    'agent bridge documentation');
+  RequireText(lBridgeText, '"cmd":"control.invoke"', 'agent bridge documentation');
+  RequireText(lBridgeText, '"cmd":"control.setChecked"', 'agent bridge documentation');
+  RequireText(lBridgeText, '"cmd":"control.select"', 'agent bridge documentation');
+  RequireText(lBridgeText, '"cmd":"operation.status"', 'agent bridge documentation');
+  RejectText(lBridgeText, '"@a', 'agent bridge documentation');
+
+  RequireText(lChecklistText, '## Background Command Mode', 'agent-control checklist');
+  RequireText(lChecklistText, '## Foreground Input Mode', 'agent-control checklist');
+  RequireText(lChecklistText, 'Command-mode evidence does not prove external UIA or NVDA behavior.',
+    'agent-control checklist');
+  RequireText(lChecklistText, '`bridge-invoke --async`', 'agent-control checklist');
+  RequireText(lChecklistText, '`wait-form`', 'agent-control checklist');
+  RequireText(lChecklistText, 'The default-wait dismiss invocation consumes its own terminal ' +
+    'operation', 'agent-control checklist');
+  RequireText(lChecklistText, 'consume only the asynchronous opener with ' +
+    '`bridge-operation-status`', 'agent-control checklist');
+  RequireText(lChecklistText, 'require the lease for every activation and input command',
+    'agent-control checklist');
+  RequireText(lChecklistText, 'Independent user activity is INCONCLUSIVE',
+    'agent-control checklist');
+  Assert.IsTrue(Pos('## Background Command Mode', lChecklistText) <
+    Pos('## Foreground Input Mode', lChecklistText), 'The background checklist must come first.');
+
+  RequireText(lReadmeText, 'Background Command Mode is the default', 'README');
+  RequireText(lReadmeText, 'bridge-invoke', 'README');
+  RequireText(lReadmeText, 'Foreground Input Mode', 'README');
+  RequireText(lReadmeText, 'Typed helpers fail closed when required protocol or capabilities are ' +
+    'unavailable and never escalate to Foreground Input Mode.', 'README');
+  RequireText(lReadmeText, 'not human-equivalent input, the external UIA boundary, or NVDA output',
+    'README');
+  RejectText(lReadmeText, '`@a1`', 'README');
+  RequireText(lChangelogText, 'documentation now defaults routine bridge-enabled testing to ' +
+    'Background Command Mode', 'changelog');
+  RequireText(lChangelogText, 'Generationless snapshot refs and lease-less foreground commands are ' +
+    'no longer accepted', 'changelog');
 end;
 
 procedure TAccessibilityDocumentationTests.NvdaChecklistDocumentsExpectedSpeech;
@@ -347,7 +470,11 @@ begin
   RequireText(lDfmText, 'OnClick = btnShowModalClick', 'demo modal scenario');
   RequireText(lPasText, 'procedure TAccessibilityDemoMainForm.btnShowModalClick(aSender: TObject);',
     'demo modal scenario');
-  RequireText(lPasText, 'MessageDlg(rsAgentControlModalMessage, mtInformation, [mbOK], 0);',
+  RequireText(lPasText, 'GC(lDialog, CreateMessageDialog(rsAgentControlModalMessage, mtInformation, [mbOK]), g);',
+    'demo modal scenario');
+  RequireText(lPasText, 'lDialog.ShowModal;',
+    'demo modal scenario');
+  RejectText(lPasText, 'MessageDlg(rsAgentControlModalMessage, mtInformation, [mbOK], 0);',
     'demo modal scenario');
 end;
 

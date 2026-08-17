@@ -6,6 +6,11 @@
 - The agent bridge now reports protocol version 2 and background-command capabilities, uses generation-qualified refs that become stale after remap or mutation, and accepts atomic form-name or exact-form-handle mutation targets while rejecting malformed, ambiguous, destroyed, hidden, or disabled targets before mutation.
 - Background command mode now invokes standard and action-backed VCL controls, sets checkbox/radio state, and selects exact list/combo items through native VCL semantics, with exactly-once application events for real changes and none for idempotent requests.
 - Background command mode can now queue VCL invocations, report bounded operation status, and dismiss modal workflows through the same bridge connection without taking over the mouse or keyboard; destroyed targets, disabled mutations, exceptions, and shutdown cancel safely.
+- Desktop control now provides typed, capability-checked background commands with bounded invoke waiting and a two-mode exact-candidate certification workflow; the demo modal remains bridge-addressable without synthesizing mouse or keyboard input.
+
+### Changed
+- Desktop-control documentation now defaults routine bridge-enabled testing to Background Command Mode and reserves announced, leased Foreground Input Mode for real mouse, keyboard, foreground-dependent, and screen-reader behavior.
+- Generationless snapshot refs and lease-less foreground commands are no longer accepted; typed bridge helpers fail closed instead of escalating to foreground input when protocol requirements are unavailable.
 
 ## 2026-08-11
 ### Fixed

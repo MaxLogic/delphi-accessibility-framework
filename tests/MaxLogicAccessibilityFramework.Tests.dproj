@@ -39,7 +39,7 @@
     <DCC_ExeOutput>..\bin\$(Platform)\$(Config)</DCC_ExeOutput>
     <DCC_DcuOutput>..\dcu\$(MSBuildProjectName)\$(Platform)\$(Config)</DCC_DcuOutput>
     <DCC_Namespace>System;Xml;Data;Datasnap;Web;Soap;Vcl;Winapi;$(DCC_Namespace)</DCC_Namespace>
-    <DCC_UnitSearchPath>..\src;..\demos;src;$(BDS)\source\DUnitX;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
+    <DCC_UnitSearchPath>..\src;..\demos;..\lib\MaxLogicFoundation;src;$(BDS)\source\DUnitX;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
     <DCC_UsePackage>rtl;vcl;$(DCC_UsePackage)</DCC_UsePackage>
     <DCC_Warnings>True</DCC_Warnings>
     <DCC_Hints>True</DCC_Hints>

@@ -1,4 +1,4 @@
 interface:
   display_name: "Windows Desktop Control"
   short_description: "Control desktop apps safely"
-  default_prompt: "Use Windows desktop control to announce takeover, inspect the target app, drive mouse and keyboard actions, and release control when finished."
+  default_prompt: "Use Background Command Mode by default for routine testing when the app exposes a compatible bridge. Choose announced, leased Foreground Input Mode only for real mouse, keyboard, foreground-dependent, or screen-reader behavior; never silently fall back to it."

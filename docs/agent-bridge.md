@@ -1,6 +1,6 @@
 # Agent Bridge
 
-`MaxLogic.Accessibility.AgentBridge` exposes a small JSON command executor for diagnostic automation. It is intended for tools that already control the desktop through UIA, Win32, or `SendInput`, but need framework-specific VCL facts that UIA may not expose reliably.
+`MaxLogic.Accessibility.AgentBridge` exposes a small JSON command executor for diagnostic automation. When an application installs the bridge and enables mutations, Background Command Mode is the default for routine testing: the agent can inspect and drive VCL behavior without activating the application or taking the user's mouse and keyboard.
 
 The core executor does not start a transport by itself. Applications can either call `TAccessibilityAgentBridge.Execute` from their own transport on the VCL main thread, or opt in to the built-in named pipe transport from `MaxLogic.Accessibility.AgentBridge.PipeServer`.
 
@@ -12,7 +12,12 @@ This repository now serves three separate purposes:
 - application control bridge support for Delphi VCL applications that opt in to framework diagnostics
 - agent desktop-control skill guidance for driving Windows applications through UIA, Win32 messages, screenshots, OS input, and the MaxLogic bridge when available
 
-Those purposes share code and evidence, but they should not be collapsed into one concept. Foreground and background are automation modes; they are not screen-reader modes. Foreground mode means the automation drives the application like a human user would, with the target window active and normal mouse/keyboard input. Background mode means the automation avoids taking focus and uses bridge commands, UIA patterns, or Win32 messages where the target application supports that style of control.
+Those purposes share code and evidence, but they should not be collapsed into one concept. Foreground and background are automation modes; they are not screen-reader modes.
+
+| Mode | Normal use | Evidence boundary |
+| --- | --- | --- |
+| **Background Command Mode** | Default day-to-day bridge-enabled inspection, editing, selection, invocation, focus, tab navigation, and modal workflows | Process-local application/VCL behavior; not human-equivalent input, external UIA, or NVDA proof |
+| **Foreground Input Mode** | Actual mouse, keyboard, accelerator, menu, IME, drag/drop, capture, and screen-reader behavior | Announced leased OS input; UIA and NVDA still require their own observations |
 
 Screenshots belong to the desktop-control helper first, not to the Delphi accessibility framework. The bridge provides reliable process-local metadata such as form handles, screen rectangles, client geometry, DPI, and control target points so an agent does not need to depend on UIA for coordinates when UIA is the thing under test.
 
@@ -80,7 +85,11 @@ The switch creates a fresh `AccessibilityComplexDemo.a11y.log` beside the execut
 {"cmd":"hello"}
 ```
 
-The response includes `ok`, `protocolVersion`, `frameworkName`, `processId`, and `mutationEnabled`. A generic computer-control tool should probe this first. If the probe fails, it should continue with generic UIA/Win32 control.
+The response includes `ok`, `protocolVersion`, `frameworkName`, `processId`, `mutationEnabled`, and `capabilities`. Protocol version 2 advertises `background-command-mode`, `snapshot-refs-v2`, and `atomic-control-targets`. Typed mutation helpers require version 2, enabled mutations, and `background-command-mode` before sending the mutation. Targeted helpers additionally require `snapshot-refs-v2` for a ref target shape or `atomic-control-targets` for a form-name/form-handle target shape; tab and operation-status commands need no target capability.
+
+Protocol version 2 introduces intentional protocol-version-2 compatibility breaks: snapshot refs are generation-qualified as `@s<snapshotId>a<index>`, every mutation invalidates the current snapshot, protocol-v2 refs, atomic targets, and operation-status Boolean fields use strict JSON types, and atomic named targets reject duplicate, hidden, disabled, destroyed, or ambiguous controls. There is no hidden v1 emulation mode. An older or incompatible bridge is a reported command-mode blocker; automation must not silently switch to Foreground Input Mode. Raw `bridge-request` remains the deliberate escape hatch for an operator who intentionally targets an older bridge. Read-only generic UIA/Win32 inspection may continue only when it independently satisfies the task.
+
+The desktop-control helper exposes `bridge-invoke`, `bridge-operation-status`, `bridge-set-text`, `bridge-set-checked`, `bridge-select`, `bridge-focus`, and `bridge-tab`. Each typed mutation performs the handshake before mutation and validates `protocolVersion`, `driveMode`, and the response command.
 
 ## Snapshots
 
@@ -96,17 +105,17 @@ The response includes `ok`, `protocolVersion`, `frameworkName`, `processId`, and
 {"cmd":"form.map","target":"handle","handle":123456}
 {"cmd":"form.map","target":"name","name":"MainForm"}
 {"cmd":"provider.map","target":"focused","detail":"full","maxDepth":3,"maxChildren":200}
-{"cmd":"control.info","ref":"@a2"}
-{"cmd":"control.info","ref":"@a2","includeAccessibility":true}
-{"cmd":"controls.info","refs":["@a1","@a2","@a3"]}
+{"cmd":"control.info","ref":"@s12a2"}
+{"cmd":"control.info","ref":"@s12a2","includeAccessibility":true}
+{"cmd":"controls.info","refs":["@s12a1","@s12a2","@s12a3"]}
 {"cmd":"control.resolve","target":{"formName":"MainForm","controlName":"SaveButton"},"detail":"target"}
-{"cmd":"control.resolve","ref":"@a2","detail":"target"}
+{"cmd":"control.resolve","ref":"@s12a2","detail":"target"}
 {"cmd":"hitTest","x":500,"y":300}
 ```
 
 `window.info` returns the selected form's name, class, caption, visibility, enabled and active state, native handle, `screenRect`, `clientRect`, `clientScreenRect`, `pixelsPerInch`, and `windowState`. Use this before taking screenshots or doing coordinate-sensitive automation because it reports process-local VCL geometry.
 
-`form.map` returns a snapshot with refs such as `@a0`, `@a1`, and `@a2`. Refs are scoped to the latest snapshot, like browser automation element refs. Controls include VCL name, class, UIA-equivalent control type, caption, value, hint, accessible name/help text, enabled/visible/focus state, tab metadata, native handle, role-specific native state such as checkbox toggle state or selected list item, screen rectangle, and a center target point. `handle` is `0` when a control has not allocated a HWND yet; the bridge does not create hidden or lazy control windows just to report a snapshot.
+`form.map` returns opaque generation-qualified refs such as `@s12a0`, `@s12a1`, and `@s12a2`. Refs are scoped to one snapshot and become stale after a new map or any mutation, like browser automation element refs. Controls include VCL name, class, UIA-equivalent control type, caption, value, hint, accessible name/help text, enabled/visible/focus state, tab metadata, native handle, role-specific native state such as checkbox toggle state or selected list item, screen rectangle, and a center target point. `handle` is `0` when a control has not allocated a HWND yet; the bridge does not create hidden or lazy control windows just to report a snapshot.
 
 `includeAccessibility` defaults to `true`. Set it to `false` for high-speed native VCL coordinate/state discovery: the bridge skips the accessibility scanner and returns process-local VCL fields only, with `accessibleName` and `helpText` blank. Use the default full snapshot when validating accessible naming, label association, or screen-reader-facing metadata.
 
@@ -167,32 +176,40 @@ TAccessibilityAgentBridge.SetMutationEnabled(True);
 Supported mutation commands:
 
 ```json
-{"cmd":"control.focus","ref":"@a1"}
-{"cmd":"control.click","ref":"@a2"}
-{"cmd":"control.setText","ref":"@a1","text":"exact text"}
-{"cmd":"control.typeText","ref":"@a1","text":" appended text"}
+{"cmd":"control.focus","ref":"@s12a1"}
+{"cmd":"control.setText","target":{"formName":"MainForm","controlName":"Edit1"},"text":"exact text"}
+{"cmd":"control.setChecked","target":{"formName":"MainForm","controlName":"CheckBox1"},"checked":true}
+{"cmd":"control.select","target":{"formName":"MainForm","controlName":"ComboBox1"},"text":"Ready"}
+{"cmd":"control.invoke","target":{"formName":"MainForm","controlName":"ApplyButton"}}
+{"cmd":"operation.status","operationId":"op1"}
 {"cmd":"keyboard.tab"}
+{"cmd":"control.click","ref":"@s12a2"}
+{"cmd":"control.typeText","ref":"@s12a1","text":" appended text"}
 ```
 
 Mutation responses include `snapshotInvalidated: true`, `mutationSemantics`, `humanEquivalent`, `userInputEventsGenerated`, and `mayBlockSynchronously`. Automation should resolve again after a mutation before making coordinate-sensitive decisions.
 
+`control.invoke` queues one exact button-like control instance and immediately returns `operationId` with `status:"queued"`. Poll `operation.status` for `queued`, `running`, `succeeded`, or `failed`; a terminal read consumes the record by default. The typed `bridge-invoke` helper waits for and prints the consumed terminal result by default. Use `bridge-invoke --async` for a modal opener, discover the bridge-visible modal by form handle, invoke its dismiss button through the bridge, then read the opener with `bridge-operation-status`.
+
+`control.setChecked` supports stock VCL checkbox/radio semantics. `control.select` supports a single-select list or combo by zero-based index or exact-case text. Changed state runs the native VCL application event path once; an idempotent request runs no event. Unsupported or non-actionable controls fail before mutation.
+
 `control.setText` and the historically named `control.typeText` both report `mutationSemantics:"raw-property-assignment"`. The latter appends to the VCL `Text` property; neither command represents human typing or guarantees keyboard input events (`userInputEventsGenerated:false`). Use guarded operating-system input when normal key processing is part of the proof.
 
-`control.click` invokes VCL behavior synchronously and reports `mayBlockSynchronously:true`; do not use it to open a modal dialog on a pipe connection that must remain responsive. Use guarded operating-system input and discover the modal through a separate request instead. `keyboard.tab` performs keyboard-equivalent VCL navigation but does not synthesize a Tab key.
+The legacy `control.click` invokes VCL behavior synchronously and reports `mayBlockSynchronously:true`; do not use it to open a modal dialog on a pipe connection that must remain responsive. Use queued `control.invoke` for Background Command Mode or guarded operating-system input when the real foreground click is under test. `keyboard.tab` performs keyboard-equivalent VCL navigation but does not synthesize a Tab key.
 
 A failed `control.focus` returns `focus_failed` with a fresh narrow `control` target, relevant `ancestors`, and a `recommendedFallback`. Treat it as a refusal: inspect disabled/hidden parent or form state, activate the reported root HWND, resolve again, and use a guarded OS click only when the refreshed target is actionable.
 
-Framework mutations are diagnostic helpers. End-to-end acceptance tests should still prefer real OS input for user actions, then use the bridge to cross-check coordinates, labels, focus state, and logs.
+Framework mutations are application-control helpers. They are the preferred non-interfering path for routine bridge-enabled tests, but they do not replace Foreground Input Mode when real input behavior is the acceptance criterion.
 
 ## Agent-control safety boundary
 
 Bridge evidence is not NVDA evidence. The bridge can prove native VCL state and help an agent control an application, but it does not observe or certify screen-reader speech. Audible desktop-control takeover and release announcements protect the human operator; they are not application accessibility output.
 
-For foreground input, use the desktop-control helper's bounded `foreground-session` lease. Keep one session for one short logical interaction, pass its session ID to every real-input command, and renew it only around a bounded condition wait. The detached watchdog announces release if the lease expires or its controller exits.
+For foreground input, use the desktop-control helper's bounded `foreground-session` lease. Every activation, pointer, keyboard, and semantic OS-input command requires it; PID/HWND assertions alone are not authorization. Keep one session for one short logical interaction, pass its session ID to every real-input command, and renew it only around a bounded condition wait. The detached watchdog announces release if the lease expires or its controller exits.
 
 After activation, movement, DPI changes, page changes, mutations, form creation, or modal transitions, refs and geometry expire. Resolve the target again and verify current root PID/HWND, visibility, enabled state, ownership, and foreground state immediately before input.
 
-Never call `control.click` for a modal opener when the same sequential pipe must inspect the resulting dialog. Invoke the opener through guarded OS input, let that helper command return, then use a separate bounded discovery request. Raw `control.setText` and `control.typeText` remain property assignment; use guarded keyboard input when event-producing behavior is under test.
+Never call synchronous `control.click` for a modal opener when the same sequential pipe must inspect the resulting dialog. In Background Command Mode queue `control.invoke`, then discover and dismiss the modal through separate bridge requests. The default-wait dismiss invocation already consumes its terminal operation; consume only the asynchronous opener operation with `bridge-operation-status`. In Foreground Input Mode use guarded OS input when the click itself is under test. Raw `control.setText` and `control.typeText` remain property assignment; use guarded keyboard input when key processing is under test.
 
 ## Threading
 

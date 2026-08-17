@@ -25,6 +25,8 @@ import winsound
 PIPE_PREFIX = "\\\\.\\pipe\\"
 AUTO_BRIDGE_PROBE_TIMEOUT_MS = 5
 AUTO_SEMANTIC_BRIDGE_PROBE_TIMEOUT_MS = 75
+BRIDGE_PROTOCOL_VERSION = 2
+BRIDGE_OPERATION_POLL_SECONDS = 0.05
 FASTER_SEMANTIC_ALTERNATIVES = [
     "fast-semantic-map",
     "fast-map",
@@ -1105,6 +1107,195 @@ def bridge_request_bounded(pipe_name: str, request_text: str, timeout_ms: int) -
     if result is None:
         raise RuntimeError("Bridge request returned no result.")
     return result
+
+
+def build_bridge_target(args: argparse.Namespace) -> dict[str, object]:
+    ref = getattr(args, "ref", None)
+    form_name = getattr(args, "form_name", None)
+    form_hwnd = getattr(args, "form_hwnd", None)
+    control_name = getattr(args, "control_name", None)
+    if sum(value is not None for value in (ref, form_name, form_hwnd)) != 1:
+        raise ValueError("Provide exactly one of --ref, --form-name, or --form-hwnd.")
+    if ref is not None:
+        if not ref or control_name is not None:
+            raise ValueError("--ref must be non-empty and cannot be combined with --control-name.")
+        return {"ref": ref}
+    if not control_name:
+        raise ValueError("--control-name is required with --form-name or --form-hwnd.")
+    if form_name is not None:
+        if not form_name:
+            raise ValueError("--form-name must be non-empty.")
+        return {"target": {"formName": form_name, "controlName": control_name}}
+    if not isinstance(form_hwnd, int) or isinstance(form_hwnd, bool) or form_hwnd <= 0:
+        raise ValueError("--form-hwnd must be a positive integer.")
+    return {"target": {"formHandle": form_hwnd, "controlName": control_name}}
+
+
+def bridge_remaining_timeout_ms(deadline: float) -> int:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("Bridge command exceeded its total deadline.")
+    return max(1, int(remaining * 1000))
+
+
+def bridge_typed_request(
+    args: argparse.Namespace,
+    payload: dict[str, object],
+    deadline: float,
+) -> dict[str, object]:
+    return bridge_request_bounded(
+        args.pipe_name,
+        json.dumps(payload, separators=(",", ":")),
+        bridge_remaining_timeout_ms(deadline),
+    )
+
+
+def require_bridge_v2(
+    args: argparse.Namespace,
+    deadline: float,
+    target: dict[str, object] | None = None,
+) -> None:
+    response = bridge_typed_request(args, {"cmd": "hello"}, deadline)
+    version = response.get("protocolVersion")
+    capabilities = response.get("capabilities")
+    if response.get("ok") is not True:
+        raise RuntimeError(str(response.get("message") or "Bridge hello failed."))
+    if not isinstance(version, int) or isinstance(version, bool) or version < BRIDGE_PROTOCOL_VERSION:
+        raise RuntimeError("Typed bridge commands require protocolVersion 2 or newer.")
+    if response.get("mutationEnabled") is not True:
+        raise RuntimeError("Typed bridge commands require bridge mutations to be enabled.")
+    if not isinstance(capabilities, list) or "background-command-mode" not in capabilities:
+        raise RuntimeError("Bridge does not advertise background-command-mode.")
+    if target is not None:
+        capability = "snapshot-refs-v2" if "ref" in target else "atomic-control-targets"
+        if capability not in capabilities:
+            raise RuntimeError(f"Bridge does not advertise {capability}.")
+
+
+def require_background_response(response: dict[str, object], command: str) -> None:
+    if response.get("ok") is not True:
+        return
+    version = response.get("protocolVersion")
+    if not isinstance(version, int) or isinstance(version, bool) or version < BRIDGE_PROTOCOL_VERSION:
+        raise RuntimeError("Bridge response did not retain protocolVersion 2 evidence.")
+    if response.get("cmd") != command:
+        raise RuntimeError(f"Bridge response command did not match {command}.")
+    if response.get("driveMode") != "background-command":
+        raise RuntimeError("Bridge response did not retain background-command drive-mode evidence.")
+
+
+def run_typed_bridge_mutation(
+    args: argparse.Namespace,
+    command: str,
+    values: dict[str, object] | None = None,
+) -> int:
+    try:
+        deadline = time.monotonic() + max(args.timeout_ms, 1) / 1000.0
+        target = build_bridge_target(args)
+        require_bridge_v2(args, deadline, target)
+        payload = {"cmd": command, **target, **(values or {})}
+        response = bridge_typed_request(args, payload, deadline)
+        require_background_response(response, command)
+        print_json(response)
+        return 0 if response.get("ok") is True else 2
+    except Exception as exc:  # noqa: BLE001 - CLI boundary
+        return fail(str(exc))
+
+
+def command_bridge_invoke(args: argparse.Namespace) -> int:
+    operation_id: str | None = None
+    last_status: str | None = None
+    try:
+        deadline = time.monotonic() + max(args.timeout_ms, 1) / 1000.0
+        target = build_bridge_target(args)
+        require_bridge_v2(args, deadline, target)
+        response = bridge_typed_request(args, {"cmd": "control.invoke", **target}, deadline)
+        require_background_response(response, "control.invoke")
+        if response.get("ok") is not True:
+            print_json(response)
+            return 2
+        operation_id = response.get("operationId") if isinstance(response.get("operationId"), str) else None
+        if not operation_id:
+            raise RuntimeError("Bridge invoke response did not contain an operationId.")
+        if args.async_mode:
+            print_json(response)
+            return 0
+
+        last_status = str(response.get("status") or "queued")
+        while True:
+            status_response = bridge_typed_request(
+                args,
+                {"cmd": "operation.status", "operationId": operation_id, "consume": True},
+                deadline,
+            )
+            require_background_response(status_response, "operation.status")
+            if status_response.get("ok") is not True:
+                print_json(status_response)
+                return 2
+            last_status = str(status_response.get("status") or "")
+            if status_response.get("terminal") is True or last_status in ("succeeded", "failed"):
+                print_json(status_response)
+                return 0 if last_status == "succeeded" else 2
+            time.sleep(min(BRIDGE_OPERATION_POLL_SECONDS, max(0.0, deadline - time.monotonic())))
+    except TimeoutError as exc:
+        return fail(
+            str(exc),
+            2,
+            reason="timeout",
+            operationId=operation_id,
+            lastStatus=last_status,
+            consumed=False,
+            timeoutMs=args.timeout_ms,
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI boundary
+        return fail(str(exc))
+
+
+def command_bridge_operation_status(args: argparse.Namespace) -> int:
+    try:
+        deadline = time.monotonic() + max(args.timeout_ms, 1) / 1000.0
+        require_bridge_v2(args, deadline)
+        response = bridge_typed_request(
+            args,
+            {"cmd": "operation.status", "operationId": args.operation_id, "consume": not args.no_consume},
+            deadline,
+        )
+        require_background_response(response, "operation.status")
+        print_json(response)
+        if response.get("ok") is not True or response.get("status") == "failed":
+            return 2
+        return 0
+    except Exception as exc:  # noqa: BLE001 - CLI boundary
+        return fail(str(exc))
+
+
+def command_bridge_set_text(args: argparse.Namespace) -> int:
+    return run_typed_bridge_mutation(args, "control.setText", {"text": args.text})
+
+
+def command_bridge_set_checked(args: argparse.Namespace) -> int:
+    return run_typed_bridge_mutation(args, "control.setChecked", {"checked": args.checked})
+
+
+def command_bridge_select(args: argparse.Namespace) -> int:
+    values = {"index": args.index} if args.index is not None else {"text": args.text}
+    return run_typed_bridge_mutation(args, "control.select", values)
+
+
+def command_bridge_focus(args: argparse.Namespace) -> int:
+    return run_typed_bridge_mutation(args, "control.focus")
+
+
+def command_bridge_tab(args: argparse.Namespace) -> int:
+    try:
+        deadline = time.monotonic() + max(args.timeout_ms, 1) / 1000.0
+        require_bridge_v2(args, deadline)
+        response = bridge_typed_request(args, {"cmd": "keyboard.tab", "shift": bool(args.shift)}, deadline)
+        require_background_response(response, "keyboard.tab")
+        print_json(response)
+        return 0 if response.get("ok") is True else 2
+    except Exception as exc:  # noqa: BLE001 - CLI boundary
+        return fail(str(exc))
 
 
 def build_bridge_forms_response(
@@ -2707,6 +2898,17 @@ def add_semantic_control_arguments(parser: argparse.ArgumentParser, include_down
         parser.add_argument("--down-ms", type=int, default=40)
 
 
+def add_typed_bridge_arguments(parser: argparse.ArgumentParser, targeted: bool = True) -> None:
+    parser.add_argument("--pipe-name", required=True)
+    parser.add_argument("--timeout-ms", type=int, default=5000)
+    if targeted:
+        target = parser.add_mutually_exclusive_group(required=True)
+        target.add_argument("--ref")
+        target.add_argument("--form-name")
+        target.add_argument("--form-hwnd", type=int)
+        parser.add_argument("--control-name")
+
+
 def add_discovery_filter_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--name")
     parser.add_argument("--caption-contains")
@@ -2852,6 +3054,45 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--timeout-ms", type=int, default=5000)
     add_discovery_filter_arguments(p)
     p.set_defaults(pid=None, func=command_bridge_find)
+
+    p = sub.add_parser("bridge-invoke")
+    add_typed_bridge_arguments(p)
+    p.add_argument("--async", dest="async_mode", action="store_true")
+    p.set_defaults(func=command_bridge_invoke)
+
+    p = sub.add_parser("bridge-operation-status")
+    add_typed_bridge_arguments(p, False)
+    p.add_argument("--operation-id", required=True)
+    p.add_argument("--no-consume", action="store_true")
+    p.set_defaults(func=command_bridge_operation_status)
+
+    p = sub.add_parser("bridge-set-text")
+    add_typed_bridge_arguments(p)
+    p.add_argument("--text", required=True)
+    p.set_defaults(func=command_bridge_set_text)
+
+    p = sub.add_parser("bridge-set-checked")
+    add_typed_bridge_arguments(p)
+    checked = p.add_mutually_exclusive_group(required=True)
+    checked.add_argument("--checked", dest="checked", action="store_true")
+    checked.add_argument("--unchecked", dest="checked", action="store_false")
+    p.set_defaults(func=command_bridge_set_checked)
+
+    p = sub.add_parser("bridge-select")
+    add_typed_bridge_arguments(p)
+    selection = p.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--index", type=int)
+    selection.add_argument("--text")
+    p.set_defaults(func=command_bridge_select)
+
+    p = sub.add_parser("bridge-focus")
+    add_typed_bridge_arguments(p)
+    p.set_defaults(func=command_bridge_focus)
+
+    p = sub.add_parser("bridge-tab")
+    add_typed_bridge_arguments(p, False)
+    p.add_argument("--shift", action="store_true")
+    p.set_defaults(func=command_bridge_tab)
 
     p = sub.add_parser("foreground-window")
     p.set_defaults(func=command_foreground_window)

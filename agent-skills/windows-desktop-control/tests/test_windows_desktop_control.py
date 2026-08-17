@@ -3322,6 +3322,397 @@ class WindowsDesktopControlTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             helper.build_bridge_window_info_request(args)
 
+    def test_bridge_typed_commands_use_exact_requests_without_os_input(self) -> None:
+        helper = load_helper_module()
+        requests = []
+
+        def fail_os_input(*_args, **_kwargs):
+            self.fail("A typed bridge command crossed an OS input or activation boundary.")
+
+        def fake_bridge_request(_pipe_name, request, _timeout_ms):
+            payload = json.loads(request)
+            requests.append(payload)
+            if payload["cmd"] == "hello":
+                return {
+                    "ok": True,
+                    "protocolVersion": 2,
+                    "mutationEnabled": True,
+                    "capabilities": [
+                        "background-command-mode",
+                        "snapshot-refs-v2",
+                        "atomic-control-targets",
+                    ],
+                }
+            if payload["cmd"] == "control.invoke":
+                return {
+                    "ok": True,
+                    "cmd": "control.invoke",
+                    "protocolVersion": 2,
+                    "driveMode": "background-command",
+                    "operationId": "op1",
+                    "status": "queued",
+                }
+            return {
+                "ok": True,
+                "cmd": payload["cmd"],
+                "protocolVersion": 2,
+                "driveMode": "background-command",
+            }
+
+        original_request = helper.bridge_request_bounded
+        original_user32 = helper.user32
+        originals = {
+            "activate_hwnd": helper.activate_hwnd,
+            "move_cursor": helper.move_cursor,
+            "send_mouse_click": helper.send_mouse_click,
+            "send_key_input": helper.send_key_input,
+            "send_unicode_unit": helper.send_unicode_unit,
+        }
+        helper.bridge_request_bounded = fake_bridge_request
+        helper.user32 = SimpleNamespace(
+            SetForegroundWindow=fail_os_input,
+            SetCursorPos=fail_os_input,
+            mouse_event=fail_os_input,
+            SendInput=fail_os_input,
+        )
+        for name in originals:
+            setattr(helper, name, fail_os_input)
+        try:
+            cases = [
+                (
+                    ["bridge-invoke", "--pipe-name", "Bridge.42", "--ref", "@s1a0", "--async"],
+                    {"cmd": "control.invoke", "ref": "@s1a0"},
+                ),
+                (
+                    ["bridge-operation-status", "--pipe-name", "Bridge.42", "--operation-id", "op1"],
+                    {"cmd": "operation.status", "operationId": "op1", "consume": True},
+                ),
+                (
+                    [
+                        "bridge-operation-status", "--pipe-name", "Bridge.42", "--operation-id", "op1",
+                        "--no-consume",
+                    ],
+                    {"cmd": "operation.status", "operationId": "op1", "consume": False},
+                ),
+                (
+                    [
+                        "bridge-set-text", "--pipe-name", "Bridge.42", "--form-name", "MainForm",
+                        "--control-name", "edtSearch", "--text", "daily",
+                    ],
+                    {
+                        "cmd": "control.setText",
+                        "target": {"formName": "MainForm", "controlName": "edtSearch"},
+                        "text": "daily",
+                    },
+                ),
+                (
+                    [
+                        "bridge-set-checked", "--pipe-name", "Bridge.42", "--form-hwnd", "501",
+                        "--control-name", "chkEnabled", "--checked",
+                    ],
+                    {
+                        "cmd": "control.setChecked",
+                        "target": {"formHandle": 501, "controlName": "chkEnabled"},
+                        "checked": True,
+                    },
+                ),
+                (
+                    [
+                        "bridge-set-checked", "--pipe-name", "Bridge.42", "--form-name", "MainForm",
+                        "--control-name", "chkEnabled", "--unchecked",
+                    ],
+                    {
+                        "cmd": "control.setChecked",
+                        "target": {"formName": "MainForm", "controlName": "chkEnabled"},
+                        "checked": False,
+                    },
+                ),
+                (
+                    [
+                        "bridge-select", "--pipe-name", "Bridge.42", "--form-name", "MainForm",
+                        "--control-name", "cmbQueue", "--text", "Today",
+                    ],
+                    {
+                        "cmd": "control.select",
+                        "target": {"formName": "MainForm", "controlName": "cmbQueue"},
+                        "text": "Today",
+                    },
+                ),
+                (
+                    [
+                        "bridge-select", "--pipe-name", "Bridge.42", "--form-name", "MainForm",
+                        "--control-name", "cmbQueue", "--index", "2",
+                    ],
+                    {
+                        "cmd": "control.select",
+                        "target": {"formName": "MainForm", "controlName": "cmbQueue"},
+                        "index": 2,
+                    },
+                ),
+                (
+                    ["bridge-focus", "--pipe-name", "Bridge.42", "--ref", "@s2a4"],
+                    {"cmd": "control.focus", "ref": "@s2a4"},
+                ),
+                (
+                    ["bridge-tab", "--pipe-name", "Bridge.42", "--shift"],
+                    {"cmd": "keyboard.tab", "shift": True},
+                ),
+            ]
+            for argv, expected in cases:
+                with self.subTest(command=argv[0]):
+                    requests.clear()
+                    output = StringIO()
+                    with redirect_stdout(output):
+                        exit_code = helper.main(argv)
+                    self.assertEqual(0, exit_code, output.getvalue())
+                    self.assertEqual("hello", requests[0]["cmd"])
+                    self.assertEqual(expected, requests[1])
+                    self.assertEqual(2, len(requests))
+        finally:
+            helper.bridge_request_bounded = original_request
+            helper.user32 = original_user32
+            for name, original in originals.items():
+                setattr(helper, name, original)
+
+    def test_bridge_typed_commands_reject_invalid_targets_and_missing_capabilities(self) -> None:
+        helper = load_helper_module()
+        for values in [
+            {"ref": None, "form_name": None, "form_hwnd": None, "control_name": None},
+            {"ref": "@s1a0", "form_name": "MainForm", "form_hwnd": None, "control_name": "Button"},
+            {"ref": "@s1a0", "form_name": None, "form_hwnd": None, "control_name": "Button"},
+            {"ref": None, "form_name": "MainForm", "form_hwnd": 501, "control_name": "Button"},
+            {"ref": None, "form_name": "MainForm", "form_hwnd": None, "control_name": None},
+        ]:
+            with self.subTest(values=values):
+                with self.assertRaises(ValueError):
+                    helper.build_bridge_target(SimpleNamespace(**values))
+
+        capability_cases = [
+            (
+                {"ok": True, "protocolVersion": 1, "mutationEnabled": True, "capabilities": []},
+                "--form-name",
+                "MainForm",
+            ),
+            (
+                {
+                    "ok": True,
+                    "protocolVersion": 2,
+                    "mutationEnabled": True,
+                    "capabilities": ["background-command-mode"],
+                },
+                "--form-name",
+                "MainForm",
+            ),
+            (
+                {
+                    "ok": True,
+                    "protocolVersion": 2,
+                    "mutationEnabled": True,
+                    "capabilities": ["background-command-mode", "atomic-control-targets"],
+                },
+                "--ref",
+                "@s1a0",
+            ),
+            (
+                {
+                    "ok": True,
+                    "protocolVersion": 2,
+                    "mutationEnabled": False,
+                    "capabilities": ["background-command-mode", "atomic-control-targets"],
+                },
+                "--form-name",
+                "MainForm",
+            ),
+        ]
+        original_request = helper.bridge_request_bounded
+        for response, target_option, target_value in capability_cases:
+            requests = []
+
+            def fake_request(_pipe_name, request, _timeout_ms):
+                requests.append(json.loads(request))
+                return response
+
+            helper.bridge_request_bounded = fake_request
+            try:
+                argv = ["bridge-focus", "--pipe-name", "Bridge.42", target_option, target_value]
+                if target_option != "--ref":
+                    argv.extend(["--control-name", "Button"])
+                output = StringIO()
+                with redirect_stdout(output):
+                    exit_code = helper.main(argv)
+                self.assertNotEqual(0, exit_code, output.getvalue())
+                self.assertEqual([{"cmd": "hello"}], requests)
+                self.assertNotIn("foreground", output.getvalue().lower())
+            finally:
+                helper.bridge_request_bounded = original_request
+
+    def test_bridge_typed_commands_require_background_response_evidence(self) -> None:
+        helper = load_helper_module()
+        hello = {
+            "ok": True,
+            "protocolVersion": 2,
+            "mutationEnabled": True,
+            "capabilities": ["background-command-mode", "atomic-control-targets"],
+        }
+        invalid_responses = [
+            {"ok": True, "cmd": "control.focus", "protocolVersion": 1, "driveMode": "background-command"},
+            {"ok": True, "cmd": "control.click", "protocolVersion": 2, "driveMode": "background-command"},
+            {"ok": True, "cmd": "control.focus", "protocolVersion": 2, "driveMode": "foreground-input"},
+        ]
+        original_request = helper.bridge_request_bounded
+        try:
+            for invalid_response in invalid_responses:
+                responses = [hello, invalid_response]
+                helper.bridge_request_bounded = lambda _pipe, _request, _timeout: responses.pop(0)
+                output = StringIO()
+                with redirect_stdout(output):
+                    exit_code = helper.main([
+                        "bridge-focus", "--pipe-name", "Bridge.42", "--form-name", "MainForm",
+                        "--control-name", "Button",
+                    ])
+                self.assertNotEqual(0, exit_code, output.getvalue())
+        finally:
+            helper.bridge_request_bounded = original_request
+
+    def test_bridge_invoke_waits_consumes_and_reports_terminal_result(self) -> None:
+        helper = load_helper_module()
+        responses = [
+            {
+                "ok": True,
+                "protocolVersion": 2,
+                "mutationEnabled": True,
+                "capabilities": ["background-command-mode", "atomic-control-targets"],
+            },
+            {
+                "ok": True, "cmd": "control.invoke", "protocolVersion": 2,
+                "driveMode": "background-command", "operationId": "op7", "status": "queued",
+            },
+            {
+                "ok": True, "cmd": "operation.status", "protocolVersion": 2,
+                "driveMode": "background-command", "operationId": "op7", "status": "running",
+                "terminal": False, "consumed": False,
+            },
+            {
+                "ok": True, "cmd": "operation.status", "protocolVersion": 2,
+                "driveMode": "background-command", "operationId": "op7", "status": "succeeded",
+                "terminal": True, "consumed": True,
+            },
+        ]
+        requests = []
+
+        def fake_request(_pipe_name, request, _timeout_ms):
+            requests.append(json.loads(request))
+            return responses.pop(0)
+
+        original_request = helper.bridge_request_bounded
+        original_sleep = helper.time.sleep
+        helper.bridge_request_bounded = fake_request
+        helper.time.sleep = lambda _seconds: None
+        try:
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = helper.main([
+                    "bridge-invoke", "--pipe-name", "Bridge.42", "--form-name", "MainForm",
+                    "--control-name", "btnApply",
+                ])
+        finally:
+            helper.bridge_request_bounded = original_request
+            helper.time.sleep = original_sleep
+
+        self.assertEqual(0, exit_code, output.getvalue())
+        self.assertEqual("succeeded", json.loads(output.getvalue())["status"])
+        self.assertEqual(
+            [
+                {"cmd": "operation.status", "operationId": "op7", "consume": True},
+                {"cmd": "operation.status", "operationId": "op7", "consume": True},
+            ],
+            requests[2:],
+        )
+
+    def test_bridge_invoke_failure_and_timeout_are_nonzero_with_evidence(self) -> None:
+        helper = load_helper_module()
+        hello = {
+            "ok": True,
+            "protocolVersion": 2,
+            "mutationEnabled": True,
+            "capabilities": ["background-command-mode", "atomic-control-targets"],
+        }
+        original_request = helper.bridge_request_bounded
+        original_monotonic = helper.time.monotonic
+        original_sleep = helper.time.sleep
+        try:
+            responses = [
+                hello,
+                {
+                    "ok": True, "cmd": "control.invoke", "protocolVersion": 2,
+                    "driveMode": "background-command", "operationId": "op8", "status": "queued",
+                },
+                {
+                    "ok": True,
+                    "cmd": "operation.status",
+                    "protocolVersion": 2,
+                    "driveMode": "background-command",
+                    "operationId": "op8",
+                    "status": "failed",
+                    "terminal": True,
+                    "consumed": True,
+                    "operationErrorCode": "invoke_failed",
+                    "operationMessage": "handler failed",
+                },
+            ]
+            helper.bridge_request_bounded = lambda _pipe, _request, _timeout: responses.pop(0)
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = helper.main([
+                    "bridge-invoke", "--pipe-name", "Bridge.42", "--form-name", "MainForm",
+                    "--control-name", "btnApply",
+                ])
+            payload = json.loads(output.getvalue())
+            self.assertEqual(2, exit_code)
+            self.assertTrue(payload["ok"])
+            self.assertEqual("invoke_failed", payload["operationErrorCode"])
+
+            clock = [0.0]
+            requests = []
+
+            def pending_request(_pipe_name, request, timeout_ms):
+                payload = json.loads(request)
+                requests.append((payload, timeout_ms))
+                if payload["cmd"] == "hello":
+                    return hello
+                if payload["cmd"] == "control.invoke":
+                    return {
+                        "ok": True, "cmd": "control.invoke", "protocolVersion": 2,
+                        "driveMode": "background-command", "operationId": "op9", "status": "queued",
+                    }
+                return {
+                    "ok": True, "cmd": "operation.status", "protocolVersion": 2,
+                    "driveMode": "background-command", "operationId": "op9", "status": "running",
+                    "terminal": False, "consumed": False,
+                }
+
+            helper.bridge_request_bounded = pending_request
+            helper.time.monotonic = lambda: clock[0]
+            helper.time.sleep = lambda seconds: clock.__setitem__(0, clock[0] + max(seconds, 0.001))
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = helper.main([
+                    "bridge-invoke", "--pipe-name", "Bridge.42", "--form-name", "MainForm",
+                    "--control-name", "btnApply", "--timeout-ms", "25",
+                ])
+            payload = json.loads(output.getvalue())
+            self.assertEqual(2, exit_code)
+            self.assertEqual("timeout", payload["reason"])
+            self.assertEqual("op9", payload["operationId"])
+            self.assertFalse(payload["consumed"])
+            self.assertEqual("running", payload["lastStatus"])
+            self.assertGreaterEqual(len(requests), 3)
+            self.assertTrue(all(0 < timeout_ms <= 25 for _request, timeout_ms in requests))
+        finally:
+            helper.bridge_request_bounded = original_request
+            helper.time.monotonic = original_monotonic
+            helper.time.sleep = original_sleep
+
     def test_screenshot_window_captures_foreground_window(self) -> None:
         foreground = self.run_helper("foreground-window")
         self.assertEqual(0, foreground.returncode, foreground.stderr)

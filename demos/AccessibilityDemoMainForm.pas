@@ -154,6 +154,7 @@ procedure SetDemoAccessibilityFrameworkEnabled(aEnabled: Boolean);
 implementation
 
 uses
+  AutoFree,
   MaxLogic.Accessibility.Manager,
   MaxLogic.Accessibility.TmsAdvStringGridAdapters;
 
@@ -470,8 +471,12 @@ begin
 end;
 
 procedure TAccessibilityDemoMainForm.btnShowModalClick(aSender: TObject);
+var
+  g: TGarbos; //PALOFF Delphi initializes this managed record before GC aggregation
+  lDialog: TForm;
 begin
-  MessageDlg(rsAgentControlModalMessage, mtInformation, [mbOK], 0);
+  GC(lDialog, CreateMessageDialog(rsAgentControlModalMessage, mtInformation, [mbOK]), g);
+  lDialog.ShowModal;
 end;
 
 procedure TAccessibilityDemoMainForm.btnShowRegularHintClick(aSender: TObject);

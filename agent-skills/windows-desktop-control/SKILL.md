@@ -5,42 +5,34 @@ description: Control Windows desktop applications from Codex in foreground or ba
 
 # Windows Desktop Control
 
-## Core Rule
+## Choose the control mode
 
-Choose the drive mode before acting:
+| Requirement | Mode |
+| --- | --- |
+| Routine smoke/regression workflow in a bridge-enabled app | **Background Command Mode** |
+| Inspect, populate, select, invoke, open/dismiss modal, verify state | **Background Command Mode** |
+| Prove actual pointer, key, accelerator, menu, IME, drag/drop, capture, or screen-reader behavior | **Foreground Input Mode** |
+| No bridge and no reliable background semantic API | **Foreground Input Mode**, after starting an announced `foreground-session` lease |
 
-- **Foreground Drive Mode**: the automation uses the application like a human user would. It may activate the target window and use the real mouse and keyboard.
-- **Background Drive Mode**: the automation avoids stealing focus. It uses bridge commands, UIA patterns, Win32 messages, and screenshots where those are sufficient.
+Default to **Background Command Mode** for routine testing. Background Command Mode is pseudo-headless: the application remains visible in the user's session, but a compatible bridge performs control directly. Background Command Mode does not activate the target, move the pointer, synthesize mouse or keyboard input, or announce takeover. This is the normal day-to-day path because the user can keep working.
 
-Before touching the user's mouse or keyboard in Foreground Drive Mode, announce takeover and wait three seconds. When finished, announce release. Background Drive Mode does not need audio announcements because it must not take over the user's input devices.
+Choose Foreground Input Mode only when real input or foreground-dependent behavior is the subject of the test. Before touching the user's mouse or keyboard, start one bounded `foreground-session`; it announces takeover and waits three seconds. Release it when finished. Every activation, mouse, keyboard, and semantic OS-input command requires the valid lease.
 
-Bridge control is not an NVDA test. Bridge and desktop-control evidence can prove application state and agent input, but only a live screen-reader pass can prove NVDA output.
+Bridge control is not an NVDA test. Command-mode evidence proves application-semantic state, not real input. Foreground-input evidence proves OS mouse/keyboard behavior, not accessibility output. External UIA behavior requires an external UIA probe. NVDA speech requires a live NVDA pass.
 
-Use the bundled helper:
+`foreground-session start` plays the takeover announcement and includes the required three-second safety delay; do not add another sleep. Its matching `foreground-session release` plays the release announcement. The lower-level `takeover` and `release` commands exist for explicit announcement-only work, not as lease authorization.
 
-```powershell
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py takeover
-```
-
-`takeover` includes the required three-second safety delay. Do not add another sleep.
-
-Always wrap control sessions in a `try/finally` pattern:
-
-```powershell
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py takeover
-# inspect and control the app
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py release
-```
+Wrap Foreground Input Mode sessions in `try/finally` and require normal release before deleting lease evidence.
 
 If the active Codex runtime exposes a first-class computer-control tool, prefer that for pointer control when it is safer or more capable. Still use this skill's announcement workflow, bridge protocol, screenshot commands, and evidence rules.
 
 ## Decision Order
 
-1. Identify whether the task needs Foreground Drive Mode or Background Drive Mode.
-2. Use the app's MaxLogic bridge if available. It gives process-local form/control maps, UIA-equivalent roles, native control state, and coordinates without trusting UIA as the only source.
+1. Default routine bridge-enabled work to Background Command Mode; choose Foreground Input Mode only for real input or foreground-dependent behavior.
+2. Probe the app's MaxLogic bridge and require protocol version 2, enabled mutations, and the capabilities needed by the selected target shape. An incompatible bridge never silently falls back to Foreground Input Mode.
 3. For generic HWND-backed applications, use `win32-map` for cheap title/class/rectangle discovery before using UIA.
 4. Use UIA to inspect virtual/non-HWND elements, operate UIA patterns, or compare actual accessibility output.
-5. Use Win32 messages and UIA patterns for Background Drive Mode when they preserve the app's intended behavior.
+5. Use explicit bridge commands for Background Command Mode mutations. Read-only Win32/UIA inspection may supplement them when it does not steal focus.
 6. Activate and verify the intended foreground window before sending real mouse/keyboard input.
 7. Use screenshots as evidence and for visual targeting when structured APIs are not enough.
 
@@ -62,23 +54,41 @@ python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py
 python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py probe-bridge --pipe-name MaxLogicAccessibilityAgentBridge.1234
 python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-window-info --pipe-name MaxLogicAccessibilityAgentBridge.1234 --target focused
 python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-form-map --pipe-name MaxLogicAccessibilityAgentBridge.1234
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-controls-info --pipe-name MaxLogicAccessibilityAgentBridge.1234 --ref @a1 --ref @a2
+python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-controls-info --pipe-name MaxLogicAccessibilityAgentBridge.1234 --ref @s12a1 --ref @s12a2
 python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py fast-map --pipe-name MaxLogicAccessibilityAgentBridge.1234
 python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py fast-map --pid 1234
 python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py fast-semantic-map --pid 1234 --max-depth 3 --max-children 200
 python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-request --pipe-name MaxLogicAccessibilityAgentBridge.1234 --request '{"cmd":"forms.list"}'
 python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-batch --pipe-name MaxLogicAccessibilityAgentBridge.1234 --request '{"cmd":"window.info","target":"focused"}' --request '{"cmd":"form.map","target":"focused","detail":"geometry","visibleOnly":true}'
 
+# Typed Background Command Mode. Each command validates protocol/capabilities first.
+python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-set-text --pipe-name <name> --form-name MainForm --control-name edtSearch --text "query"
+python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-set-checked --pipe-name <name> --form-name MainForm --control-name chkEnabled --checked
+python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-select --pipe-name <name> --form-name MainForm --control-name cmbQueue --text "Ready"
+python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-focus --pipe-name <name> --form-name MainForm --control-name edtSearch
+python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-tab --pipe-name <name>
+python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-invoke --pipe-name <name> --form-name MainForm --control-name btnApply
+python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-invoke --pipe-name <name> --form-name MainForm --control-name btnShowModal --async
+python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-operation-status --pipe-name <name> --operation-id <id>
+
+# Modal round trip: retain the opener operationId and the discovered form handle.
+$lOpen = python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-invoke --pipe-name <name> --form-name MainForm --control-name btnShowModal --async | ConvertFrom-Json
+$lModal = python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py wait-form --pipe-name <name> --class-name TMessageForm --visible true --fields name,className,handle | ConvertFrom-Json
+python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-invoke --pipe-name <name> --form-hwnd $lModal.matches[0].handle --control-name OK
+python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-operation-status --pipe-name <name> --operation-id $lOpen.operationId
+
 # Foreground safety.
 python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py foreground-window
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py activate-window --pid 12345
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py foreground-session start --target-pid 12345 --controller-pid $PID --ttl-ms 60000
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py foreground-session renew --session-id <id> --ttl-ms 60000
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py foreground-session release --session-id <id>
+$lStatePath = '.\.agents\runs\foreground-lease.json'
+$lEventPath = '.\.agents\runs\foreground-events.jsonl'
+$lLease = python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py foreground-session start --target-pid 12345 --controller-pid $PID --ttl-ms 60000 --state-path $lStatePath --event-path $lEventPath | ConvertFrom-Json
+python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py activate-window --pid 12345 --session-id $lLease.sessionId --session-state-path $lStatePath
+python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py foreground-session renew --session-id $lLease.sessionId --ttl-ms 60000 --state-path $lStatePath
 
 # Fresh semantic actions. Pass the active session ID and state path for real input.
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py move-to-control --pipe-name <name> --form-name MainForm --control-name btnRun --session-id <id>
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py click-control --pipe-name <name> --form-name MainForm --control-name btnRun --session-id <id>
+python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py move-to-control --pipe-name <name> --form-name MainForm --control-name btnRun --session-id $lLease.sessionId --session-state-path $lStatePath --require-foreground-pid 12345
+python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py click-control --pipe-name <name> --form-name MainForm --control-name btnRun --session-id $lLease.sessionId --session-state-path $lStatePath --require-foreground-pid 12345
+python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py foreground-session release --session-id $lLease.sessionId --state-path $lStatePath --event-path $lEventPath
 
 # Window screenshot. Does not activate the target window.
 python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py screenshot-window --pid 12345 --output .\.agents\runs\window.bmp
@@ -110,9 +120,9 @@ Use `fast-map` as the default broad target-discovery command when speed matters.
 
 For semantic UIA snapshots, use `uia-map` without `--plain`. The default cache path uses the built-in .NET UIAutomation `CacheRequest` through PowerShell, so common properties are fetched with the returned elements instead of via separate `Current.Name`, `Current.ClassName`, `Current.ControlType`, and similar calls. It is still a semantic verification path, not a coordinate-discovery path.
 
-## Foreground Drive Mode
+## Foreground Input Mode
 
-Use Foreground Drive Mode when the task needs human-equivalent behavior: normal focus, pointer movement, keyboard input, menus, popups, accelerators, modal flow, or any behavior likely to depend on the active window. This mode is also appropriate for screen-reader verification, but it is not limited to screen-reader work.
+Use Foreground Input Mode when the task needs human-equivalent behavior: actual mouse, keyboard, accelerator, menu, IME, drag/drop, capture, or screen-reader behavior. Modal behavior needs this mode only when the real opener/input path is itself under test; routine modal application workflows stay command-driven.
 
 Workflow:
 
@@ -126,29 +136,31 @@ Workflow:
 
 By default a session guards the target PID and permits that application's foreground HWND to change across owned or modal windows. Add `--target-hwnd` only when the interaction must remain on one exact window.
 
-Activation failure is a hard stop. Do not click or type after it. Report the blocker and continue with Background Drive Mode evidence if that can still answer the task.
+Activation failure is a hard stop. Do not click or type after it. Report the blocker and continue with Background Command Mode evidence if that can still answer the task.
 
 Treat refs and geometry as expired after activation, window movement, DPI change, mutation, tab/page change, form creation, modal transition, or any response with `snapshotInvalidated:true`. Resolve the named control again immediately before input; never reuse copied coordinates across those transitions.
 
-Do not invoke modal-opening controls through synchronous bridge mutation. Use a guarded OS click, return from that input command, then discover the new modal with `wait-window`, `windows-list`, or `wait-form` through a separate request.
+Do not invoke modal-opening controls through synchronous legacy `control.click`. In Foreground Input Mode use a guarded OS click. In Background Command Mode use `bridge-invoke --async`, discover the modal with `wait-form`, dismiss it through `bridge-invoke`, then consume the opener with `bridge-operation-status`.
 
 `control.setText` is raw property assignment. It does not prove key events, `OnChange` behavior, accelerators, or human-equivalent typing. Use guarded `clear-and-type` or `type-text` when those semantics matter.
 
 Use a bounded best-effort stopping rule: stop after the requested outcome is proved, a reproduced product failure is captured with its required persistence checks, or the agreed retry/time budget is exhausted. Release the session before optional lower-priority exploration.
 
-## Background Drive Mode
+## Background Command Mode
 
-Use Background Drive Mode when the user should be able to keep working while automation inspects or drives the target application. Prefer this mode for non-disruptive state inspection, workflow smoke tests, form filling, and deterministic bridge/UIA operations.
+Use Background Command Mode when the user should be able to keep working while automation inspects or drives a bridge-enabled application. This is the default for routine state inspection, workflow smoke tests, form filling, selection, invocation, focus, tab navigation, and modal application workflows.
 
-Background Drive Mode can use:
+Background Command Mode uses:
 
-- MaxLogic bridge requests such as `form.map`, `hitTest`, `control.focus`, `control.click`, `control.setText`, `control.typeText`, and `keyboard.tab` when mutations are explicitly enabled.
+- Typed `bridge-focus`, `bridge-set-text`, `bridge-set-checked`, `bridge-select`, `bridge-tab`, and `bridge-invoke` commands after a protocol-v2 capability check.
+- `bridge-invoke` waiting for terminal completion by default; use `--async` only when the caller must keep controlling an open modal, then finish with `bridge-operation-status`.
+- `form.map`, `control.resolve`, and other process-local bridge reads for state and target discovery.
 - `win32-map` for fast HWND-backed title/class/rectangle discovery without UIA traversal.
-- UIA patterns such as Invoke, Toggle, SelectionItem, Value, and Text when available.
-- Win32 messages for HWND-backed controls when the app is known to behave correctly without foreground focus.
 - `screenshot-window` for visual evidence without activating the target window.
 
-Do not claim background results are human-equivalent. Some applications intentionally behave differently when inactive; focus, capture, menus, accelerators, IME, and screen-reader tracking often need Foreground Drive Mode.
+If hello reports protocol version 1, disabled mutations, or missing `background-command-mode`, stop the command workflow and report the incompatibility. Targeted helpers additionally require `snapshot-refs-v2` for `--ref` or `atomic-control-targets` for `--form-name`/`--form-hwnd`; `bridge-tab` and operation status need no target capability. The workflow never silently falls back to Foreground Input Mode.
+
+Do not claim command-mode results are human-equivalent input, external UIA, or NVDA proof. Some applications intentionally behave differently when inactive; actual focus, capture, menus, accelerators, IME, drag/drop, and screen-reader tracking need Foreground Input Mode.
 
 ## Screenshots
 
@@ -185,7 +197,7 @@ If the response is a successful `hello`, use:
 - `{"cmd":"hitTest","x":500,"y":300}` to map a screen point back to the framework snapshot.
 - Mutation commands only when the app has explicitly enabled them.
 
-For user-realistic Foreground Drive Mode tests, prefer OS input for actions (`click`, `type-text`, `tab`) and use bridge responses to choose coordinates and verify state. For Background Drive Mode, bridge mutation commands are acceptable when mutations are explicitly enabled and the test goal is application control rather than human-equivalent input.
+For user-realistic Foreground Input Mode tests, use OS input for actions (`click`, `type-text`, `tab`) and bridge responses to choose coordinates and verify state. For Background Command Mode, use typed bridge commands when mutations are explicitly enabled and the test goal is application control rather than human-equivalent input.
 
 Before each OS input batch, use `activate-window --pid <processId>` for the target process and verify `foreground-window` reports that same PID. If activation fails, do not click or type; collect bridge/UIA evidence instead and report the blocker.
 
@@ -214,4 +226,4 @@ If NVDA or another screen reader is involved:
 
 ## Safety
 
-Never control the desktop silently in Foreground Drive Mode. Do not continue if the takeover announcement fails unless the user explicitly allows a silent run. Do not leave the pointer/keyboard under automation without the release announcement. In Background Drive Mode, avoid focus stealing and prefer commands that target explicit HWNDs, PIDs, bridge refs, or UIA elements.
+Never control the desktop silently in Foreground Input Mode. Do not continue if the takeover announcement fails unless the user explicitly allows a silent run. Do not leave the pointer/keyboard under automation without the release announcement. In Background Command Mode, do not activate the application or move the cursor; target current bridge refs, form names, or exact form handles.

@@ -183,11 +183,17 @@ Describe 'Two-mode agent-control certification contract' {
     }
 
     It 'implements leased foreground proof and exact owned-residue cleanup' {
+        $lForeground = [regex]::Match(
+            $script:lScriptText,
+            '(?s)function Invoke-ForegroundWorkflow.*?(?=function Wait-ProcessExit)'
+        ).Value
         $script:lScriptText | Should -Match 'foreground-session.*start'
         $script:lScriptText | Should -Match 'foreground-session.*release'
         $script:lScriptText | Should -Match 'activate-window'
         $script:lScriptText | Should -Match 'click-control'
-        $script:lScriptText | Should -Match 'clear-and-type'
+        $lForeground | Should -Match "'type-text'"
+        $lForeground | Should -Match "'type-text'.*'--delay-ms'"
+        $lForeground | Should -Not -Match "'clear-and-type'"
         $script:lScriptText | Should -Match 'scripts\\__pycache__'
         $script:lScriptText | Should -Match 'tests\\__pycache__'
         $script:lScriptText | Should -Match 'finally\s*\{'

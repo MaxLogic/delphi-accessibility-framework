@@ -728,7 +728,7 @@ function Invoke-ForegroundWorkflow {
         ) + $lGuard) -EvidencePath $EvidencePath
         $lText = 'Foreground input proof'
         $null = Invoke-ControlHelper -HelperPath $HelperPath -Arguments (@(
-            'clear-and-type', '--text', $lText
+            'type-text', '--text', $lText, '--delay-ms', '10'
         ) + $lGuard) -EvidencePath $EvidencePath
         $lVerified = Invoke-ControlHelper -HelperPath $HelperPath -Arguments @(
             'bridge-find', '--pipe-name', $PipeName, '--form-name', 'AccessibilityDemoMainForm',

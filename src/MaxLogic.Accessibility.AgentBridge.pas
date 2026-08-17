@@ -35,6 +35,9 @@ type
   TAccessibilityAgentBridgeMapDetail = (abmdFull, abmdGeometry);
 
 const
+  cAgentBridgeProtocolVersion = 2;
+  cAgentBridgeMaxOperations = 32;
+  cAgentBridgeOperationErrorMessageLength = 512;
   cFormMapDefaultMaxChildren = 500;
   cFormMapDefaultMaxControls = 2000;
   cFormMapDefaultMaxDepth = 16;
@@ -47,6 +50,33 @@ type
   TAgentBridgeControlAccess = class(TControl);
   TAgentBridgeFormAccess = class(TCustomForm);
   TAgentBridgeWinControlAccess = class(TWinControl);
+
+  TAgentBridgeOperationStatus = (abosQueued, abosRunning, abosSucceeded, abosFailed);
+
+  TAgentBridgeOperation = class(TComponent)
+  private
+    fControl: TControl;
+    fErrorCode: string;
+    fErrorMessage: string;
+    fId: string;
+    fSequence: UInt64;
+    fStatus: TAgentBridgeOperationStatus;
+    procedure DetachControl;
+  protected
+    procedure Notification(aComponent: TComponent; aOperation: TOperation); override;
+  public
+    constructor Create(const aId: string; aSequence: UInt64; aControl: TControl); reintroduce;
+    destructor Destroy; override;
+    procedure MarkFailed(const aErrorCode: string; const aErrorMessage: string);
+    procedure MarkRunning;
+    procedure MarkSucceeded;
+    property Control: TControl read fControl;
+    property ErrorCode: string read fErrorCode;
+    property ErrorMessage: string read fErrorMessage;
+    property Id: string read fId;
+    property Sequence: UInt64 read fSequence;
+    property Status: TAgentBridgeOperationStatus read fStatus;
+  end;
 
   TAgentBridgeRttiPropertyCache = class
   private
@@ -70,7 +100,7 @@ type
     MaxControls: Integer;
     MaxDepth: Integer;
     RttiCache: TAgentBridgeRttiPropertyCache;
-    SnapshotId: Integer;
+    SnapshotId: UInt64;
     Tree: IAccessibilityScanTree;
     VisibleOnly: Boolean;
   end;
@@ -84,10 +114,12 @@ type
     fControlsByRef: TDictionary<string, TControl>;
     fForm: TCustomForm;
     fNextRefIndex: Integer;
+    fNextOperationSequence: UInt64;
     fObservedControls: TList<TComponent>;
+    fOperations: TObjectDictionary<string, TAgentBridgeOperation>;
     fRefsByControl: TDictionary<TControl, string>;
     fScreenRectsByControl: TDictionary<TControl, TRect>;
-    fSnapshotId: Integer;
+    fSnapshotId: UInt64;
     function BuildControlInfo(aControl: TControl; aIncludeAccessibility: Boolean;
       aDetail: TAccessibilityAgentBridgeMapDetail): TJSONObject;
     function BuildControlTarget(aControl: TControl): TJSONObject;
@@ -99,6 +131,7 @@ type
       aMaxControls: Integer): TJSONObject;
     function BuildProviderMap(aForm: TCustomForm; aDetail: TAccessibilityAgentBridgeMapDetail; aMaxDepth: Integer;
       aMaxChildren: Integer): TJSONObject;
+    procedure CancelPendingOperations(const aErrorCode: string; const aErrorMessage: string);
     function ControlAtScreenPoint(aParent: TWinControl; const aPoint: TPoint): TControl;
     function ControlJson(aControl: TControl; const aParentRef: string; aDepth: Integer;
       const aScreenRect: TRect; const aTree: IAccessibilityScanTree; aDetail: TAccessibilityAgentBridgeMapDetail;
@@ -117,17 +150,22 @@ type
     function ExecuteFormsList: TJSONObject;
     function ExecuteHello: TJSONObject;
     function ExecuteHitTest(aRequest: TJSONObject): TJSONObject;
+    function ExecuteInvoke(aRequest: TJSONObject): TJSONObject;
     function ExecuteKeyboardTab(aRequest: TJSONObject): TJSONObject;
+    function ExecuteOperationStatus(aRequest: TJSONObject): TJSONObject;
     function ExecuteProviderHotspots: TJSONObject;
     function ExecuteProviderMap(aRequest: TJSONObject): TJSONObject;
+    function ExecuteSelect(aRequest: TJSONObject): TJSONObject;
+    function ExecuteSetChecked(aRequest: TJSONObject): TJSONObject;
     function ExecuteSetText(aRequest: TJSONObject; aAppend: Boolean): TJSONObject;
     function ExecuteWindowInfo(aRequest: TJSONObject): TJSONObject;
     function Failure(const aErrorCode: string; const aMessage: string): TJSONObject;
     function FocusFailure(aControl: TControl; const aMessage: string): TJSONObject;
-    function FindControlByName(aOwner: TComponent; const aName: string): TControl;
-    function FindFormByName(const aName: string): TCustomForm;
+    function FindControlByName(aOwner: TComponent; const aName: string; out aMatchCount: Integer): TControl;
+    function FindFormByName(const aName: string; out aMatchCount: Integer): TCustomForm;
     function FormSummaryJson(aForm: TCustomForm): TJSONObject;
     function HitControlAt(const aPoint: TPoint): TControl;
+    function MakeOperationRoom: Boolean;
     procedure AddChildControls(aParent: TWinControl; const aParentRef: string; aDepth: Integer;
       const aParentClientOrigin: TPoint; var aContext: TAgentBridgeFormMapContext);
     procedure AddControlState(aJson: TJSONObject; aControl: TControl; const aTree: IAccessibilityScanTree;
@@ -136,16 +174,20 @@ type
     procedure AddControlTargeting(aJson: TJSONObject; aControl: TControl; const aScreenRect: TRect;
       aFocusedHandle: HWND);
     procedure ClearSnapshot;
+    procedure InvalidateSnapshot;
     procedure Notification(aComponent: TComponent; aOperation: TOperation); override;
     function RefForControl(aControl: TControl; out aRef: string): Boolean;
     function RegisterControl(aControl: TControl): string;
     function ResolveControl(aRequest: TJSONObject; out aControl: TControl): Boolean;
+    function ResolveRequestControl(aRequest: TJSONObject; aRequireActionable: Boolean; out aControl: TControl;
+      out aFailure: TJSONObject): Boolean;
     function ResolveForm(aRequest: TJSONObject): TCustomForm;
     function SuccessCommand(const aCommand: string): TJSONObject;
     function SuccessMutation(const aCommand: string; const aSemantics: string;
       aMayBlockSynchronously: Boolean = False): TJSONObject;
     function WindowInfoJson(aForm: TCustomForm): TJSONObject;
     procedure FocusWinControl(aControl: TWinControl);
+    procedure RunQueuedOperation;
   public
     constructor Create; reintroduce;
     destructor Destroy; override;
@@ -155,6 +197,85 @@ type
 var
   gBridgeState: TAccessibilityAgentBridgeState;
   gMutationEnabled: Boolean;
+
+constructor TAgentBridgeOperation.Create(const aId: string; aSequence: UInt64; aControl: TControl);
+begin
+  inherited Create(nil);
+  fControl := aControl;
+  fId := aId;
+  fSequence := aSequence;
+  fStatus := abosQueued;
+  fControl.FreeNotification(Self);
+end;
+
+destructor TAgentBridgeOperation.Destroy;
+begin
+  DetachControl;
+  inherited Destroy;
+end;
+
+procedure TAgentBridgeOperation.DetachControl;
+begin
+  if fControl <> nil then
+  begin
+    fControl.RemoveFreeNotification(Self);
+    fControl := nil;
+  end;
+end;
+
+procedure TAgentBridgeOperation.MarkFailed(const aErrorCode: string; const aErrorMessage: string);
+begin
+  fStatus := abosFailed;
+  fErrorCode := aErrorCode;
+  fErrorMessage := Copy(aErrorMessage, 1, cAgentBridgeOperationErrorMessageLength);
+  DetachControl;
+end;
+
+procedure TAgentBridgeOperation.MarkRunning;
+begin
+  if fStatus = abosQueued then
+  begin
+    fStatus := abosRunning;
+  end;
+end;
+
+procedure TAgentBridgeOperation.MarkSucceeded;
+begin
+  if fStatus = abosRunning then
+  begin
+    fStatus := abosSucceeded;
+    DetachControl;
+  end;
+end;
+
+procedure TAgentBridgeOperation.Notification(aComponent: TComponent; aOperation: TOperation);
+begin
+  inherited Notification(aComponent, aOperation);
+  if (aOperation = opRemove) and (aComponent = fControl) then
+  begin
+    fControl := nil;
+    if fStatus in [abosQueued, abosRunning] then
+    begin
+      fStatus := abosFailed;
+      fErrorCode := 'target_destroyed';
+      fErrorMessage := 'The queued invoke target was destroyed before completion.';
+    end;
+  end;
+end;
+
+function OperationStatusName(aStatus: TAgentBridgeOperationStatus): string;
+begin
+  case aStatus of
+    abosQueued:
+      Result := 'queued';
+    abosRunning:
+      Result := 'running';
+    abosSucceeded:
+      Result := 'succeeded';
+  else
+    Result := 'failed';
+  end;
+end;
 
 constructor TAgentBridgeRttiPropertyCache.Create;
 begin
@@ -229,6 +350,7 @@ function FailureJson(const aErrorCode: string; const aMessage: string): TJSONObj
 begin
   Result := TJSONObject.Create;
   AddBool(Result, 'ok', False);
+  AddInt(Result, 'protocolVersion', cAgentBridgeProtocolVersion);
   Result.AddPair('errorCode', aErrorCode);
   Result.AddPair('message', aMessage);
 end;
@@ -279,19 +401,6 @@ begin
   if lValue is TJSONArray then
   begin
     Exit(TJSONArray(lValue));
-  end;
-
-  Result := nil;
-end;
-
-function RequestObject(aRequest: TJSONObject; const aName: string): TJSONObject;
-var
-  lValue: TJSONValue;
-begin
-  lValue := aRequest.GetValue(aName);
-  if lValue is TJSONObject then
-  begin
-    Exit(TJSONObject(lValue));
   end;
 
   Result := nil;
@@ -1100,10 +1209,10 @@ begin
     lResponse := TJSONObject.Create;
     AddBool(lResponse, 'ok', True);
     lResponse.AddPair('cmd', 'control.info');
-    AddInt(lResponse, 'protocolVersion', 1);
+    AddInt(lResponse, 'protocolVersion', cAgentBridgeProtocolVersion);
     AddBool(lResponse, 'includeAccessibility', lIncludeAccessibility);
     lResponse.AddPair('detail', MapDetailName(aDetail));
-    AddInt(lResponse, 'snapshotId', fSnapshotId);
+    AddUInt(lResponse, 'snapshotId', fSnapshotId);
     lResponse.AddPair('control', lControl);
     Result := lResponse;
   finally
@@ -1186,10 +1295,10 @@ begin
       lResponse := TJSONObject.Create;
       AddBool(lResponse, 'ok', True);
       lResponse.AddPair('cmd', 'controls.info');
-      AddInt(lResponse, 'protocolVersion', 1);
+      AddInt(lResponse, 'protocolVersion', cAgentBridgeProtocolVersion);
       AddBool(lResponse, 'includeAccessibility', lIncludeAccessibility);
       lResponse.AddPair('detail', MapDetailName(aDetail));
-      AddInt(lResponse, 'snapshotId', fSnapshotId);
+      AddUInt(lResponse, 'snapshotId', fSnapshotId);
       lResponse.AddPair('controls', lControls);
       Result := lResponse;
     finally
@@ -1204,6 +1313,7 @@ constructor TAccessibilityAgentBridgeState.Create;
 begin
   inherited Create(nil);
   fControlsByRef := TDictionary<string, TControl>.Create;
+  fOperations := TObjectDictionary<string, TAgentBridgeOperation>.Create([doOwnsValues]);
   fObservedControls := TList<TComponent>.Create;
   fRefsByControl := TDictionary<TControl, string>.Create;
   fScreenRectsByControl := TDictionary<TControl, TRect>.Create;
@@ -1211,12 +1321,29 @@ end;
 
 destructor TAccessibilityAgentBridgeState.Destroy;
 begin
+  CancelPendingOperations('bridge_shutdown', 'The agent bridge stopped before the queued invoke ran.');
+  fOperations.Free;
   ClearSnapshot;
   fScreenRectsByControl.Free;
   fRefsByControl.Free;
   fObservedControls.Free;
   fControlsByRef.Free;
   inherited Destroy;
+end;
+
+procedure TAccessibilityAgentBridgeState.CancelPendingOperations(const aErrorCode: string;
+  const aErrorMessage: string);
+var
+  lOperation: TAgentBridgeOperation;
+begin
+  TThread.RemoveQueuedEvents(nil, RunQueuedOperation);
+  for lOperation in fOperations.Values do
+  begin
+    if lOperation.Status = abosQueued then
+    begin
+      lOperation.MarkFailed(aErrorCode, aErrorMessage);
+    end;
+  end;
 end;
 
 procedure TAccessibilityAgentBridgeState.AddChildControls(aParent: TWinControl; const aParentRef: string;
@@ -1442,11 +1569,11 @@ begin
   Result := TJSONObject.Create;
   AddBool(Result, 'ok', True);
   Result.AddPair('cmd', 'form.map');
-  AddInt(Result, 'protocolVersion', 1);
+  AddInt(Result, 'protocolVersion', cAgentBridgeProtocolVersion);
   AddBool(Result, 'includeAccessibility', aContext.IncludeAccessibility);
   AddBool(Result, 'visibleOnly', aContext.VisibleOnly);
   Result.AddPair('detail', MapDetailName(aContext.Detail));
-  AddInt(Result, 'snapshotId', aContext.SnapshotId);
+  AddUInt(Result, 'snapshotId', aContext.SnapshotId);
   Result.AddPair('refModel', 'snapshot');
   AddInt(Result, 'maxDepth', aContext.MaxDepth);
   AddInt(Result, 'maxChildren', aContext.MaxChildren);
@@ -1472,8 +1599,7 @@ var
 begin
   lRttiCache := TAgentBridgeRttiPropertyCache.Create;
   try
-    ClearSnapshot;
-    Inc(fSnapshotId);
+    InvalidateSnapshot;
     fForm := aForm;
     fNextRefIndex := 0;
     lContext := Default(TAgentBridgeFormMapContext);
@@ -1533,7 +1659,7 @@ begin
     lResponse := TJSONObject.Create;
     AddBool(lResponse, 'ok', True);
     lResponse.AddPair('cmd', 'provider.map');
-    AddInt(lResponse, 'protocolVersion', 1);
+    AddInt(lResponse, 'protocolVersion', cAgentBridgeProtocolVersion);
     lResponse.AddPair('source', 'maxlogic-provider');
     lResponse.AddPair('providerTreeSource', lProviderSource);
     lResponse.AddPair('detail', MapDetailName(aDetail));
@@ -1565,6 +1691,12 @@ begin
   fScreenRectsByControl.Clear;
   fForm := nil;
   fNextRefIndex := 0;
+end;
+
+procedure TAccessibilityAgentBridgeState.InvalidateSnapshot;
+begin
+  ClearSnapshot;
+  Inc(fSnapshotId);
 end;
 
 function TAccessibilityAgentBridgeState.ControlAtScreenPoint(aParent: TWinControl; const aPoint: TPoint): TControl;
@@ -1778,6 +1910,18 @@ begin
   end else if lCommand = 'control.click' then
   begin
     Result := ExecuteClick(aRequest);
+  end else if lCommand = 'control.invoke' then
+  begin
+    Result := ExecuteInvoke(aRequest);
+  end else if lCommand = 'control.setChecked' then
+  begin
+    Result := ExecuteSetChecked(aRequest);
+  end else if lCommand = 'control.select' then
+  begin
+    Result := ExecuteSelect(aRequest);
+  end else if lCommand = 'operation.status' then
+  begin
+    Result := ExecuteOperationStatus(aRequest);
   end else if lCommand = 'control.setText' then
   begin
     Result := ExecuteSetText(aRequest, False);
@@ -1810,6 +1954,7 @@ end;
 function TAccessibilityAgentBridgeState.ExecuteClick(aRequest: TJSONObject): TJSONObject;
 var
   lControl: TControl;
+  lFailure: TJSONObject;
   lMouseParam: LPARAM;
   lPoint: TPoint;
   lWinControl: TWinControl;
@@ -1819,13 +1964,14 @@ begin
     Exit(Failure('mutation_disabled', 'Mutation commands are disabled.'));
   end;
 
-  if not ResolveControl(aRequest, lControl) then
+  if not ResolveRequestControl(aRequest, True, lControl, lFailure) then
   begin
-    Exit(Failure('stale_ref', 'Control ref is unknown or no longer alive.'));
+    Exit(lFailure);
   end;
 
   if lControl is TButton then
   begin
+    InvalidateSnapshot;
     TButton(lControl).Click;
     Exit(SuccessMutation('control.click', 'vcl-event-invocation', True));
   end;
@@ -1836,6 +1982,7 @@ begin
   end;
 
   lWinControl := TWinControl(lControl); //PALOFF STWA6 guarded by is TWinControl
+  InvalidateSnapshot;
   lWinControl.HandleNeeded;
   lPoint := Point(lWinControl.Width div 2, lWinControl.Height div 2);
   lMouseParam := MakeLParam(Word(lPoint.X), Word(lPoint.Y)); //PALOFF STWA6 Win32 LPARAM packing
@@ -1861,45 +2008,27 @@ function TAccessibilityAgentBridgeState.ExecuteControlResolve(aRequest: TJSONObj
 var
   lControl: TControl;
   lControlJson: TJSONObject;
-  lControlName: string;
+  lFailure: TJSONObject;
   lForm: TCustomForm;
-  lFormName: string;
   lResponse: TJSONObject;
   lSnapshotReplaced: Boolean;
-  lTarget: TJSONObject;
 begin
-  lSnapshotReplaced := False;
-  if not ResolveControl(aRequest, lControl) then
+  if not ResolveRequestControl(aRequest, False, lControl, lFailure) then
   begin
-    lTarget := RequestObject(aRequest, 'target');
-    if lTarget = nil then
-    begin
-      Exit(Failure('invalid_request', 'control.resolve requires a current ref or target object.'));
-    end;
+    Exit(lFailure);
+  end;
 
-    lFormName := RequestString(lTarget, 'formName');
-    lControlName := RequestString(lTarget, 'controlName');
-    if (lFormName = '') or (lControlName = '') then
+  lSnapshotReplaced := aRequest.GetValue('target') <> nil;
+  if lSnapshotReplaced then
+  begin
+    if lControl is TCustomForm then
     begin
-      Exit(Failure('invalid_request', 'control.resolve target requires formName and controlName.'));
+      lForm := TCustomForm(lControl);
+    end else begin
+      lForm := GetParentForm(lControl, False);
     end;
-
-    lForm := FindFormByName(lFormName);
-    if lForm = nil then
-    begin
-      Exit(Failure('form_not_found', 'Requested form was not found: ' + lFormName));
-    end;
-
-    lControl := FindControlByName(lForm, lControlName);
-    if lControl = nil then
-    begin
-      Exit(Failure('control_not_found', 'Requested control was not found: ' + lControlName));
-    end;
-
-    ClearSnapshot;
-    Inc(fSnapshotId);
+    InvalidateSnapshot;
     fForm := lForm;
-    lSnapshotReplaced := True;
   end;
 
   lControlJson := BuildControlTarget(lControl);
@@ -1907,8 +2036,8 @@ begin
   lResponse := TJSONObject.Create;
   AddBool(lResponse, 'ok', True);
   lResponse.AddPair('cmd', 'control.resolve');
-  AddInt(lResponse, 'protocolVersion', 1);
-  AddInt(lResponse, 'snapshotId', fSnapshotId);
+  AddInt(lResponse, 'protocolVersion', cAgentBridgeProtocolVersion);
+  AddUInt(lResponse, 'snapshotId', fSnapshotId);
   lResponse.AddPair('refModel', 'snapshot');
   AddBool(lResponse, 'snapshotReplaced', lSnapshotReplaced);
   lResponse.AddPair('detail', 'target');
@@ -1925,6 +2054,7 @@ end;
 function TAccessibilityAgentBridgeState.ExecuteFocus(aRequest: TJSONObject): TJSONObject;
 var
   lControl: TControl;
+  lFailure: TJSONObject;
   lWinControl: TWinControl;
 begin
   if not gMutationEnabled then
@@ -1932,9 +2062,9 @@ begin
     Exit(Failure('mutation_disabled', 'Mutation commands are disabled.'));
   end;
 
-  if not ResolveControl(aRequest, lControl) then
+  if not ResolveRequestControl(aRequest, True, lControl, lFailure) then
   begin
-    Exit(Failure('stale_ref', 'Control ref is unknown or no longer alive.'));
+    Exit(lFailure);
   end;
 
   if not (lControl is TWinControl) then
@@ -1948,6 +2078,7 @@ begin
     Exit(FocusFailure(lControl, 'VCL reports that the control cannot receive focus in its current context.'));
   end;
 
+  InvalidateSnapshot;
   try
     FocusWinControl(lWinControl);
   except
@@ -2009,22 +2140,28 @@ begin
   lResponse := TJSONObject.Create;
   AddBool(lResponse, 'ok', True);
   lResponse.AddPair('cmd', 'forms.list');
-  AddInt(lResponse, 'protocolVersion', 1);
+  AddInt(lResponse, 'protocolVersion', cAgentBridgeProtocolVersion);
   lResponse.AddPair('forms', lForms);
   Result := lResponse;
 end;
 
 function TAccessibilityAgentBridgeState.ExecuteHello: TJSONObject;
 var
+  lCapabilities: TJSONArray;
   lResponse: TJSONObject;
 begin
+  lCapabilities := TJSONArray.Create;
+  lCapabilities.AddElement(TJSONString.Create('background-command-mode'));
+  lCapabilities.AddElement(TJSONString.Create('snapshot-refs-v2'));
+  lCapabilities.AddElement(TJSONString.Create('atomic-control-targets'));
   lResponse := TJSONObject.Create;
   AddBool(lResponse, 'ok', True);
   lResponse.AddPair('cmd', 'hello');
-  AddInt(lResponse, 'protocolVersion', 1);
+  AddInt(lResponse, 'protocolVersion', cAgentBridgeProtocolVersion);
   lResponse.AddPair('frameworkName', cAccessibilityFrameworkName);
   AddUInt(lResponse, 'processId', GetCurrentProcessId);
   AddBool(lResponse, 'mutationEnabled', gMutationEnabled);
+  lResponse.AddPair('capabilities', lCapabilities);
   Result := lResponse;
 end;
 
@@ -2057,11 +2194,62 @@ begin
   lResponse := TJSONObject.Create;
   AddBool(lResponse, 'ok', True);
   lResponse.AddPair('cmd', 'hitTest');
-  AddInt(lResponse, 'snapshotId', fSnapshotId);
+  AddInt(lResponse, 'protocolVersion', cAgentBridgeProtocolVersion);
+  AddUInt(lResponse, 'snapshotId', fSnapshotId);
   lResponse.AddPair('ref', lRef);
   lResponse.AddPair('name', lControl.Name);
   lResponse.AddPair('className', lControl.ClassName);
   Result := lResponse;
+end;
+
+function TAccessibilityAgentBridgeState.ExecuteInvoke(aRequest: TJSONObject): TJSONObject;
+var
+  lControl: TControl;
+  lFailure: TJSONObject;
+  lOperation: TAgentBridgeOperation;
+  lOperationId: string;
+begin
+  if not gMutationEnabled then
+  begin
+    Exit(Failure('mutation_disabled', 'Mutation commands are disabled.'));
+  end;
+
+  if not ResolveRequestControl(aRequest, True, lControl, lFailure) then
+  begin
+    Exit(lFailure);
+  end;
+
+  if not ((lControl is TCustomButton) or (lControl is TSpeedButton) or (lControl is TToolButton) or
+    (lControl.Action <> nil)) then
+  begin
+    Exit(Failure('unsupported_control', 'Control does not expose a supported invoke action.'));
+  end;
+
+  if not MakeOperationRoom then
+  begin
+    Exit(Failure('operation_limit', 'Too many queued or running bridge operations.'));
+  end;
+
+  Inc(fNextOperationSequence);
+  lOperationId := 'op' + UIntToStr(fNextOperationSequence);
+  lOperation := TAgentBridgeOperation.Create(lOperationId, fNextOperationSequence, lControl);
+  try
+    InvalidateSnapshot;
+    fOperations.Add(lOperationId, lOperation);
+  except
+    lOperation.Free;
+    raise;
+  end;
+
+  try
+    TThread.ForceQueue(nil, RunQueuedOperation);
+  except
+    fOperations.Remove(lOperationId);
+    raise;
+  end;
+  Result := SuccessMutation('control.invoke', 'queued-vcl-event-invocation');
+  Result.AddPair('operationId', lOperationId);
+  Result.AddPair('status', 'queued');
 end;
 
 function TAccessibilityAgentBridgeState.ExecuteKeyboardTab(aRequest: TJSONObject): TJSONObject;
@@ -2087,6 +2275,7 @@ begin
 
   lShift := LowerCase(RequestString(aRequest, 'shift'));
   lForward := not ((lShift = 'true') or (lShift = '1'));
+  InvalidateSnapshot;
   TAgentBridgeWinControlAccess(lForm).SelectNext(lForm.ActiveControl, lForward, True);
   if lForm.ActiveControl = nil then
   begin
@@ -2094,6 +2283,58 @@ begin
   end;
 
   Result := SuccessMutation('keyboard.tab', 'keyboard-equivalent-navigation');
+end;
+
+function TAccessibilityAgentBridgeState.ExecuteOperationStatus(aRequest: TJSONObject): TJSONObject;
+var
+  lConsume: Boolean;
+  lConsumeValue: TJSONValue;
+  lOperation: TAgentBridgeOperation;
+  lOperationId: string;
+  lOperationIdValue: TJSONValue;
+  lTerminal: Boolean;
+begin
+  lOperationIdValue := aRequest.GetValue('operationId');
+  if (lOperationIdValue = nil) or (lOperationIdValue.ClassType <> TJSONString) or
+    (lOperationIdValue.Value = '') then
+  begin
+    Exit(Failure('invalid_request', 'operation.status requires a non-empty string operationId.'));
+  end;
+  lOperationId := lOperationIdValue.Value;
+
+  lConsume := True;
+  lConsumeValue := aRequest.GetValue('consume');
+  if lConsumeValue <> nil then
+  begin
+    if not (lConsumeValue is TJSONBool) then
+    begin
+      Exit(Failure('invalid_request', 'operation.status consume must be Boolean.'));
+    end;
+    lConsume := TJSONBool(lConsumeValue).AsBoolean; //PALOFF STWA6 guarded by is TJSONBool
+  end;
+
+  if not fOperations.TryGetValue(lOperationId, lOperation) then
+  begin
+    Exit(Failure('operation_not_found', 'The requested bridge operation is not retained.'));
+  end;
+
+  lTerminal := lOperation.Status in [abosSucceeded, abosFailed];
+  Result := SuccessCommand('operation.status');
+  Result.AddPair('driveMode', 'background-command');
+  Result.AddPair('operationId', lOperation.Id);
+  Result.AddPair('status', OperationStatusName(lOperation.Status));
+  AddBool(Result, 'terminal', lTerminal);
+  AddBool(Result, 'consumed', lConsume and lTerminal);
+  if lOperation.Status = abosFailed then
+  begin
+    Result.AddPair('operationErrorCode', lOperation.ErrorCode);
+    Result.AddPair('operationMessage', lOperation.ErrorMessage);
+  end;
+
+  if lConsume and lTerminal then
+  begin
+    fOperations.Remove(lOperationId);
+  end;
 end;
 
 function TAccessibilityAgentBridgeState.ExecuteProviderHotspots: TJSONObject;
@@ -2112,15 +2353,160 @@ begin
   lResponse := TJSONObject.Create;
   AddBool(lResponse, 'ok', True);
   lResponse.AddPair('cmd', 'diagnostics.providerHotspots');
-  AddInt(lResponse, 'protocolVersion', 1);
+  AddInt(lResponse, 'protocolVersion', cAgentBridgeProtocolVersion);
   lResponse.AddPair('metrics', lMetrics);
   Result := lResponse;
+end;
+
+function TAccessibilityAgentBridgeState.ExecuteSelect(aRequest: TJSONObject): TJSONObject;
+var
+  i: Integer;
+  lComboBox: TCustomComboBox;
+  lControl: TControl;
+  lFailure: TJSONObject;
+  lIndex: Integer;
+  lIndexValue: TJSONValue;
+  lItems: TStrings;
+  lListBox: TCustomListBox;
+  lText: string;
+  lTextValue: TJSONValue;
+begin
+  lComboBox := nil;
+  lListBox := nil;
+  if not gMutationEnabled then
+  begin
+    Exit(Failure('mutation_disabled', 'Mutation commands are disabled.'));
+  end;
+
+  lIndexValue := aRequest.GetValue('index');
+  lTextValue := aRequest.GetValue('text');
+  if ((lIndexValue = nil) = (lTextValue = nil)) or
+    ((lIndexValue <> nil) and not (lIndexValue is TJSONNumber)) or
+    ((lTextValue <> nil) and not (lTextValue is TJSONString)) then
+  begin
+    Exit(Failure('invalid_request', 'control.select requires exactly one integer index or string text.'));
+  end;
+
+  if not ResolveRequestControl(aRequest, True, lControl, lFailure) then
+  begin
+    Exit(lFailure);
+  end;
+
+  if lControl is TCustomListBox then
+  begin
+    lListBox := TCustomListBox(lControl);
+    if lListBox.MultiSelect then
+    begin
+      Exit(Failure('unsupported_control', 'Multi-select list controls are not supported by control.select.'));
+    end;
+    lItems := lListBox.Items;
+  end else if lControl is TCustomComboBox then
+  begin
+    lComboBox := TCustomComboBox(lControl);
+    lItems := lComboBox.Items;
+  end else begin
+    Exit(Failure('unsupported_control', 'Control does not expose a supported single selection.'));
+  end;
+
+  if lIndexValue <> nil then
+  begin
+    if not TryStrToInt(lIndexValue.Value, lIndex) then
+    begin
+      Exit(Failure('invalid_request', 'control.select index must be an integer.'));
+    end;
+  end else begin
+    lText := lTextValue.Value;
+    lIndex := -1;
+    for i := 0 to Pred(lItems.Count) do
+    begin
+      if lItems[i] = lText then
+      begin
+        lIndex := i;
+        Break;
+      end;
+    end;
+    if lIndex < 0 then
+    begin
+      Exit(Failure('item_not_found', 'No item exactly matches the requested text.'));
+    end;
+  end;
+
+  if (lIndex < 0) or (lIndex >= lItems.Count) then
+  begin
+    Exit(Failure('index_out_of_bounds', 'Selection index is outside the available item range.'));
+  end;
+
+  InvalidateSnapshot;
+  if lControl is TCustomListBox then
+  begin
+    if lListBox.ItemIndex <> lIndex then
+    begin
+      lListBox.ItemIndex := lIndex;
+      lListBox.Perform(CN_COMMAND, MakeWParam(0, LBN_SELCHANGE), 0);
+    end;
+  end else if lComboBox.ItemIndex <> lIndex then
+  begin
+    lComboBox.ItemIndex := lIndex;
+    lComboBox.Perform(CN_COMMAND, MakeWParam(0, CBN_SELCHANGE), 0);
+  end;
+
+  Result := SuccessMutation('control.select', 'vcl-selection-notification');
+end;
+
+function TAccessibilityAgentBridgeState.ExecuteSetChecked(aRequest: TJSONObject): TJSONObject;
+var
+  lChanged: Boolean;
+  lCheckBox: TAgentBridgeCheckBoxAccess;
+  lChecked: Boolean;
+  lCheckedValue: TJSONValue;
+  lControl: TControl;
+  lFailure: TJSONObject;
+  lRadioButton: TRadioButton;
+begin
+  if not gMutationEnabled then
+  begin
+    Exit(Failure('mutation_disabled', 'Mutation commands are disabled.'));
+  end;
+
+  lCheckedValue := aRequest.GetValue('checked');
+  if not (lCheckedValue is TJSONBool) then
+  begin
+    Exit(Failure('invalid_request', 'control.setChecked requires a Boolean checked value.'));
+  end;
+  lChecked := TJSONBool(lCheckedValue).AsBoolean; //PALOFF STWA6 guarded by is TJSONBool
+
+  if not ResolveRequestControl(aRequest, True, lControl, lFailure) then
+  begin
+    Exit(lFailure);
+  end;
+
+  if lControl is TCustomCheckBox then
+  begin
+    lCheckBox := TAgentBridgeCheckBoxAccess(lControl); //PALOFF STWA6 guarded by is TCustomCheckBox
+    InvalidateSnapshot;
+    lCheckBox.Checked := lChecked;
+  end else if lControl is TRadioButton then
+  begin
+    lRadioButton := TRadioButton(lControl);
+    lChanged := lRadioButton.Checked <> lChecked;
+    InvalidateSnapshot;
+    lRadioButton.Checked := lChecked;
+    if lChanged and not lChecked then
+    begin
+      TAgentBridgeControlAccess(lRadioButton).Click;
+    end;
+  end else begin
+    Exit(Failure('unsupported_control', 'Control does not expose a supported checked state.'));
+  end;
+
+  Result := SuccessMutation('control.setChecked', 'vcl-checked-state');
 end;
 
 function TAccessibilityAgentBridgeState.ExecuteSetText(aRequest: TJSONObject; aAppend: Boolean): TJSONObject;
 var
   lControl: TControl;
   lCurrentText: string;
+  lFailure: TJSONObject;
   lText: string;
 begin
   if not gMutationEnabled then
@@ -2128,9 +2514,9 @@ begin
     Exit(Failure('mutation_disabled', 'Mutation commands are disabled.'));
   end;
 
-  if not ResolveControl(aRequest, lControl) then
+  if not ResolveRequestControl(aRequest, True, lControl, lFailure) then
   begin
-    Exit(Failure('stale_ref', 'Control ref is unknown or no longer alive.'));
+    Exit(lFailure);
   end;
 
   lText := RequestString(aRequest, 'text');
@@ -2140,6 +2526,7 @@ begin
     lText := lCurrentText + lText;
   end;
 
+  InvalidateSnapshot;
   if not WriteStringProperty(lControl, 'Text', lText) then
   begin
     Exit(Failure('unsupported_control', 'Control does not expose a writable Text property.'));
@@ -2167,7 +2554,7 @@ begin
   lResponse := TJSONObject.Create;
   AddBool(lResponse, 'ok', True);
   lResponse.AddPair('cmd', 'window.info');
-  AddInt(lResponse, 'protocolVersion', 1);
+  AddInt(lResponse, 'protocolVersion', cAgentBridgeProtocolVersion);
   lResponse.AddPair('window', WindowInfoJson(lForm));
   Result := lResponse;
 end;
@@ -2186,12 +2573,16 @@ begin
     'Activate rootHandle, resolve again, and use a guarded OS click only if the refreshed target is actionable.');
 end;
 
-function TAccessibilityAgentBridgeState.FindControlByName(aOwner: TComponent; const aName: string): TControl;
+function TAccessibilityAgentBridgeState.FindControlByName(aOwner: TComponent; const aName: string;
+  out aMatchCount: Integer): TControl;
 var
   i: Integer;
+  lChildMatchCount: Integer;
+  lChildResult: TControl;
   lComponent: TComponent;
 begin
   Result := nil;
+  aMatchCount := 0;
   if aOwner = nil then
   begin
     Exit;
@@ -2199,35 +2590,37 @@ begin
 
   if (aOwner is TControl) and SameText(aOwner.Name, aName) then
   begin
-    Exit(TControl(aOwner));
+    Result := TControl(aOwner);
+    Inc(aMatchCount);
   end;
 
   for i := 0 to Pred(aOwner.ComponentCount) do
   begin
     lComponent := aOwner.Components[i];
-    if (lComponent is TControl) and SameText(lComponent.Name, aName) then
+    lChildResult := FindControlByName(lComponent, aName, lChildMatchCount);
+    Inc(aMatchCount, lChildMatchCount);
+    if (Result = nil) and (lChildResult <> nil) then
     begin
-      Exit(TControl(lComponent));
-    end;
-
-    Result := FindControlByName(lComponent, aName);
-    if Result <> nil then
-    begin
-      Exit;
+      Result := lChildResult;
     end;
   end;
 end;
 
-function TAccessibilityAgentBridgeState.FindFormByName(const aName: string): TCustomForm;
+function TAccessibilityAgentBridgeState.FindFormByName(const aName: string; out aMatchCount: Integer): TCustomForm;
 var
   i: Integer;
 begin
   Result := nil;
+  aMatchCount := 0;
   for i := 0 to Pred(Screen.CustomFormCount) do
   begin
     if SameText(Screen.CustomForms[i].Name, aName) then
     begin
-      Exit(Screen.CustomForms[i]);
+      Inc(aMatchCount);
+      if Result = nil then
+      begin
+        Result := Screen.CustomForms[i];
+      end;
     end;
   end;
 end;
@@ -2291,6 +2684,36 @@ begin
   end;
 end;
 
+function TAccessibilityAgentBridgeState.MakeOperationRoom: Boolean;
+var
+  lOldestOperationId: string;
+  lOldestSequence: UInt64;
+  lOperation: TAgentBridgeOperation;
+begin
+  if fOperations.Count < cAgentBridgeMaxOperations then
+  begin
+    Exit(True);
+  end;
+
+  lOldestOperationId := '';
+  lOldestSequence := High(UInt64);
+  for lOperation in fOperations.Values do
+  begin
+    if (lOperation.Status in [abosSucceeded, abosFailed]) and
+      ((lOldestOperationId = '') or (lOperation.Sequence < lOldestSequence)) then
+    begin
+      lOldestOperationId := lOperation.Id;
+      lOldestSequence := lOperation.Sequence;
+    end;
+  end;
+
+  Result := lOldestOperationId <> '';
+  if Result then
+  begin
+    fOperations.Remove(lOldestOperationId);
+  end;
+end;
+
 procedure TAccessibilityAgentBridgeState.Notification(aComponent: TComponent; aOperation: TOperation);
 var
   lControl: TControl;
@@ -2317,6 +2740,50 @@ begin
   end;
 end;
 
+procedure TAccessibilityAgentBridgeState.RunQueuedOperation;
+var
+  lControl: TControl;
+  lOperation: TAgentBridgeOperation;
+  lQueuedOperation: TAgentBridgeOperation;
+  lQueuedOperationId: string;
+  lQueuedSequence: UInt64;
+begin
+  lQueuedOperationId := '';
+  lQueuedSequence := High(UInt64);
+  for lOperation in fOperations.Values do
+  begin
+    if (lOperation.Status = abosQueued) and
+      ((lQueuedOperationId = '') or (lOperation.Sequence < lQueuedSequence)) then
+    begin
+      lQueuedOperationId := lOperation.Id;
+      lQueuedSequence := lOperation.Sequence;
+    end;
+  end;
+
+  if (lQueuedOperationId = '') or not fOperations.TryGetValue(lQueuedOperationId, lQueuedOperation) then
+  begin
+    Exit;
+  end;
+
+  lControl := lQueuedOperation.Control;
+  if lControl = nil then
+  begin
+    lQueuedOperation.MarkFailed('target_destroyed', 'The queued invoke target is no longer available.');
+    Exit;
+  end;
+
+  lQueuedOperation.MarkRunning;
+  try
+    TAgentBridgeControlAccess(lControl).Click;
+    lQueuedOperation.MarkSucceeded;
+  except
+    on lError: Exception do
+    begin
+      lQueuedOperation.MarkFailed('invoke_failed', lError.ClassName + ': ' + lError.Message);
+    end;
+  end;
+end;
+
 function TAccessibilityAgentBridgeState.RefForControl(aControl: TControl; out aRef: string): Boolean;
 begin
   aRef := '';
@@ -2330,7 +2797,7 @@ begin
     Exit;
   end;
 
-  Result := '@a' + IntToStr(fNextRefIndex);
+  Result := '@s' + UIntToStr(fSnapshotId) + 'a' + IntToStr(fNextRefIndex);
   Inc(fNextRefIndex);
   fControlsByRef.Add(Result, aControl);
   fRefsByControl.Add(aControl, Result);
@@ -2346,6 +2813,198 @@ begin
   lRef := RequestString(aRequest, 'ref');
   Result := (lRef <> '') and fControlsByRef.TryGetValue(lRef, aControl) and (aControl <> nil) and
     not (csDestroying in aControl.ComponentState);
+end;
+
+function TAccessibilityAgentBridgeState.ResolveRequestControl(aRequest: TJSONObject; aRequireActionable: Boolean;
+  out aControl: TControl; out aFailure: TJSONObject): Boolean;
+var
+  lControlName: string;
+  lControlNameValue: TJSONValue;
+  lCurrentControl: TControl;
+  lForm: TCustomForm;
+  lFormHandle: UInt64;
+  lFormHandlePresent: Boolean;
+  lFormHandleValue: TJSONValue;
+  lFormName: string;
+  lFormNamePresent: Boolean;
+  lFormNameValue: TJSONValue;
+  lMatchCount: Integer;
+  lRef: string;
+  lRefPresent: Boolean;
+  lRefValue: TJSONValue;
+  lTarget: TJSONObject;
+  lTargetValue: TJSONValue;
+begin
+  Result := False;
+  aControl := nil;
+  aFailure := nil;
+  lRef := '';
+  lRefValue := aRequest.GetValue('ref');
+  lRefPresent := lRefValue <> nil;
+  lTargetValue := aRequest.GetValue('target');
+  if lRefPresent = (lTargetValue <> nil) then
+  begin
+    aFailure := Failure('invalid_request', 'Control command requires exactly one current ref or target object.');
+    Exit;
+  end;
+
+  if lRefPresent then
+  begin
+    if lRefValue.ClassType <> TJSONString then
+    begin
+      aFailure := Failure('invalid_request', 'Control ref must be a string.');
+      Exit;
+    end;
+    lRef := lRefValue.Value;
+    if lRef = '' then
+    begin
+      aFailure := Failure('invalid_request', 'Control ref must not be empty.');
+      Exit;
+    end;
+    if not ResolveControl(aRequest, aControl) then
+    begin
+      aFailure := Failure('stale_ref', 'Control ref is unknown or no longer alive.');
+      Exit;
+    end;
+  end else begin
+    if not (lTargetValue is TJSONObject) then
+    begin
+      aFailure := Failure('invalid_request', 'Control target must be an object.');
+      Exit;
+    end;
+    lTarget := TJSONObject(lTargetValue); //PALOFF STWA6 guarded by JSON type assertion
+    lControlNameValue := lTarget.GetValue('controlName');
+    lFormNamePresent := lTarget.GetValue('formName') <> nil;
+    lFormHandlePresent := lTarget.GetValue('formHandle') <> nil;
+    if (lControlNameValue = nil) or (lControlNameValue.ClassType <> TJSONString) or
+      (lFormNamePresent = lFormHandlePresent) then
+    begin
+      aFailure := Failure('invalid_request',
+        'Control target requires controlName and exactly one of formName or formHandle.');
+      Exit;
+    end;
+    lControlName := lControlNameValue.Value;
+    if lControlName = '' then
+    begin
+      aFailure := Failure('invalid_request', 'Control target controlName must not be empty.');
+      Exit;
+    end;
+
+    if lFormNamePresent then
+    begin
+      lFormNameValue := lTarget.GetValue('formName');
+      if lFormNameValue.ClassType <> TJSONString then
+      begin
+        aFailure := Failure('invalid_request', 'Control target formName must be a string.');
+        Exit;
+      end;
+      lFormName := lFormNameValue.Value;
+      if lFormName = '' then
+      begin
+        aFailure := Failure('invalid_request', 'Control target formName must not be empty.');
+        Exit;
+      end;
+      lForm := FindFormByName(lFormName, lMatchCount);
+      if lMatchCount > 1 then
+      begin
+        aFailure := Failure('ambiguous_form', 'More than one current form has the requested name: ' + lFormName);
+        Exit;
+      end;
+    end else begin
+      lFormHandleValue := lTarget.GetValue('formHandle');
+      if (lFormHandleValue = nil) or (lFormHandleValue.ClassType <> TJSONNumber) or
+        (not RequestUInt64(lTarget, 'formHandle', lFormHandle)) or (lFormHandle = 0) then
+      begin
+        aFailure := Failure('invalid_request', 'Control target formHandle must be a nonzero integer.');
+        Exit;
+      end;
+      lForm := nil;
+      for lMatchCount := 0 to Pred(Screen.CustomFormCount) do
+      begin
+        if Screen.CustomForms[lMatchCount].HandleAllocated and
+          (UInt64(NativeUInt(TAgentBridgeWinControlAccess(Screen.CustomForms[lMatchCount]).WindowHandle)) =
+          lFormHandle) then
+        begin
+          lForm := Screen.CustomForms[lMatchCount];
+          Break;
+        end;
+      end;
+    end;
+
+    if lForm = nil then
+    begin
+      aFailure := Failure('form_not_found', 'Requested form is not a current VCL form.');
+      Exit;
+    end;
+    if csDestroying in lForm.ComponentState then
+    begin
+      aFailure := Failure('form_destroying', 'Requested form is being destroyed.');
+      Exit;
+    end;
+
+    aControl := FindControlByName(lForm, lControlName, lMatchCount);
+    if lMatchCount > 1 then
+    begin
+      aControl := nil;
+      aFailure := Failure('ambiguous_control',
+        'More than one control on the requested form has the name: ' + lControlName);
+      Exit;
+    end;
+    if aControl = nil then
+    begin
+      aFailure := Failure('control_not_found', 'Requested control was not found: ' + lControlName);
+      Exit;
+    end;
+    if (aControl <> lForm) and (GetParentForm(aControl, False) <> lForm) then
+    begin
+      aControl := nil;
+      aFailure := Failure('control_not_in_form',
+        'Requested control is owned by the selected form but belongs to a different visual form.');
+      Exit;
+    end;
+  end;
+
+  if csDestroying in aControl.ComponentState then
+  begin
+    aControl := nil;
+    aFailure := Failure('control_destroying', 'Requested control is being destroyed.');
+    Exit;
+  end;
+
+  if aRequireActionable then
+  begin
+    if not (aControl is TCustomForm) and (GetParentForm(aControl, False) = nil) then
+    begin
+      aControl := nil;
+      aFailure := Failure('control_not_actionable', 'Requested control is not attached to a current form.');
+      Exit;
+    end;
+    lCurrentControl := aControl;
+    while lCurrentControl <> nil do
+    begin
+      if csDestroying in lCurrentControl.ComponentState then
+      begin
+        aControl := nil;
+        aFailure := Failure('control_destroying', 'Requested control or one of its parents is being destroyed.');
+        Exit;
+      end;
+      if not lCurrentControl.Visible then
+      begin
+        aControl := nil;
+        aFailure := Failure('control_hidden', 'Requested control or one of its parents is hidden.');
+        Exit;
+      end;
+      if not lCurrentControl.Enabled then
+      begin
+        aControl := nil;
+        aFailure := Failure('control_disabled', 'Requested control or one of its parents is disabled.');
+        Exit;
+      end;
+      lCurrentControl := lCurrentControl.Parent;
+    end;
+  end;
+
+  Result := True;
 end;
 
 function TAccessibilityAgentBridgeState.ResolveForm(aRequest: TJSONObject): TCustomForm;
@@ -2406,7 +3065,7 @@ begin
   lResponse := TJSONObject.Create;
   AddBool(lResponse, 'ok', True);
   lResponse.AddPair('cmd', aCommand);
-  AddInt(lResponse, 'protocolVersion', 1);
+  AddInt(lResponse, 'protocolVersion', cAgentBridgeProtocolVersion);
   Result := lResponse;
 end;
 
@@ -2418,8 +3077,9 @@ begin
   lResponse := TJSONObject.Create;
   AddBool(lResponse, 'ok', True);
   lResponse.AddPair('cmd', aCommand);
-  AddInt(lResponse, 'protocolVersion', 1);
+  AddInt(lResponse, 'protocolVersion', cAgentBridgeProtocolVersion);
   AddBool(lResponse, 'snapshotInvalidated', True);
+  lResponse.AddPair('driveMode', 'background-command');
   lResponse.AddPair('mutationSemantics', aSemantics);
   AddBool(lResponse, 'humanEquivalent', False);
   AddBool(lResponse, 'userInputEventsGenerated', False);
@@ -2643,6 +3303,11 @@ end;
 class procedure TAccessibilityAgentBridge.SetMutationEnabled(aValue: Boolean);
 begin
   gMutationEnabled := aValue;
+  if not aValue and (gBridgeState <> nil) then
+  begin
+    gBridgeState.CancelPendingOperations('mutation_disabled',
+      'Mutation commands were disabled before the queued invoke ran.');
+  end;
 end;
 
 initialization

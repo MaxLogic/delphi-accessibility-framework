@@ -49,7 +49,137 @@ class WindowsDesktopControlTests(unittest.TestCase):
         self.assertIn("pid", payload["window"])
         self.assertIn("title", payload["window"])
 
-    def test_real_input_commands_refuse_mismatched_foreground_before_dispatch(self) -> None:
+    def test_foreground_session_is_required_before_every_real_input_command(self) -> None:
+        helper = load_helper_module()
+        calls = []
+        target = {"hwnd": 500, "pid": 42, "title": "Target", "className": "TForm"}
+        control_response = {
+            "ok": True,
+            "snapshotId": 1,
+            "control": {
+                "ref": "@a0",
+                "name": "ApplyButton",
+                "className": "TButton",
+                "formName": "MainForm",
+                "formHandle": 500,
+                "rootHandle": 500,
+                "visible": True,
+                "enabled": True,
+                "formVisible": True,
+                "formEnabled": True,
+                "valid": True,
+                "targetPoints": {"center": {"x": 10, "y": 20}},
+            },
+        }
+
+        class FakeUser32:
+            # Real foreground ownership and input are unsafe and nondeterministic in this unit test.
+            @staticmethod
+            def GetAncestor(hwnd, _flag):
+                return hwnd
+
+            @staticmethod
+            def GetForegroundWindow():
+                return helper.int_to_hwnd(500)
+
+            @staticmethod
+            def SetCursorPos(x, y):
+                calls.append(("cursor", x, y))
+                return True
+
+            @staticmethod
+            def mouse_event(*items):
+                calls.append(("mouse", *items))
+
+        commands = [
+            ("activate-window", helper.command_activate_window, {"hwnd": 500, "pid": None, "title_contains": None, "timeout_ms": 100}),
+            ("move-to-control", helper.command_move_to_control, {"pipe_name": "Bridge.42", "form_name": "MainForm", "control_name": "ApplyButton", "ref": None, "timeout_ms": 100}),
+            ("click-control", helper.command_click_control, {"pipe_name": "Bridge.42", "form_name": "MainForm", "control_name": "ApplyButton", "ref": None, "timeout_ms": 100, "down_ms": 0}),
+            ("double-click-control", helper.command_double_click_control, {"pipe_name": "Bridge.42", "form_name": "MainForm", "control_name": "ApplyButton", "ref": None, "timeout_ms": 100, "down_ms": 0}),
+            ("right-click-control", helper.command_right_click_control, {"pipe_name": "Bridge.42", "form_name": "MainForm", "control_name": "ApplyButton", "ref": None, "timeout_ms": 100, "down_ms": 0}),
+            ("move", helper.command_move, {"x": 10, "y": 20, "duration_ms": 0}),
+            ("click", helper.command_click, {"x": None, "y": None, "button": "left", "count": 1, "down_ms": 0, "duration_ms": 0}),
+            ("double-click", helper.command_double_click, {"x": None, "y": None, "button": "left", "count": 2, "down_ms": 0, "duration_ms": 0}),
+            ("press", helper.command_press, {"key": "enter", "down_ms": 0}),
+            ("tab", helper.command_tab, {"shift": False}),
+            ("type-text", helper.command_type_text, {"text": "x", "delay_ms": 0}),
+            ("key-chord", helper.command_key_chord, {"keys": "Ctrl+A", "down_ms": 0}),
+            ("clear-and-type", helper.command_clear_and_type, {"text": "x", "delay_ms": 0, "down_ms": 0}),
+        ]
+        originals = {
+            "user32": helper.user32,
+            "resolve_target_window": helper.resolve_target_window,
+            "bridge_request": helper.bridge_request,
+            "activate_hwnd": helper.activate_hwnd,
+            "window_info": helper.window_info,
+            "dispatch_pointer_action": helper.dispatch_pointer_action,
+            "send_key_input": helper.send_key_input,
+            "send_unicode_unit": helper.send_unicode_unit,
+        }
+        try:
+            helper.user32 = FakeUser32()
+            helper.resolve_target_window = lambda _args: (target, [target])
+            helper.bridge_request = lambda _pipe, _request, _timeout: control_response
+            helper.activate_hwnd = (
+                lambda hwnd, _timeout, _guard=None: (calls.append(("activate", helper.hwnd_to_int(hwnd))) or True, None)
+            )
+            helper.window_info = lambda hwnd: {**target, "hwnd": helper.hwnd_to_int(hwnd)}
+            helper.dispatch_pointer_action = lambda *items: calls.append(("semantic", *items))
+            helper.send_key_input = lambda *items: calls.append(("key", *items))
+            helper.send_unicode_unit = lambda *items: calls.append(("unicode", *items))
+
+            with tempfile.TemporaryDirectory() as directory:
+                state_path = Path(directory) / "lease.json"
+                valid_state = {
+                    "sessionId": "guard-session",
+                    "targetPid": 42,
+                    "targetHwnd": 500,
+                    "controllerPid": os.getpid(),
+                    "expiresAtMs": helper.epoch_ms() + 5000,
+                }
+                cases = [
+                    ("missing", None, None, None, "session-required"),
+                    ("absent", "guard-session", None, None, "session-absent"),
+                    (
+                        "expired",
+                        "guard-session",
+                        {**valid_state, "expiresAtMs": helper.epoch_ms() - 1},
+                        None,
+                        "session-expired",
+                    ),
+                    (
+                        "mismatched-target",
+                        "guard-session",
+                        {**valid_state, "targetPid": 99, "targetHwnd": 0},
+                        42,
+                        "session-pid-mismatch",
+                    ),
+                ]
+                for case, session_id, state, required_pid, reason in cases:
+                    if state is None:
+                        state_path.unlink(missing_ok=True)
+                    else:
+                        helper.write_session(state_path, state)
+                    common = {
+                        "session_id": session_id,
+                        "state_path": str(state_path),
+                        "require_foreground_pid": required_pid,
+                        "require_foreground_hwnd": None,
+                    }
+                    for name, command, values in commands:
+                        with self.subTest(case=case, command=name):
+                            calls.clear()
+                            output = StringIO()
+                            with redirect_stdout(output):
+                                result = command(SimpleNamespace(**common, **values))
+                            self.assertEqual(2, result)
+                            self.assertEqual(reason, json.loads(output.getvalue())["reason"])
+                            self.assertEqual([], calls)
+        finally:
+            for name, value in originals.items():
+                setattr(helper, name, value)
+
+    def test_foreground_session_commands_refuse_mismatched_foreground_before_dispatch(self) -> None:
         helper = load_helper_module()
         calls = []
 
@@ -88,29 +218,44 @@ class WindowsDesktopControlTests(unittest.TestCase):
             helper.send_key_input = lambda *args: calls.append(("key", *args))
             helper.send_unicode_unit = lambda *args: calls.append(("unicode", *args))
 
-            guards = [(303, None, "requiredForegroundPid", 303), (None, 404, "requiredForegroundHwnd", 404)]
-            for required_pid, required_hwnd, field, expected in guards:
-                for command, args in commands:
-                    with self.subTest(command=command.__name__, guard=field):
-                        args.require_foreground_pid = required_pid
-                        args.require_foreground_hwnd = required_hwnd
-                        output = StringIO()
-                        with redirect_stdout(output):
-                            result = command(args)
+            with tempfile.TemporaryDirectory() as directory:
+                state_path = Path(directory) / "lease.json"
+                guards = [(303, None, "requiredForegroundPid", 303), (None, 404, "requiredForegroundHwnd", 404)]
+                for required_pid, required_hwnd, field, expected in guards:
+                    helper.write_session(
+                        state_path,
+                        {
+                            "sessionId": "guard-session",
+                            "targetPid": required_pid if required_pid is not None else 202,
+                            "targetHwnd": required_hwnd or 0,
+                            "controllerPid": os.getpid(),
+                            "expiresAtMs": helper.epoch_ms() + 5000,
+                        },
+                    )
+                    for command, args in commands:
+                        with self.subTest(command=command.__name__, guard=field):
+                            calls.clear()
+                            args.require_foreground_pid = required_pid
+                            args.require_foreground_hwnd = required_hwnd
+                            args.session_id = "guard-session"
+                            args.state_path = str(state_path)
+                            output = StringIO()
+                            with redirect_stdout(output):
+                                result = command(args)
 
-                        self.assertEqual(2, result)
-                        payload = json.loads(output.getvalue())
-                        self.assertFalse(payload["ok"])
-                        self.assertEqual(expected, payload[field])
-                        self.assertEqual(202, payload["actualForeground"]["pid"])
-                        self.assertEqual([], calls)
+                            self.assertEqual(2, result)
+                            payload = json.loads(output.getvalue())
+                            self.assertFalse(payload["ok"])
+                            self.assertEqual(expected, payload[field])
+                            self.assertEqual(202, payload["actualForeground"]["pid"])
+                            self.assertEqual([], calls)
         finally:
             helper.user32 = original_user32
             helper.window_info = original_window_info
             helper.send_key_input = original_send_key_input
             helper.send_unicode_unit = original_send_unicode_unit
 
-    def test_real_input_guard_allows_matching_pid_and_hwnd(self) -> None:
+    def test_foreground_session_guard_allows_matching_pid_and_hwnd(self) -> None:
         helper = load_helper_module()
         calls = []
 
@@ -130,31 +275,68 @@ class WindowsDesktopControlTests(unittest.TestCase):
         try:
             helper.user32 = FakeUser32()
             helper.window_info = lambda _hwnd: {"hwnd": 101, "pid": 202, "title": "Expected application"}
-            args = SimpleNamespace(
-                x=10,
-                y=20,
-                require_foreground_pid=202,
-                require_foreground_hwnd=101,
-            )
+            with tempfile.TemporaryDirectory() as directory:
+                state_path = Path(directory) / "lease.json"
+                helper.write_session(
+                    state_path,
+                    {
+                        "sessionId": "matching-session",
+                        "targetPid": 202,
+                        "targetHwnd": 101,
+                        "controllerPid": os.getpid(),
+                        "expiresAtMs": helper.epoch_ms() + 5000,
+                    },
+                )
+                args = SimpleNamespace(
+                    x=10,
+                    y=20,
+                    duration_ms=0,
+                    require_foreground_pid=202,
+                    require_foreground_hwnd=101,
+                    session_id="matching-session",
+                    state_path=str(state_path),
+                )
+                output = StringIO()
+                with redirect_stdout(output):
+                    result = helper.command_move(args)
 
-            self.assertEqual(0, helper.command_move(args))
-            self.assertEqual([(10, 20)], calls)
+                self.assertEqual(0, result)
+                self.assertEqual("foreground-input", json.loads(output.getvalue())["driveMode"])
+                self.assertEqual([(10, 20)], calls)
         finally:
             helper.user32 = original_user32
             helper.window_info = original_window_info
 
-    def test_real_input_command_help_documents_foreground_guards(self) -> None:
-        for command in ["move", "click", "double-click", "press", "tab", "type-text", "key-chord", "clear-and-type"]:
+    def test_foreground_session_command_help_documents_mandatory_lease(self) -> None:
+        commands = [
+            "activate-window",
+            "move-to-control",
+            "click-control",
+            "double-click-control",
+            "right-click-control",
+            "move",
+            "click",
+            "double-click",
+            "press",
+            "tab",
+            "type-text",
+            "key-chord",
+            "clear-and-type",
+        ]
+        for command in commands:
             with self.subTest(command=command):
                 result = self.run_helper(command, "--help")
 
                 self.assertEqual(0, result.returncode, result.stderr)
                 self.assertIn("--require-foreground-pid", result.stdout)
                 self.assertIn("--require-foreground-hwnd", result.stdout)
+                self.assertIn("--session-id", result.stdout)
 
-    def test_activate_window_resolves_child_to_activatable_root(self) -> None:
+    def test_foreground_session_allows_activate_window_to_bring_target_root_forward(self) -> None:
         helper = load_helper_module()
         activated = []
+        foreground = [900]
+        expire_after_activation = [False]
         requested = {"hwnd": 501, "pid": 42, "title": "MDI child", "className": "TEditorForm"}
         root = {"hwnd": 500, "pid": 42, "title": "KFZMeister", "className": "TApplication"}
 
@@ -167,33 +349,133 @@ class WindowsDesktopControlTests(unittest.TestCase):
 
             @staticmethod
             def GetForegroundWindow():
-                return helper.int_to_hwnd(500)
+                return helper.int_to_hwnd(foreground[0])
 
         original_user32 = helper.user32
         original_resolve_target_window = helper.resolve_target_window
         original_activate_hwnd = helper.activate_hwnd
         original_window_info = helper.window_info
-        try:
-            helper.user32 = FakeUser32()
-            helper.resolve_target_window = lambda _args: (requested, [requested])
-            helper.activate_hwnd = lambda hwnd, _timeout: activated.append(helper.hwnd_to_int(hwnd)) or True
-            helper.window_info = lambda hwnd: root if helper.hwnd_to_int(hwnd) == 500 else requested
-            args = SimpleNamespace(hwnd=501, pid=None, title_contains=None, timeout_ms=100)
-            output = StringIO()
-            with redirect_stdout(output):
-                result = helper.command_activate_window(args)
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "lease.json"
+            session = {
+                "sessionId": "activation-session",
+                "targetPid": 42,
+                "targetHwnd": 500,
+                "controllerPid": os.getpid(),
+                "expiresAtMs": helper.epoch_ms() + 5000,
+            }
+            helper.write_session(state_path, session)
+            try:
+                helper.user32 = FakeUser32()
+                helper.resolve_target_window = lambda _args: (requested, [requested])
 
-            self.assertEqual(0, result)
-            self.assertEqual([500], activated)
-            payload = json.loads(output.getvalue())
-            self.assertEqual(501, payload["requested"]["hwnd"])
-            self.assertEqual(500, payload["activated"]["hwnd"])
-            self.assertTrue(payload["resolvedToRoot"])
+                def activate(hwnd, _timeout, _guard=None):
+                    activated.append(helper.hwnd_to_int(hwnd))
+                    foreground[0] = helper.hwnd_to_int(hwnd)
+                    if expire_after_activation[0]:
+                        helper.write_session(state_path, {**session, "expiresAtMs": helper.epoch_ms() - 1})
+                    return True, None
+
+                helper.activate_hwnd = activate
+                helper.window_info = lambda hwnd: root if helper.hwnd_to_int(hwnd) == 500 else requested
+                args = SimpleNamespace(
+                    hwnd=501,
+                    pid=None,
+                    title_contains=None,
+                    timeout_ms=100,
+                    require_foreground_pid=None,
+                    require_foreground_hwnd=None,
+                    session_id="activation-session",
+                    state_path=str(state_path),
+                )
+                output = StringIO()
+                with redirect_stdout(output):
+                    result = helper.command_activate_window(args)
+
+                self.assertEqual(0, result)
+                self.assertEqual([500], activated)
+                payload = json.loads(output.getvalue())
+                self.assertEqual(501, payload["requested"]["hwnd"])
+                self.assertEqual(500, payload["activated"]["hwnd"])
+                self.assertTrue(payload["resolvedToRoot"])
+                self.assertEqual("foreground-input", payload["driveMode"])
+
+                activated.clear()
+                foreground[0] = 900
+                expire_after_activation[0] = True
+                helper.write_session(state_path, {**session, "expiresAtMs": helper.epoch_ms() + 5000})
+                output = StringIO()
+                with redirect_stdout(output):
+                    result = helper.command_activate_window(args)
+                self.assertEqual(2, result)
+                self.assertEqual("session-expired", json.loads(output.getvalue())["reason"])
+                self.assertEqual([500], activated)
+            finally:
+                helper.user32 = original_user32
+                helper.resolve_target_window = original_resolve_target_window
+                helper.activate_hwnd = original_activate_hwnd
+                helper.window_info = original_window_info
+
+    def test_foreground_session_activation_retry_rechecks_lease_before_each_attempt(self) -> None:
+        helper = load_helper_module()
+        guard_results = [None, 2]
+        activation_calls = []
+
+        class FakeKernel32:
+            @staticmethod
+            def GetCurrentThreadId():
+                return 1
+
+        class FakeUser32:
+            # Real foreground activation is unsafe; this fixes the retry and guard boundaries.
+            @staticmethod
+            def GetForegroundWindow():
+                return helper.int_to_hwnd(900)
+
+            @staticmethod
+            def AttachThreadInput(*_items):
+                return False
+
+            @staticmethod
+            def ShowWindow(hwnd, _command):
+                activation_calls.append(("show", helper.hwnd_to_int(hwnd)))
+
+            @staticmethod
+            def BringWindowToTop(hwnd):
+                activation_calls.append(("top", helper.hwnd_to_int(hwnd)))
+
+            @staticmethod
+            def SetForegroundWindow(hwnd):
+                activation_calls.append(("foreground", helper.hwnd_to_int(hwnd)))
+
+        originals = {
+            "kernel32": helper.kernel32,
+            "user32": helper.user32,
+            "get_window_pid_and_thread": helper.get_window_pid_and_thread,
+            "monotonic": helper.time.monotonic,
+            "sleep": helper.time.sleep,
+        }
+        try:
+            helper.kernel32 = FakeKernel32()
+            helper.user32 = FakeUser32()
+            helper.get_window_pid_and_thread = lambda _hwnd: (42, 2)
+            helper.time.monotonic = lambda: 0.0
+            helper.time.sleep = lambda _seconds: None
+
+            result = helper.activate_hwnd(helper.int_to_hwnd(500), 100, lambda: guard_results.pop(0))
         finally:
-            helper.user32 = original_user32
-            helper.resolve_target_window = original_resolve_target_window
-            helper.activate_hwnd = original_activate_hwnd
-            helper.window_info = original_window_info
+            helper.kernel32 = originals["kernel32"]
+            helper.user32 = originals["user32"]
+            helper.get_window_pid_and_thread = originals["get_window_pid_and_thread"]
+            helper.time.monotonic = originals["monotonic"]
+            helper.time.sleep = originals["sleep"]
+
+        self.assertEqual((False, 2), result)
+        self.assertEqual([], guard_results)
+        self.assertEqual(
+            [("show", 500), ("top", 500), ("foreground", 500)],
+            activation_calls,
+        )
 
     def test_semantic_control_actions_refresh_after_activation_and_dispatch_requested_pointer_action(self) -> None:
         helper = load_helper_module()
@@ -251,12 +533,24 @@ class WindowsDesktopControlTests(unittest.TestCase):
         original_activate_hwnd = helper.activate_hwnd
         original_dispatch_pointer_action = helper.dispatch_pointer_action
         original_window_info = helper.window_info
+        directory = tempfile.TemporaryDirectory()
+        state_path = Path(directory.name) / "lease.json"
+        helper.write_session(
+            state_path,
+            {
+                "sessionId": "semantic-session",
+                "targetPid": 42,
+                "targetHwnd": 500,
+                "controllerPid": os.getpid(),
+                "expiresAtMs": helper.epoch_ms() + 5000,
+            },
+        )
         try:
             helper.user32 = FakeUser32()
             helper.bridge_request = (
                 lambda _pipe, request, _timeout: requests.append(json.loads(request)) or responses.pop(0)
             )
-            helper.activate_hwnd = lambda hwnd, _timeout: helper.hwnd_to_int(hwnd) == 500
+            helper.activate_hwnd = lambda hwnd, _timeout, _guard=None: (helper.hwnd_to_int(hwnd) == 500, None)
             helper.window_info = lambda hwnd: {
                 "hwnd": helper.hwnd_to_int(hwnd),
                 "pid": 42,
@@ -264,7 +558,7 @@ class WindowsDesktopControlTests(unittest.TestCase):
                 "foreground": helper.hwnd_to_int(hwnd) == 500,
             }
             helper.dispatch_pointer_action = (
-                lambda action, point, button, count, down_ms: dispatched.append(
+                lambda action, point, button, count, down_ms, _guard=None: dispatched.append(
                     (action, point.copy(), button, count, down_ms)
                 )
             )
@@ -275,6 +569,10 @@ class WindowsDesktopControlTests(unittest.TestCase):
                 ref=None,
                 timeout_ms=500,
                 down_ms=0,
+                require_foreground_pid=None,
+                require_foreground_hwnd=None,
+                session_id="semantic-session",
+                state_path=str(state_path),
             )
             output = StringIO()
             with redirect_stdout(output):
@@ -293,12 +591,14 @@ class WindowsDesktopControlTests(unittest.TestCase):
             self.assertEqual(500, payload["action"]["activatedRoot"]["hwnd"])
             self.assertTrue(payload["action"]["modalSafe"])
             self.assertNotIn("screenRect", payload["action"])
+            self.assertEqual("foreground-input", payload["driveMode"])
         finally:
             helper.user32 = original_user32
             helper.bridge_request = original_bridge_request
             helper.activate_hwnd = original_activate_hwnd
             helper.dispatch_pointer_action = original_dispatch_pointer_action
             helper.window_info = original_window_info
+            directory.cleanup()
 
     def test_semantic_control_action_refuses_activation_stale_ref_and_changed_ownership_before_input(self) -> None:
         helper = load_helper_module()
@@ -337,6 +637,18 @@ class WindowsDesktopControlTests(unittest.TestCase):
         original_activate_hwnd = helper.activate_hwnd
         original_dispatch_pointer_action = helper.dispatch_pointer_action
         original_window_info = helper.window_info
+        directory = tempfile.TemporaryDirectory()
+        state_path = Path(directory.name) / "lease.json"
+        helper.write_session(
+            state_path,
+            {
+                "sessionId": "semantic-session",
+                "targetPid": 42,
+                "targetHwnd": 500,
+                "controllerPid": os.getpid(),
+                "expiresAtMs": helper.epoch_ms() + 5000,
+            },
+        )
         try:
             helper.user32 = FakeUser32()
             helper.window_info = lambda hwnd: {"hwnd": helper.hwnd_to_int(hwnd), "pid": 42, "title": "KFZMeister"}
@@ -348,6 +660,10 @@ class WindowsDesktopControlTests(unittest.TestCase):
                 ref="@a0",
                 timeout_ms=500,
                 down_ms=0,
+                require_foreground_pid=None,
+                require_foreground_hwnd=None,
+                session_id="semantic-session",
+                state_path=str(state_path),
             )
 
             cases = [
@@ -371,7 +687,7 @@ class WindowsDesktopControlTests(unittest.TestCase):
             for activates, foreground_hwnd, responses, reason in cases:
                 with self.subTest(reason=reason):
                     foreground[0] = foreground_hwnd
-                    helper.activate_hwnd = lambda _hwnd, _timeout, value=activates: value
+                    helper.activate_hwnd = lambda _hwnd, _timeout, _guard=None, value=activates: (value, None)
                     pending = list(responses)
                     helper.bridge_request = lambda _pipe, _request, _timeout: pending.pop(0)
                     output = StringIO()
@@ -380,12 +696,29 @@ class WindowsDesktopControlTests(unittest.TestCase):
                     self.assertEqual(2, result)
                     self.assertEqual(reason, json.loads(output.getvalue())["reason"])
                     self.assertEqual([], dispatched)
+
+            def expire_after_activation(_hwnd, _timeout, _guard=None):
+                state = helper.read_session(state_path)
+                helper.write_session(state_path, {**state, "expiresAtMs": helper.epoch_ms() - 1})
+                return True, None
+
+            foreground[0] = 500
+            helper.activate_hwnd = expire_after_activation
+            pending = [target_response(), target_response()]
+            helper.bridge_request = lambda _pipe, _request, _timeout: pending.pop(0)
+            output = StringIO()
+            with redirect_stdout(output):
+                result = helper.command_semantic_control_action(args, "click-control", "left", 1)
+            self.assertEqual(2, result)
+            self.assertEqual("session-expired", json.loads(output.getvalue())["reason"])
+            self.assertEqual([], dispatched)
         finally:
             helper.user32 = original_user32
             helper.bridge_request = original_bridge_request
             helper.activate_hwnd = original_activate_hwnd
             helper.dispatch_pointer_action = original_dispatch_pointer_action
             helper.window_info = original_window_info
+            directory.cleanup()
 
     def test_semantic_control_commands_and_pointer_buttons_are_wired(self) -> None:
         for command in ["move-to-control", "click-control", "double-click-control", "right-click-control"]:
@@ -710,7 +1043,7 @@ class WindowsDesktopControlTests(unittest.TestCase):
 
         self.assertLess(elapsed_ms, 250)
 
-    def test_general_key_chords_cover_navigation_functions_and_modifier_cleanup(self) -> None:
+    def test_foreground_session_input_helpers_release_down_events_after_dispatch_failure(self) -> None:
         helper = load_helper_module()
         self.assertEqual([helper.VK_CODES["ctrl"], ord("A")], helper.parse_key_chord("Ctrl+A"))
         self.assertEqual([helper.VK_CODES["alt"], helper.VK_CODES["f4"]], helper.parse_key_chord("Alt+F4"))
@@ -752,7 +1085,50 @@ class WindowsDesktopControlTests(unittest.TestCase):
                 helper.send_key_chord(helper.parse_key_chord("Ctrl+A"), 0)
         finally:
             helper.send_key_input = original_send_key_input
-        self.assertEqual((helper.VK_CODES["ctrl"], True), calls[-1])
+        self.assertEqual(
+            [
+                (helper.VK_CODES["ctrl"], False),
+                (ord("A"), False),
+                (ord("A"), True),
+                (helper.VK_CODES["ctrl"], True),
+            ],
+            calls,
+        )
+
+        mouse = []
+
+        class FakeUser32:
+            # Real mouse dispatch is unsafe; this injects a failure immediately after recording the down event.
+            @staticmethod
+            def mouse_event(flag, *_items):
+                mouse.append(flag)
+                if flag == helper.MOUSEEVENTF_LEFTDOWN:
+                    raise OSError("injected mouse failure")
+
+        original_user32 = helper.user32
+        try:
+            helper.user32 = FakeUser32()
+            with self.assertRaises(OSError):
+                helper.send_mouse_click("left", 1, 0)
+        finally:
+            helper.user32 = original_user32
+        self.assertEqual([helper.MOUSEEVENTF_LEFTDOWN, helper.MOUSEEVENTF_LEFTUP], mouse)
+
+        units = []
+
+        def fail_unicode(unit, key_up=False):
+            units.append((unit, key_up))
+            if not key_up:
+                raise OSError("injected Unicode failure")
+
+        original_send_unicode_unit = helper.send_unicode_unit
+        try:
+            helper.send_unicode_unit = fail_unicode
+            with self.assertRaises(OSError):
+                helper.type_unicode_text("a", 0)
+        finally:
+            helper.send_unicode_unit = original_send_unicode_unit
+        self.assertEqual([(ord("a"), False), (ord("a"), True)], units)
 
     def test_mouse_buttons_double_click_and_visible_move_share_one_dispatch_path(self) -> None:
         helper = load_helper_module()
@@ -809,8 +1185,10 @@ class WindowsDesktopControlTests(unittest.TestCase):
         original_type_unicode_text = helper.type_unicode_text
         try:
             helper.guard_real_input = lambda _args: None
-            helper.send_key_chord = lambda keys, down_ms: calls.append(("chord", list(keys), down_ms))
-            helper.type_unicode_text = lambda text, delay_ms: calls.append(("text", text, delay_ms))
+            helper.send_key_chord = (
+                lambda keys, down_ms, _guard=None: calls.append(("chord", list(keys), down_ms))
+            )
+            helper.type_unicode_text = lambda text, delay_ms, _guard=None: calls.append(("text", text, delay_ms))
             args = SimpleNamespace(
                 text="new value",
                 delay_ms=3,
@@ -849,7 +1227,7 @@ class WindowsDesktopControlTests(unittest.TestCase):
         original_send_mouse_click = helper.send_mouse_click
         try:
             helper.guard_real_input = lambda _args: guards.pop(0)
-            helper.move_cursor = lambda *_items: None
+            helper.move_cursor = lambda _x, _y, _duration, guard: guard()
             helper.send_mouse_click = lambda *items: clicks.append(items)
             args = SimpleNamespace(
                 x=10,
@@ -870,6 +1248,140 @@ class WindowsDesktopControlTests(unittest.TestCase):
         self.assertEqual(2, result)
         self.assertEqual([], guards)
         self.assertEqual([], clicks)
+
+    def test_foreground_session_expiry_mid_sequence_rechecks_real_lease_state(self) -> None:
+        helper = load_helper_module()
+        events = []
+        sleeps = []
+        expire_after_dispatch = [False]
+
+        class FakeUser32:
+            # Real delayed input is unsafe and nondeterministic; this fixes the guarded Win32 boundary.
+            @staticmethod
+            def GetForegroundWindow():
+                return helper.int_to_hwnd(500)
+
+            @staticmethod
+            def GetCursorPos(point):
+                point._obj.x = 0
+                point._obj.y = 0
+                return True
+
+            @staticmethod
+            def SetCursorPos(x, y):
+                events.append(("cursor", x, y))
+                expire_after_dispatch[0] = True
+                return True
+
+            @staticmethod
+            def mouse_event(*items):
+                events.append(("mouse", items[0]))
+                if items[0] == helper.MOUSEEVENTF_LEFTDOWN:
+                    expire_after_dispatch[0] = True
+
+        original_user32 = helper.user32
+        original_window_info = helper.window_info
+        original_send_key_input = helper.send_key_input
+        original_send_unicode_unit = helper.send_unicode_unit
+        original_read_session = helper.read_session
+        original_sleep = helper.time.sleep
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "lease.json"
+
+            def write_valid_session():
+                expire_after_dispatch[0] = False
+                helper.write_session(
+                    state_path,
+                    {
+                        "sessionId": "mid-sequence-session",
+                        "targetPid": 42,
+                        "targetHwnd": 500,
+                        "controllerPid": os.getpid(),
+                        "expiresAtMs": helper.epoch_ms() + 5000,
+                    },
+                )
+
+            def read_session(path):
+                state = original_read_session(path)
+                if state is not None and expire_after_dispatch[0]:
+                    return {**state, "expiresAtMs": helper.epoch_ms() - 1}
+                return state
+
+            def send_key(vk, key_up=False):
+                events.append(("key", vk, key_up))
+                if not key_up:
+                    expire_after_dispatch[0] = True
+
+            def send_unicode(unit, key_up=False):
+                events.append(("unicode", unit, key_up))
+                if not key_up:
+                    expire_after_dispatch[0] = True
+
+            try:
+                helper.user32 = FakeUser32()
+                helper.window_info = lambda hwnd: {"hwnd": helper.hwnd_to_int(hwnd), "pid": 42, "title": "Target"}
+                helper.send_key_input = send_key
+                helper.send_unicode_unit = send_unicode
+                helper.read_session = read_session
+                helper.time.sleep = lambda seconds: sleeps.append(seconds)
+                common = {
+                    "require_foreground_pid": None,
+                    "require_foreground_hwnd": None,
+                    "session_id": "mid-sequence-session",
+                    "state_path": str(state_path),
+                }
+                cases = [
+                    (
+                        "move",
+                        helper.command_move,
+                        {"x": 30, "y": 60, "duration_ms": 48},
+                        [("cursor", 0, 0)],
+                        [0.024],
+                    ),
+                    (
+                        "double-click",
+                        helper.command_double_click,
+                        {"x": None, "y": None, "button": "left", "count": 2, "down_ms": 0, "duration_ms": 0},
+                        [("mouse", helper.MOUSEEVENTF_LEFTDOWN), ("mouse", helper.MOUSEEVENTF_LEFTUP)],
+                        [0.0],
+                    ),
+                    (
+                        "key-chord",
+                        helper.command_key_chord,
+                        {"keys": "Ctrl+A", "down_ms": 0},
+                        [
+                            ("key", helper.VK_CODES["ctrl"], False),
+                            ("key", helper.VK_CODES["ctrl"], True),
+                        ],
+                        [],
+                    ),
+                    (
+                        "type-text",
+                        helper.command_type_text,
+                        {"text": "ab", "delay_ms": 1},
+                        [("unicode", ord("a"), False), ("unicode", ord("a"), True)],
+                        [0.001],
+                    ),
+                ]
+                for name, command, values, expected, expected_sleeps in cases:
+                    with self.subTest(command=name):
+                        events.clear()
+                        sleeps.clear()
+                        write_valid_session()
+                        output = StringIO()
+                        with redirect_stdout(output):
+                            result = command(SimpleNamespace(**common, **values))
+                        self.assertEqual(2, result)
+                        self.assertEqual("session-expired", json.loads(output.getvalue())["reason"])
+                        self.assertEqual(expected, events)
+                        self.assertEqual(expected_sleeps, sleeps)
+            finally:
+                helper.user32 = original_user32
+                helper.window_info = original_window_info
+                helper.send_key_input = original_send_key_input
+                helper.send_unicode_unit = original_send_unicode_unit
+                helper.read_session = original_read_session
+                helper.time.sleep = original_sleep
 
     def test_general_input_commands_are_documented(self) -> None:
         for command in ["key-chord", "clear-and-type", "double-click"]:

@@ -13,12 +13,25 @@ type
     [Test]
     procedure HelloReportsFrameworkPresenceAndMutationGate;
     [Test]
+    [Category('AgentBridge,AgentBridgeSnapshotRefs')]
+    procedure SnapshotRefsAreGenerationQualifiedAndInvalidated;
+    [Test]
+    [Category('AgentBridge,AgentBridgeSnapshotRefs')]
+    procedure MutationRefsAreInvalidatedBeforeAndAfterDispatch;
+    [Test]
+    [Category('AgentBridge,AgentBridgeNamedTargets')]
+    procedure MutationsAcceptAtomicNameAndHandleTargetsWithoutSnapshot;
+    [Test]
+    [Category('AgentBridge,AgentBridgeNamedTargets')]
+    procedure NamedTargetsRejectMalformedAmbiguousAndNonActionableRequests;
+    [Test]
     procedure WindowInfoReturnsGeometryAndDpi;
     [Test]
     procedure FormMapReturnsSnapshotRefsAndTargetPoints;
     [Test]
     procedure FormMapAppliesConfiguredDepthAndChildBounds;
     [Test]
+    [Category('AgentBridge,AgentBridgeSnapshotRefs')]
     procedure FormMapReferenceGenerationAvoidsFormatParser;
     [Test]
     procedure FormMapReturnsNativeAccessibilityRoleAndState;
@@ -55,6 +68,10 @@ type
     [Test]
     procedure ControlResolveReportsMdiChildHostContext;
     [Test]
+    [Category('AgentBridge,AgentBridgeNamedTargets')]
+    procedure FocusRejectsDisabledAncestorBeforeMutation;
+    [Test]
+    [Category('AgentBridge,AgentBridgeNamedTargets')]
     procedure FocusFailureReportsEffectiveVclContext;
     [Test]
     procedure ControlInfoReusesSnapshotRectangleForMappedControl;
@@ -71,15 +88,36 @@ type
     [Test]
     procedure KeyboardTabScalesWithTabStopCount;
     [Test]
-    procedure MutationsAreGatedAndOperateOnLastSnapshotRefs;
+    [Category('AgentBridge,AgentBridgeBackgroundActions')]
+    procedure BackgroundInvokeSupportsVclAndActionControls;
+    [Test]
+    [Category('AgentBridge,AgentBridgeBackgroundActions')]
+    procedure SetCheckedUsesDeterministicVclEvents;
+    [Test]
+    [Category('AgentBridge,AgentBridgeBackgroundActions')]
+    procedure SelectUsesStockVclNotificationOncePerChange;
+    [Test]
+    [Category('AgentBridge,AgentBridgeBackgroundActions')]
+    procedure BackgroundActionsRejectInvalidOrUnsupportedRequests;
+    [Test]
+    [Category('AgentBridge,AgentBridgeQueuedOperations')]
+    procedure QueuedInvokeReportsLifecycleFailureAndConsumption;
+    [Test]
+    [Category('AgentBridge,AgentBridgeQueuedOperations')]
+    procedure QueuedInvokeCancelsDestroyedTargetsAndDisabledMutations;
+    [Test]
+    [Category('AgentBridge,AgentBridgeQueuedOperations')]
+    procedure QueuedInvokeBoundsRegistryAndPreservesOtherCallbacks;
+    [Test]
+    procedure MutationsAreGatedAndReportBackgroundSemantics;
   end;
 
 implementation
 
 uses
   System.Classes, System.Diagnostics, System.Generics.Collections, System.IOUtils, System.JSON, System.SyncObjs, System.SysUtils,
-  System.Types, System.TypInfo, System.Variants, Winapi.Windows, Vcl.ComCtrls, Vcl.Controls, Vcl.ExtCtrls, Vcl.Forms,
-  Vcl.Grids, Vcl.StdCtrls, MaxLogic.Accessibility.AgentBridge, MaxLogic.Accessibility.Diagnostics,
+  System.Types, System.TypInfo, System.Variants, Winapi.Windows, Vcl.ActnList, Vcl.Buttons, Vcl.ComCtrls, Vcl.Controls,
+  Vcl.ExtCtrls, Vcl.Forms, Vcl.Grids, Vcl.StdCtrls, MaxLogic.Accessibility.AgentBridge, MaxLogic.Accessibility.Diagnostics,
   MaxLogic.Accessibility.Framework, MaxLogic.Accessibility.Manager, MaxLogic.Accessibility.ProviderCore,
   MaxLogic.Accessibility.UIAutomationCore, MaxLogic.Accessibility.VclAdapters;
 
@@ -90,6 +128,16 @@ type
   public
     procedure Click(aSender: TObject);
     property Clicks: Integer read fClicks;
+  end;
+
+  TAgentBridgeRefProbe = class
+  private
+    fErrorCode: string;
+    fProbeRef: string;
+  public
+    procedure Click(aSender: TObject);
+    property ErrorCode: string read fErrorCode;
+    property ProbeRef: string read fProbeRef write fProbeRef;
   end;
 
   TAgentBridgeFallbackTextControl = class(TCustomControl)
@@ -107,6 +155,39 @@ type
   public
     class function TabOrderListCalls: Integer; static;
     class procedure ResetTabOrderListCalls; static;
+  end;
+
+  TAgentBridgeFailingFocusEdit = class(TEdit)
+  private
+    fFailFocus: Boolean;
+  public
+    procedure SetFocus; override;
+    property FailFocus: Boolean read fFailFocus write fFailFocus;
+  end;
+
+  TAgentBridgeFailingClickButton = class(TButton)
+  public
+    procedure Click; override;
+  end;
+
+  TAgentBridgeOperationProbe = class
+  private
+    fClicks: Integer;
+    fObservedStatus: string;
+    fOperationId: string;
+  public
+    procedure Click(aSender: TObject);
+    property Clicks: Integer read fClicks;
+    property ObservedStatus: string read fObservedStatus;
+    property OperationId: string read fOperationId write fOperationId;
+  end;
+
+  TAgentBridgeQueuedProbe = class
+  private
+    fCalls: Integer;
+  public
+    procedure Run;
+    property Calls: Integer read fCalls;
   end;
 
   TAgentBridgeProviderQueryMetrics = record
@@ -169,6 +250,20 @@ end;
 class function TAgentBridgeTabOrderProbeEdit.TabOrderListCalls: Integer;
 begin
   Result := fTabOrderListCalls;
+end;
+
+procedure TAgentBridgeFailingFocusEdit.SetFocus;
+begin
+  if fFailFocus then
+  begin
+    raise EInvalidOperation.Create('Expected bridge focus failure.');
+  end;
+  inherited SetFocus;
+end;
+
+procedure TAgentBridgeFailingClickButton.Click;
+begin
+  raise EInvalidOperation.Create('Expected queued invoke failure.');
 end;
 
 constructor TAgentBridgeCountingProvider.Create(aMetrics: PAgentBridgeProviderQueryMetrics;
@@ -370,6 +465,41 @@ end;
 function JsonHasValue(aObject: TJSONObject; const aName: string): Boolean;
 begin
   Result := aObject.GetValue(aName) <> nil;
+end;
+
+procedure TAgentBridgeOperationProbe.Click(aSender: TObject);
+var
+  lResponse: TJSONObject;
+begin
+  Inc(fClicks);
+  lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+    '{"cmd":"operation.status","operationId":"' + fOperationId + '"}'));
+  try
+    if SameText(JsonText(lResponse, 'ok'), 'true') then
+    begin
+      fObservedStatus := JsonText(lResponse, 'status');
+    end;
+  finally
+    lResponse.Free;
+  end;
+end;
+
+procedure TAgentBridgeQueuedProbe.Run;
+begin
+  Inc(fCalls);
+end;
+
+procedure TAgentBridgeRefProbe.Click(aSender: TObject);
+var
+  lResponse: TJSONObject;
+begin
+  lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+    '{"cmd":"control.info","ref":"' + fProbeRef + '"}'));
+  try
+    fErrorCode := JsonText(lResponse, 'errorCode');
+  finally
+    lResponse.Free;
+  end;
 end;
 
 function JsonPairCount(aObject: TJSONObject; const aName: string): Integer;
@@ -850,6 +980,14 @@ end;
 procedure AssertOk(aResponse: TJSONObject);
 begin
   Assert.AreEqual('true', JsonText(aResponse, 'ok'), aResponse.ToJSON);
+  Assert.AreEqual(2, JsonInt(aResponse, 'protocolVersion'), aResponse.ToJSON);
+end;
+
+procedure AssertFailure(aResponse: TJSONObject; const aErrorCode: string);
+begin
+  Assert.AreEqual('false', JsonText(aResponse, 'ok'), aResponse.ToJSON);
+  Assert.AreEqual(aErrorCode, JsonText(aResponse, 'errorCode'), aResponse.ToJSON);
+  Assert.AreEqual(2, JsonInt(aResponse, 'protocolVersion'), aResponse.ToJSON);
 end;
 
 function MeasureBestGeometryMapTicks(aDepth: Integer; aSamples: Integer): Int64;
@@ -950,10 +1088,511 @@ begin
   try
     AssertOk(lResponse);
     Assert.AreEqual(cAccessibilityFrameworkName, JsonText(lResponse, 'frameworkName'));
-    Assert.AreEqual(1, JsonInt(lResponse, 'protocolVersion'));
+    Assert.AreEqual(2, JsonInt(lResponse, 'protocolVersion'));
     Assert.AreEqual('false', JsonText(lResponse, 'mutationEnabled'));
   finally
     lResponse.Free;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.SnapshotRefsAreGenerationQualifiedAndInvalidated;
+var
+  lCapabilities: TJSONArray;
+  lCurrentRef: string;
+  lEdit: TEdit;
+  lFirstRef: string;
+  lForm: TForm;
+  lMap: TJSONObject;
+  lResponse: TJSONObject;
+  lSnapshotId: Integer;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lForm.Name := 'GenerationBridgeForm';
+    lEdit := TEdit.Create(lForm);
+    lEdit.Name := 'GenerationEdit';
+    lEdit.Parent := lForm;
+    lForm.Show;
+    Application.ProcessMessages;
+
+    lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute('{"cmd":"hello"}'));
+    try
+      AssertOk(lResponse);
+      Assert.AreEqual(2, JsonInt(lResponse, 'protocolVersion'));
+      lCapabilities := JsonArrayValue(lResponse, 'capabilities');
+      Assert.IsTrue(lCapabilities.ToJSON.Contains('"background-command-mode"'));
+      Assert.IsTrue(lCapabilities.ToJSON.Contains('"snapshot-refs-v2"'));
+      Assert.IsTrue(lCapabilities.ToJSON.Contains('"atomic-control-targets"'));
+    finally
+      lResponse.Free;
+    end;
+
+    lMap := MapForm(lForm);
+    try
+      lSnapshotId := JsonInt(lMap, 'snapshotId');
+      lFirstRef := ControlRefByName(lMap, 'GenerationEdit');
+      Assert.IsTrue(lFirstRef.StartsWith(Format('@s%da', [lSnapshotId])));
+    finally
+      lMap.Free;
+    end;
+
+    lMap := MapForm(lForm);
+    try
+      lSnapshotId := JsonInt(lMap, 'snapshotId');
+      lCurrentRef := ControlRefByName(lMap, 'GenerationEdit');
+      Assert.IsTrue(lCurrentRef.StartsWith(Format('@s%da', [lSnapshotId])));
+      Assert.IsTrue(lFirstRef <> lCurrentRef, 'A remap must not reuse an older snapshot ref.');
+    finally
+      lMap.Free;
+    end;
+
+    lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+      '{"cmd":"control.info","ref":"' + lFirstRef + '"}'));
+    try
+      AssertFailure(lResponse, 'stale_ref');
+    finally
+      lResponse.Free;
+    end;
+
+    TAccessibilityAgentBridge.SetMutationEnabled(True);
+    try
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.setText","ref":"' + lCurrentRef + '","text":"changed"}'));
+      try
+        AssertOk(lResponse);
+        Assert.AreEqual(2, JsonInt(lResponse, 'protocolVersion'));
+      finally
+        lResponse.Free;
+      end;
+    finally
+      TAccessibilityAgentBridge.SetMutationEnabled(False);
+    end;
+
+    lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+      '{"cmd":"control.info","ref":"' + lCurrentRef + '"}'));
+    try
+      AssertFailure(lResponse, 'stale_ref');
+    finally
+      lResponse.Free;
+    end;
+
+    lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute('{'));
+    try
+      AssertFailure(lResponse, 'invalid_json');
+    finally
+      lResponse.Free;
+    end;
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.MutationRefsAreInvalidatedBeforeAndAfterDispatch;
+var
+  lButton: TButton;
+  lButtonRef: string;
+  lEdit: TEdit;
+  lEditRef: string;
+  lForm: TForm;
+  lMap: TJSONObject;
+  lProbe: TAgentBridgeRefProbe;
+  lResponse: TJSONObject;
+begin
+  BuildBridgeTestForm(lForm, lEdit, lButton);
+  lForm.Show;
+  Application.ProcessMessages;
+  lProbe := TAgentBridgeRefProbe.Create;
+  try
+    lMap := MapForm(lForm);
+    try
+      lButtonRef := ControlRefByName(lMap, 'ApplyButton');
+      lEditRef := ControlRefByName(lMap, 'SearchEdit');
+    finally
+      lMap.Free;
+    end;
+
+    lProbe.ProbeRef := lEditRef;
+    lButton.OnClick := lProbe.Click;
+    TAccessibilityAgentBridge.SetMutationEnabled(True);
+    try
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.click","ref":"' + lButtonRef + '"}'));
+      try
+        AssertOk(lResponse);
+      finally
+        lResponse.Free;
+      end;
+    finally
+      TAccessibilityAgentBridge.SetMutationEnabled(False);
+    end;
+    Assert.AreEqual('stale_ref', lProbe.ErrorCode,
+      'Snapshot refs must be invalid before a reentrant click handler runs.');
+
+    lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+      '{"cmd":"control.info","ref":"' + lButtonRef + '"}'));
+    try
+      AssertFailure(lResponse, 'stale_ref');
+    finally
+      lResponse.Free;
+    end;
+
+    lMap := MapForm(lForm);
+    try
+      lEditRef := ControlRefByName(lMap, 'SearchEdit');
+    finally
+      lMap.Free;
+    end;
+    TAccessibilityAgentBridge.SetMutationEnabled(True);
+    try
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute('{"cmd":"keyboard.tab"}'));
+      try
+        AssertOk(lResponse);
+      finally
+        lResponse.Free;
+      end;
+    finally
+      TAccessibilityAgentBridge.SetMutationEnabled(False);
+    end;
+    lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+      '{"cmd":"control.info","ref":"' + lEditRef + '"}'));
+    try
+      AssertFailure(lResponse, 'stale_ref');
+    finally
+      lResponse.Free;
+    end;
+
+    lMap := MapForm(lForm);
+    try
+      lEditRef := ControlRefByName(lMap, 'SearchEdit');
+    finally
+      lMap.Free;
+    end;
+    TAccessibilityAgentBridge.SetMutationEnabled(True);
+    try
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.focus","ref":"' + lEditRef + '"}'));
+      try
+        AssertOk(lResponse);
+      finally
+        lResponse.Free;
+      end;
+    finally
+      TAccessibilityAgentBridge.SetMutationEnabled(False);
+    end;
+    lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+      '{"cmd":"control.info","ref":"' + lEditRef + '"}'));
+    try
+      AssertFailure(lResponse, 'stale_ref');
+    finally
+      lResponse.Free;
+    end;
+
+    lMap := MapForm(lForm);
+    try
+      lEditRef := ControlRefByName(lMap, 'SearchEdit');
+    finally
+      lMap.Free;
+    end;
+    TAccessibilityAgentBridge.SetMutationEnabled(True);
+    try
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.typeText","ref":"' + lEditRef + '","text":"x"}'));
+      try
+        AssertOk(lResponse);
+      finally
+        lResponse.Free;
+      end;
+    finally
+      TAccessibilityAgentBridge.SetMutationEnabled(False);
+    end;
+    lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+      '{"cmd":"control.info","ref":"' + lEditRef + '"}'));
+    try
+      AssertFailure(lResponse, 'stale_ref');
+    finally
+      lResponse.Free;
+    end;
+  finally
+    lProbe.Free;
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.MutationsAcceptAtomicNameAndHandleTargetsWithoutSnapshot;
+var
+  lButton: TButton;
+  lClickRecorder: TAgentBridgeClickRecorder;
+  lEdit: TEdit;
+  lForm: TForm;
+  lHandle: string;
+  lResponse: TJSONObject;
+begin
+  BuildBridgeTestForm(lForm, lEdit, lButton);
+  lForm.Show;
+  Application.ProcessMessages;
+  lHandle := UIntToStr(NativeUInt(lForm.Handle));
+  lClickRecorder := TAgentBridgeClickRecorder.Create;
+  try
+    lButton.OnClick := lClickRecorder.Click;
+    TAccessibilityAgentBridge.SetMutationEnabled(True);
+    try
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.focus","target":{"formName":"BridgeForm","controlName":"SearchEdit"}}'));
+      try
+        AssertOk(lResponse);
+        Assert.AreEqual('background-command', JsonText(lResponse, 'driveMode'));
+        Assert.AreSame(lEdit, lForm.ActiveControl);
+      finally
+        lResponse.Free;
+      end;
+
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.setText","target":{"formHandle":' + lHandle +
+        ',"controlName":"SearchEdit"},"text":"base"}'));
+      try
+        AssertOk(lResponse);
+        Assert.AreEqual('base', lEdit.Text);
+      finally
+        lResponse.Free;
+      end;
+
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.typeText","target":{"formName":"BridgeForm","controlName":"SearchEdit"},' +
+        '"text":" plus"}'));
+      try
+        AssertOk(lResponse);
+        Assert.AreEqual('base plus', lEdit.Text);
+      finally
+        lResponse.Free;
+      end;
+
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.click","target":{"formHandle":' + lHandle +
+        ',"controlName":"ApplyButton"}}'));
+      try
+        AssertOk(lResponse);
+        Assert.AreEqual(1, lClickRecorder.Clicks);
+      finally
+        lResponse.Free;
+      end;
+    finally
+      TAccessibilityAgentBridge.SetMutationEnabled(False);
+    end;
+  finally
+    lClickRecorder.Free;
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.NamedTargetsRejectMalformedAmbiguousAndNonActionableRequests;
+var
+  lButton: TButton;
+  lDeadForm: TForm;
+  lDeadHandle: string;
+  lDuplicateForm: TForm;
+  lDuplicateFormEdit: TEdit;
+  lDuplicateText: string;
+  lDuplicateOwner: TPanel;
+  lEdit: TEdit;
+  lEditText: string;
+  lForeignEdit: TEdit;
+  lForeignForm: TForm;
+  lForeignText: string;
+  lForm: TForm;
+  lMap: TJSONObject;
+  lRef: string;
+  lResponse: TJSONObject;
+begin
+  BuildBridgeTestForm(lForm, lEdit, lButton);
+  lEditText := lEdit.Text;
+  lForm.Show;
+  Application.ProcessMessages;
+  lDuplicateForm := nil;
+  lForeignForm := nil;
+  lDeadForm := TForm.Create(nil);
+  try
+    lDeadForm.Name := 'DeadBridgeForm';
+    lDeadForm.HandleNeeded;
+    lDeadHandle := UIntToStr(NativeUInt(lDeadForm.Handle));
+  finally
+    lDeadForm.Free;
+  end;
+
+  try
+    TAccessibilityAgentBridge.SetMutationEnabled(True);
+    try
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.setText","target":{"formName":"BridgeForm"},"text":"bad"}'));
+      try
+        AssertFailure(lResponse, 'invalid_request');
+      finally
+        lResponse.Free;
+      end;
+
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.setText","target":{"formName":"BridgeForm","formHandle":' +
+        UIntToStr(NativeUInt(lForm.Handle)) + ',"controlName":"SearchEdit"},"text":"bad"}'));
+      try
+        AssertFailure(lResponse, 'invalid_request');
+      finally
+        lResponse.Free;
+      end;
+
+      lMap := MapForm(lForm);
+      try
+        lRef := ControlRefByName(lMap, 'SearchEdit');
+      finally
+        lMap.Free;
+      end;
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.setText","ref":"' + lRef +
+        '","target":{"formName":"BridgeForm","controlName":"SearchEdit"},"text":"bad"}'));
+      try
+        AssertFailure(lResponse, 'invalid_request');
+      finally
+        lResponse.Free;
+      end;
+
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.setText","ref":123,"text":"bad"}'));
+      try
+        AssertFailure(lResponse, 'invalid_request');
+      finally
+        lResponse.Free;
+      end;
+
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.setText","target":{"formName":123,"controlName":"SearchEdit"},' +
+        '"text":"bad"}'));
+      try
+        AssertFailure(lResponse, 'invalid_request');
+      finally
+        lResponse.Free;
+      end;
+
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.setText","target":{"formName":"BridgeForm","controlName":123},' +
+        '"text":"bad"}'));
+      try
+        AssertFailure(lResponse, 'invalid_request');
+      finally
+        lResponse.Free;
+      end;
+
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.setText","target":{"formHandle":"' +
+        UIntToStr(NativeUInt(lForm.Handle)) + '","controlName":"SearchEdit"},"text":"bad"}'));
+      try
+        AssertFailure(lResponse, 'invalid_request');
+        Assert.AreEqual(lEditText, lEdit.Text);
+      finally
+        lResponse.Free;
+      end;
+
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.setText","target":{"formHandle":' + UIntToStr(NativeUInt(lButton.Handle)) +
+        ',"controlName":"SearchEdit"},"text":"bad"}'));
+      try
+        AssertFailure(lResponse, 'form_not_found');
+        Assert.AreEqual(lEditText, lEdit.Text);
+      finally
+        lResponse.Free;
+      end;
+
+      lEdit.Visible := False;
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.setText","target":{"formName":"BridgeForm","controlName":"SearchEdit"},' +
+        '"text":"hidden"}'));
+      try
+        AssertFailure(lResponse, 'control_hidden');
+        Assert.AreEqual(lEditText, lEdit.Text);
+      finally
+        lResponse.Free;
+      end;
+      lEdit.Visible := True;
+      lEdit.Enabled := False;
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.setText","target":{"formName":"BridgeForm","controlName":"SearchEdit"},' +
+        '"text":"disabled"}'));
+      try
+        AssertFailure(lResponse, 'control_disabled');
+        Assert.AreEqual(lEditText, lEdit.Text);
+      finally
+        lResponse.Free;
+      end;
+      lEdit.Enabled := True;
+
+      lForeignForm := TForm.Create(nil);
+      lForeignForm.Name := 'ForeignBridgeForm';
+      lForeignEdit := TEdit.Create(lForm);
+      lForeignEdit.Name := 'CrossFormEdit';
+      lForeignEdit.Parent := lForeignForm;
+      lForeignText := lForeignEdit.Text;
+      lForeignForm.Show;
+      Application.ProcessMessages;
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.setText","target":{"formName":"BridgeForm","controlName":"CrossFormEdit"},' +
+        '"text":"escaped"}'));
+      try
+        AssertFailure(lResponse, 'control_not_in_form');
+        Assert.AreEqual(lForeignText, lForeignEdit.Text);
+      finally
+        lResponse.Free;
+      end;
+
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.setText","target":{"formHandle":' + lDeadHandle +
+        ',"controlName":"SearchEdit"},"text":"dead"}'));
+      try
+        AssertFailure(lResponse, 'form_not_found');
+      finally
+        lResponse.Free;
+      end;
+
+      lDuplicateForm := TForm.Create(nil);
+      lDuplicateForm.Name := 'BridgeForm';
+      lDuplicateFormEdit := TEdit.Create(lDuplicateForm);
+      lDuplicateFormEdit.Name := 'SearchEdit';
+      lDuplicateFormEdit.Parent := lDuplicateForm;
+      lDuplicateText := lDuplicateFormEdit.Text;
+      lDuplicateForm.Show;
+      Application.ProcessMessages;
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.setText","target":{"formName":"BridgeForm","controlName":"SearchEdit"},' +
+        '"text":"ambiguous"}'));
+      try
+        AssertFailure(lResponse, 'ambiguous_form');
+        Assert.AreEqual(lEditText, lEdit.Text);
+        Assert.AreEqual(lDuplicateText, lDuplicateFormEdit.Text);
+      finally
+        lResponse.Free;
+      end;
+      lDuplicateForm.Free;
+      lDuplicateForm := nil;
+
+      lDuplicateOwner := TPanel.Create(lForm);
+      lDuplicateOwner.Parent := lForm;
+      lDuplicateFormEdit := TEdit.Create(lDuplicateOwner);
+      lDuplicateFormEdit.Name := 'SearchEdit';
+      lDuplicateFormEdit.Parent := lDuplicateOwner;
+      lDuplicateText := lDuplicateFormEdit.Text;
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.setText","target":{"formName":"BridgeForm","controlName":"SearchEdit"},' +
+        '"text":"ambiguous"}'));
+      try
+        AssertFailure(lResponse, 'ambiguous_control');
+        Assert.AreEqual(lEditText, lEdit.Text);
+        Assert.AreEqual(lDuplicateText, lDuplicateFormEdit.Text);
+      finally
+        lResponse.Free;
+      end;
+    finally
+      TAccessibilityAgentBridge.SetMutationEnabled(False);
+    end;
+  finally
+    lDuplicateForm.Free;
+    lForm.Free;
+    lForeignForm.Free;
   end;
 end;
 
@@ -975,7 +1614,7 @@ begin
     try
       AssertOk(lResponse);
       Assert.AreEqual('window.info', JsonText(lResponse, 'cmd'));
-      Assert.AreEqual(1, JsonInt(lResponse, 'protocolVersion'));
+      Assert.AreEqual(2, JsonInt(lResponse, 'protocolVersion'));
 
       lWindow := JsonObjectValue(lResponse, 'window');
       Assert.AreEqual('BridgeForm', JsonText(lWindow, 'name'));
@@ -1029,14 +1668,14 @@ begin
       Assert.IsTrue(JsonInt(lMap, 'maxControls') > 0, 'form.map should report a bounded default control count.');
 
       lRoot := JsonObjectValue(lMap, 'form');
-      Assert.AreEqual('@a0', JsonText(lRoot, 'ref'));
+      Assert.AreEqual(Format('@s%da0', [JsonInt(lMap, 'snapshotId')]), JsonText(lRoot, 'ref'));
       Assert.AreEqual('BridgeForm', JsonText(lRoot, 'name'));
       Assert.AreEqual('TForm', JsonText(lRoot, 'className'));
       Assert.AreEqual('Bridge Test Window', JsonText(lRoot, 'caption'));
 
       lEditEntry := ControlByName(lMap, 'SearchEdit');
-      Assert.AreEqual('@a1', JsonText(lEditEntry, 'ref'));
-      Assert.AreEqual('@a0', JsonText(lEditEntry, 'parentRef'));
+      Assert.AreEqual(Format('@s%da1', [JsonInt(lMap, 'snapshotId')]), JsonText(lEditEntry, 'ref'));
+      Assert.AreEqual(Format('@s%da0', [JsonInt(lMap, 'snapshotId')]), JsonText(lEditEntry, 'parentRef'));
       Assert.AreEqual('TEdit', JsonText(lEditEntry, 'className'));
       Assert.AreEqual('Search text', JsonText(lEditEntry, 'hint'));
       Assert.AreEqual('true', JsonText(lEditEntry, 'visible'));
@@ -1049,7 +1688,7 @@ begin
       Assert.AreEqual(lPoint.X, JsonInt(lCenter, 'x'));
       Assert.AreEqual(lPoint.Y, JsonInt(lCenter, 'y'));
 
-      Assert.AreEqual('@a2', ControlRefByName(lMap, 'ApplyButton'));
+      Assert.AreEqual(Format('@s%da2', [JsonInt(lMap, 'snapshotId')]), ControlRefByName(lMap, 'ApplyButton'));
     finally
       lMap.Free;
     end;
@@ -1120,6 +1759,9 @@ begin
 
   Assert.IsFalse(Pos('Format(''@a%d''', lSourceText) > 0,
     'Agent bridge refs are generated for every mapped control; avoid Format parser and variant allocation here.');
+  Assert.Contains(lSourceText, 'SnapshotId: UInt64;', 'Snapshot generations must not wrap at signed 32-bit range.');
+  Assert.Contains(lSourceText, 'fSnapshotId: UInt64;', 'Bridge generation state must use the same 64-bit type.');
+  Assert.Contains(lSourceText, 'UIntToStr(fSnapshotId)', 'Generation-qualified refs must serialize UInt64 safely.');
 end;
 
 procedure TAccessibilityAgentBridgeTests.ProviderMapQueriesDirectAccessOncePerNode;
@@ -1435,7 +2077,7 @@ begin
       Assert.AreEqual('', JsonText(lRoot, 'helpText'));
 
       lEditEntry := ControlByName(lMap, 'SearchEdit');
-      Assert.AreEqual('@a1', JsonText(lEditEntry, 'ref'));
+      Assert.AreEqual(Format('@s%da1', [JsonInt(lMap, 'snapshotId')]), JsonText(lEditEntry, 'ref'));
       Assert.AreEqual('TEdit', JsonText(lEditEntry, 'className'));
       Assert.AreEqual('Search text', JsonText(lEditEntry, 'hint'));
       Assert.AreEqual('', JsonText(lEditEntry, 'accessibleName'));
@@ -1879,7 +2521,7 @@ begin
 
       lControl := JsonObjectValue(lResponse, 'control');
       lRef := JsonText(lControl, 'ref');
-      Assert.AreEqual('@a0', lRef);
+      Assert.AreEqual(Format('@s%da0', [lSnapshotId]), lRef);
       Assert.AreEqual('ApplyButton', JsonText(lControl, 'name'));
       Assert.AreEqual('TButton', JsonText(lControl, 'className'));
       Assert.AreEqual('BridgeForm', JsonText(lControl, 'formName'));
@@ -1912,14 +2554,12 @@ begin
   end;
 end;
 
-procedure TAccessibilityAgentBridgeTests.FocusFailureReportsEffectiveVclContext;
+procedure TAccessibilityAgentBridgeTests.FocusRejectsDisabledAncestorBeforeMutation;
 var
-  lAncestors: TJSONArray;
-  lControl: TJSONObject;
   lEdit: TEdit;
   lForm: TForm;
   lPanel: TPanel;
-  lRef: string;
+  lPriorActiveControl: TWinControl;
   lResponse: TJSONObject;
 begin
   lForm := TForm.Create(nil);
@@ -1936,10 +2576,56 @@ begin
   lForm.Show;
   Application.ProcessMessages;
   lPanel.Enabled := False;
+  lPriorActiveControl := lForm.ActiveControl;
   try
+    TAccessibilityAgentBridge.SetMutationEnabled(True);
+    try
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.focus","target":{"formName":"FocusContextForm","controlName":"BlockedEdit"}}'));
+      try
+        AssertFailure(lResponse, 'control_disabled');
+        Assert.IsTrue(lForm.ActiveControl = lPriorActiveControl);
+      finally
+        lResponse.Free;
+      end;
+    finally
+      TAccessibilityAgentBridge.SetMutationEnabled(False);
+    end;
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.FocusFailureReportsEffectiveVclContext;
+var
+  lAncestors: TJSONArray;
+  lButton: TButton;
+  lControl: TJSONObject;
+  lEdit: TAgentBridgeFailingFocusEdit;
+  lFailureRef: string;
+  lForm: TForm;
+  lRef: string;
+  lResponse: TJSONObject;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lForm.Name := 'FocusFailureForm';
+    lForm.SetBounds(200, 150, 360, 200);
+    lButton := TButton.Create(lForm);
+    lButton.Name := 'SafeFocusButton';
+    lButton.Parent := lForm;
+    lButton.TabOrder := 0;
+    lEdit := TAgentBridgeFailingFocusEdit.Create(lForm);
+    lEdit.Name := 'FailingFocusEdit';
+    lEdit.Parent := lForm;
+    lEdit.TabOrder := 1;
+    lForm.Show;
+    lForm.ActiveControl := lButton;
+    Application.ProcessMessages;
+
     lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
-      '{"cmd":"control.resolve","target":{"formName":"FocusContextForm","controlName":"BlockedEdit"},' +
-      '"detail":"target"}'));
+      '{"cmd":"control.resolve","target":{"formName":"FocusFailureForm",' +
+      '"controlName":"FailingFocusEdit"},"detail":"target"}'));
     try
       AssertOk(lResponse);
       lRef := JsonText(JsonObjectValue(lResponse, 'control'), 'ref');
@@ -1947,32 +2633,49 @@ begin
       lResponse.Free;
     end;
 
+    lEdit.FailFocus := True;
     TAccessibilityAgentBridge.SetMutationEnabled(True);
     try
       lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
         '{"cmd":"control.focus","ref":"' + lRef + '"}'));
       try
-        Assert.AreEqual('false', JsonText(lResponse, 'ok'));
-        Assert.AreEqual('focus_failed', JsonText(lResponse, 'errorCode'));
+        AssertFailure(lResponse, 'focus_failed');
+        Assert.IsTrue(Pos('Expected bridge focus failure', JsonText(lResponse, 'message')) > 0);
         Assert.IsTrue(Pos('guarded OS click', JsonText(lResponse, 'recommendedFallback')) > 0);
         lControl := JsonObjectValue(lResponse, 'control');
+        lFailureRef := JsonText(lControl, 'ref');
+        Assert.IsTrue(lFailureRef <> lRef, 'Failure diagnostics must not resurrect the invalidated ref.');
+        Assert.AreEqual('FailingFocusEdit', JsonText(lControl, 'name'));
         Assert.AreEqual('true', JsonText(lControl, 'visible'));
         Assert.AreEqual('true', JsonText(lControl, 'enabled'));
-        Assert.AreEqual('false', JsonText(lControl, 'canFocus'));
+        Assert.AreEqual('true', JsonText(lControl, 'canFocus'));
         Assert.AreEqual(UIntToStr(NativeUInt(lEdit.Handle)), JsonText(lControl, 'handle'));
         Assert.AreEqual(UIntToStr(NativeUInt(GetAncestor(lForm.Handle, GA_ROOT))), JsonText(lControl, 'rootHandle'));
-        Assert.IsTrue(JsonHasValue(lControl, 'activeForm'));
-        Assert.IsTrue(JsonHasValue(lControl, 'formEnabled'));
-        Assert.IsTrue(JsonHasValue(lControl, 'mdiChild'));
         lAncestors := JsonArrayValue(lResponse, 'ancestors');
-        Assert.IsTrue(lAncestors.Count >= 2);
-        Assert.AreEqual('DisabledParent', JsonText(TJSONObject(lAncestors.Items[0]), 'name'));
-        Assert.AreEqual('false', JsonText(TJSONObject(lAncestors.Items[0]), 'enabled'));
+        Assert.IsTrue(lAncestors.Count >= 1);
+        Assert.AreEqual('FocusFailureForm', JsonText(TJSONObject(lAncestors.Items[0]), 'name'));
+      finally
+        lResponse.Free;
+      end;
+
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.info","ref":"' + lRef + '"}'));
+      try
+        AssertFailure(lResponse, 'stale_ref');
+      finally
+        lResponse.Free;
+      end;
+
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.info","ref":"' + lFailureRef + '"}'));
+      try
+        AssertOk(lResponse);
       finally
         lResponse.Free;
       end;
     finally
       TAccessibilityAgentBridge.SetMutationEnabled(False);
+      lEdit.FailFocus := False;
     end;
   finally
     lForm.Free;
@@ -2077,6 +2780,7 @@ procedure TAccessibilityAgentBridgeTests.HitTestReturnsControlFromLastSnapshot;
 var
   lButton: TButton;
   lEdit: TEdit;
+  lEditRef: string;
   lForm: TForm;
   lHit: TJSONObject;
   lMap: TJSONObject;
@@ -2087,6 +2791,7 @@ begin
     lMap := MapForm(lForm);
     try
       AssertOk(lMap);
+      lEditRef := ControlRefByName(lMap, 'SearchEdit');
     finally
       lMap.Free;
     end;
@@ -2096,7 +2801,7 @@ begin
       Format('{"cmd":"hitTest","x":%d,"y":%d}', [lPoint.X, lPoint.Y])));
     try
       AssertOk(lHit);
-      Assert.AreEqual('@a1', JsonText(lHit, 'ref'));
+      Assert.AreEqual(lEditRef, JsonText(lHit, 'ref'));
       Assert.AreEqual('SearchEdit', JsonText(lHit, 'name'));
       Assert.AreEqual('TEdit', JsonText(lHit, 'className'));
     finally
@@ -2275,27 +2980,799 @@ begin
   end;
 end;
 
-procedure TAccessibilityAgentBridgeTests.MutationsAreGatedAndOperateOnLastSnapshotRefs;
+procedure TAccessibilityAgentBridgeTests.QueuedInvokeReportsLifecycleFailureAndConsumption;
+var
+  lFailingButton: TAgentBridgeFailingClickButton;
+  lFailedOperationId: string;
+  lForm: TForm;
+  lOperationId: string;
+  lProbe: TAgentBridgeOperationProbe;
+  lProbeButton: TButton;
+  lResponse: TJSONObject;
+  lStatus: string;
+  lStopwatch: TStopwatch;
+begin
+  lForm := TForm.Create(nil);
+  lForm.Name := 'BridgeQueuedOperationForm';
+  lProbe := TAgentBridgeOperationProbe.Create;
+  try
+    lProbeButton := TButton.Create(lForm);
+    lProbeButton.Name := 'QueuedButton';
+    lProbeButton.OnClick := lProbe.Click;
+    lProbeButton.Parent := lForm;
+
+    lFailingButton := TAgentBridgeFailingClickButton.Create(lForm);
+    lFailingButton.Name := 'FailingButton';
+    lFailingButton.Parent := lForm;
+
+    lForm.Show;
+    Application.ProcessMessages;
+    TAccessibilityAgentBridge.SetMutationEnabled(True);
+    try
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.invoke","target":{"formName":"BridgeQueuedOperationForm",' +
+        '"controlName":"QueuedButton"}}'));
+      try
+        AssertOk(lResponse);
+        lOperationId := JsonText(lResponse, 'operationId');
+        Assert.AreEqual('queued', JsonText(lResponse, 'status'));
+        Assert.AreEqual('background-command', JsonText(lResponse, 'driveMode'));
+        Assert.AreEqual(0, lProbe.Clicks, 'Queued invoke must not execute inline.');
+      finally
+        lResponse.Free;
+      end;
+
+      lProbe.OperationId := lOperationId;
+      lStopwatch := TStopwatch.StartNew;
+      while (lProbe.Clicks = 0) and (lStopwatch.ElapsedMilliseconds < 1000) do
+      begin
+        CheckSynchronize(10);
+      end;
+      Assert.AreEqual(1, lProbe.Clicks);
+      Assert.AreEqual('running', lProbe.ObservedStatus,
+        'The operation must expose running state while its VCL action executes.');
+
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"operation.status","operationId":"' + lOperationId + '","consume":true}'));
+      try
+        AssertOk(lResponse);
+        Assert.AreEqual('succeeded', JsonText(lResponse, 'status'));
+        Assert.AreEqual('true', JsonText(lResponse, 'terminal'));
+        Assert.AreEqual('true', JsonText(lResponse, 'consumed'));
+      finally
+        lResponse.Free;
+      end;
+
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"operation.status","operationId":"' + lOperationId + '"}'));
+      try
+        AssertFailure(lResponse, 'operation_not_found');
+      finally
+        lResponse.Free;
+      end;
+
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.invoke","target":{"formName":"BridgeQueuedOperationForm",' +
+        '"controlName":"FailingButton"}}'));
+      try
+        AssertOk(lResponse);
+        lFailedOperationId := JsonText(lResponse, 'operationId');
+      finally
+        lResponse.Free;
+      end;
+
+      lStopwatch := TStopwatch.StartNew;
+      repeat
+        CheckSynchronize(10);
+        lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+          '{"cmd":"operation.status","operationId":"' + lFailedOperationId + '","consume":false}'));
+        try
+          AssertOk(lResponse);
+          lStatus := JsonText(lResponse, 'status');
+        finally
+          lResponse.Free;
+        end;
+      until (lStatus = 'failed') or (lStopwatch.ElapsedMilliseconds >= 1000);
+      Assert.AreEqual('failed', lStatus, 'The failing queued invoke did not reach a terminal state.');
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"operation.status","operationId":"' + lFailedOperationId + '","consume":true}'));
+      try
+        AssertOk(lResponse);
+        Assert.AreEqual('failed', JsonText(lResponse, 'status'));
+        Assert.AreEqual('invoke_failed', JsonText(lResponse, 'operationErrorCode'));
+        Assert.IsTrue(Pos('Expected queued invoke failure', JsonText(lResponse, 'operationMessage')) > 0);
+        Assert.AreEqual('true', JsonText(lResponse, 'consumed'));
+      finally
+        lResponse.Free;
+      end;
+    finally
+      TAccessibilityAgentBridge.SetMutationEnabled(False);
+    end;
+  finally
+    lProbe.Free;
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.QueuedInvokeCancelsDestroyedTargetsAndDisabledMutations;
 var
   lButton: TButton;
-  lButtonRef: string;
+  lClickRecorder: TAgentBridgeClickRecorder;
+  lForm: TForm;
+  lMap: TJSONObject;
+  lOperationId: string;
+  lRef: string;
+  lResponse: TJSONObject;
+begin
+  lForm := TForm.Create(nil);
+  lForm.Name := 'BridgeQueuedLifetimeForm';
+  lClickRecorder := TAgentBridgeClickRecorder.Create;
+  try
+    lButton := TButton.Create(lForm);
+    lButton.Name := 'MappedQueuedButton';
+    lButton.OnClick := lClickRecorder.Click;
+    lButton.Parent := lForm;
+    lForm.Show;
+    Application.ProcessMessages;
+
+    TAccessibilityAgentBridge.SetMutationEnabled(True);
+    try
+      lMap := MapForm(lForm);
+      try
+        lRef := ControlRefByName(lMap, 'MappedQueuedButton');
+      finally
+        lMap.Free;
+      end;
+
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.invoke","ref":"' + lRef + '"}'));
+      try
+        AssertOk(lResponse);
+        lOperationId := JsonText(lResponse, 'operationId');
+      finally
+        lResponse.Free;
+      end;
+
+      lMap := MapForm(lForm);
+      lMap.Free;
+      lButton.Free;
+      lButton := TButton.Create(lForm);
+      lButton.Name := 'MappedQueuedButton';
+      lButton.OnClick := lClickRecorder.Click;
+      lButton.Parent := lForm;
+      CheckSynchronize(10);
+
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"operation.status","operationId":"' + lOperationId + '"}'));
+      try
+        AssertOk(lResponse);
+        Assert.AreEqual('failed', JsonText(lResponse, 'status'));
+        Assert.AreEqual('target_destroyed', JsonText(lResponse, 'operationErrorCode'));
+        Assert.AreEqual(0, lClickRecorder.Clicks);
+      finally
+        lResponse.Free;
+      end;
+
+      lButton := TButton.Create(lForm);
+      lButton.Name := 'DisabledQueuedButton';
+      lButton.OnClick := lClickRecorder.Click;
+      lButton.Parent := lForm;
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.invoke","target":{"formName":"BridgeQueuedLifetimeForm",' +
+        '"controlName":"DisabledQueuedButton"}}'));
+      try
+        AssertOk(lResponse);
+        lOperationId := JsonText(lResponse, 'operationId');
+      finally
+        lResponse.Free;
+      end;
+
+      TAccessibilityAgentBridge.SetMutationEnabled(False);
+      CheckSynchronize(10);
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"operation.status","operationId":"' + lOperationId + '"}'));
+      try
+        AssertOk(lResponse);
+        Assert.AreEqual('failed', JsonText(lResponse, 'status'));
+        Assert.AreEqual('mutation_disabled', JsonText(lResponse, 'operationErrorCode'));
+        Assert.AreEqual(0, lClickRecorder.Clicks);
+      finally
+        lResponse.Free;
+      end;
+    finally
+      TAccessibilityAgentBridge.SetMutationEnabled(False);
+    end;
+  finally
+    lClickRecorder.Free;
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.QueuedInvokeBoundsRegistryAndPreservesOtherCallbacks;
+const
+  cOperationCount = 33;
+var
+  i: Integer;
+  lButton: TButton;
+  lClickRecorder: TAgentBridgeClickRecorder;
+  lForm: TForm;
+  lOperationIds: array[0..Pred(cOperationCount)] of string;
+  lQueuedProbe: TAgentBridgeQueuedProbe;
+  lResponse: TJSONObject;
+  lStopwatch: TStopwatch;
+
+  procedure AssertStatusFailure(const aJson: string; const aErrorCode: string);
+  var
+    lStatusResponse: TJSONObject;
+  begin
+    lStatusResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(aJson));
+    try
+      Assert.AreEqual('false', JsonText(lStatusResponse, 'ok'), aJson);
+      Assert.AreEqual(aErrorCode, JsonText(lStatusResponse, 'errorCode'), aJson);
+    finally
+      lStatusResponse.Free;
+    end;
+  end;
+
+begin
+  lForm := TForm.Create(nil);
+  lForm.Name := 'BridgeQueuedRegistryForm';
+  lClickRecorder := TAgentBridgeClickRecorder.Create;
+  lQueuedProbe := TAgentBridgeQueuedProbe.Create;
+  try
+    lButton := TButton.Create(lForm);
+    lButton.Name := 'QueuedRegistryButton';
+    lButton.OnClick := lClickRecorder.Click;
+    lButton.Parent := lForm;
+    lForm.Show;
+    Application.ProcessMessages;
+
+    TAccessibilityAgentBridge.SetMutationEnabled(True);
+    try
+      TThread.ForceQueue(nil, lQueuedProbe.Run);
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.invoke","target":{"formName":"BridgeQueuedRegistryForm",' +
+        '"controlName":"QueuedRegistryButton"}}'));
+      try
+        AssertOk(lResponse);
+        lOperationIds[0] := JsonText(lResponse, 'operationId');
+      finally
+        lResponse.Free;
+      end;
+      TAccessibilityAgentBridge.SetMutationEnabled(False);
+      CheckSynchronize(10);
+      Assert.AreEqual(1, lQueuedProbe.Calls,
+        'Disabling bridge mutations must not remove unrelated queued callbacks.');
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"operation.status","operationId":"' + lOperationIds[0] + '"}'));
+      try
+        AssertOk(lResponse);
+        Assert.AreEqual('mutation_disabled', JsonText(lResponse, 'operationErrorCode'));
+      finally
+        lResponse.Free;
+      end;
+
+      AssertStatusFailure('{"cmd":"operation.status"}', 'invalid_request');
+      AssertStatusFailure('{"cmd":"operation.status","operationId":1}', 'invalid_request');
+      AssertStatusFailure('{"cmd":"operation.status","operationId":""}', 'invalid_request');
+      AssertStatusFailure(
+        '{"cmd":"operation.status","operationId":"missing","consume":"yes"}', 'invalid_request');
+
+      TAccessibilityAgentBridge.SetMutationEnabled(True);
+      for i := 0 to Pred(cOperationCount) do
+      begin
+        lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+          '{"cmd":"control.invoke","target":{"formName":"BridgeQueuedRegistryForm",' +
+          '"controlName":"QueuedRegistryButton"}}'));
+        try
+          AssertOk(lResponse);
+          lOperationIds[i] := JsonText(lResponse, 'operationId');
+        finally
+          lResponse.Free;
+        end;
+        CheckSynchronize(10);
+      end;
+
+      lStopwatch := TStopwatch.StartNew;
+      while (lClickRecorder.Clicks < cOperationCount) and (lStopwatch.ElapsedMilliseconds < 1000) do
+      begin
+        CheckSynchronize(10);
+      end;
+      Assert.AreEqual(cOperationCount, lClickRecorder.Clicks);
+
+      AssertStatusFailure(
+        '{"cmd":"operation.status","operationId":"' + lOperationIds[0] + '"}', 'operation_not_found');
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"operation.status","operationId":"' + lOperationIds[Pred(cOperationCount)] +
+        '","consume":false}'));
+      try
+        AssertOk(lResponse);
+        Assert.AreEqual('succeeded', JsonText(lResponse, 'status'));
+        Assert.AreEqual('false', JsonText(lResponse, 'consumed'));
+      finally
+        lResponse.Free;
+      end;
+
+      for i := 1 to Pred(cOperationCount) do
+      begin
+        lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+          '{"cmd":"operation.status","operationId":"' + lOperationIds[i] + '"}'));
+        lResponse.Free;
+      end;
+    finally
+      TAccessibilityAgentBridge.SetMutationEnabled(False);
+    end;
+  finally
+    lQueuedProbe.Free;
+    lClickRecorder.Free;
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.BackgroundInvokeSupportsVclAndActionControls;
+var
+  lAction: TAction;
+  lActionRecorder: TAgentBridgeClickRecorder;
+  lButton: TButton;
+  lButtonRecorder: TAgentBridgeClickRecorder;
+  lForm: TForm;
+  lPanel: TPanel;
+  lSpeedButton: TSpeedButton;
+  lSpeedButtonRecorder: TAgentBridgeClickRecorder;
+
+  procedure InvokeAndWait(const aControlName: string; aRecorder: TAgentBridgeClickRecorder;
+    aExpectedClicks: Integer);
+  var
+    lOperationId: string;
+    lResponse: TJSONObject;
+    lStatus: string;
+    lStopwatch: TStopwatch;
+  begin
+    lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+      '{"cmd":"control.invoke","target":{"formName":"BridgeBackgroundActionForm",' +
+      '"controlName":"' + aControlName + '"}}'));
+    try
+      AssertOk(lResponse);
+      Assert.AreEqual('background-command', JsonText(lResponse, 'driveMode'));
+      Assert.AreEqual('queued-vcl-event-invocation', JsonText(lResponse, 'mutationSemantics'));
+      Assert.AreEqual('false', JsonText(lResponse, 'humanEquivalent'));
+      Assert.AreEqual('false', JsonText(lResponse, 'userInputEventsGenerated'));
+      Assert.AreEqual('false', JsonText(lResponse, 'mayBlockSynchronously'));
+      Assert.AreEqual(Pred(aExpectedClicks), aRecorder.Clicks, 'Queued invoke must not execute inline.');
+      lOperationId := JsonText(lResponse, 'operationId');
+    finally
+      lResponse.Free;
+    end;
+
+    lStatus := 'queued';
+    lStopwatch := TStopwatch.StartNew;
+    repeat
+      CheckSynchronize(10);
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"operation.status","operationId":"' + lOperationId + '","consume":false}'));
+      try
+        AssertOk(lResponse);
+        lStatus := JsonText(lResponse, 'status');
+      finally
+        lResponse.Free;
+      end;
+    until (lStatus = 'succeeded') or (lStatus = 'failed') or (lStopwatch.ElapsedMilliseconds >= 1000);
+    Assert.AreEqual('succeeded', lStatus);
+    Assert.AreEqual(aExpectedClicks, aRecorder.Clicks);
+
+    lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+      '{"cmd":"operation.status","operationId":"' + lOperationId + '"}'));
+    try
+      AssertOk(lResponse);
+      Assert.AreEqual('succeeded', JsonText(lResponse, 'status'));
+      Assert.AreEqual('true', JsonText(lResponse, 'consumed'));
+    finally
+      lResponse.Free;
+    end;
+  end;
+
+begin
+  lForm := TForm.Create(nil);
+  lForm.Name := 'BridgeBackgroundActionForm';
+  lButtonRecorder := TAgentBridgeClickRecorder.Create;
+  lSpeedButtonRecorder := TAgentBridgeClickRecorder.Create;
+  lActionRecorder := TAgentBridgeClickRecorder.Create;
+  try
+    lButton := TButton.Create(lForm);
+    lButton.Name := 'InvokeButton';
+    lButton.OnClick := lButtonRecorder.Click;
+    lButton.Parent := lForm;
+
+    lSpeedButton := TSpeedButton.Create(lForm);
+    lSpeedButton.Name := 'InvokeSpeedButton';
+    lSpeedButton.OnClick := lSpeedButtonRecorder.Click;
+    lSpeedButton.Parent := lForm;
+
+    lAction := TAction.Create(lForm);
+    lAction.OnExecute := lActionRecorder.Click;
+    lPanel := TPanel.Create(lForm);
+    lPanel.Name := 'ActionPanel';
+    lPanel.Action := lAction;
+    lPanel.Parent := lForm;
+
+    lForm.Show;
+    Application.ProcessMessages;
+    TAccessibilityAgentBridge.SetMutationEnabled(True);
+    try
+      InvokeAndWait('InvokeButton', lButtonRecorder, 1);
+      InvokeAndWait('InvokeSpeedButton', lSpeedButtonRecorder, 1);
+      InvokeAndWait('ActionPanel', lActionRecorder, 1);
+    finally
+      TAccessibilityAgentBridge.SetMutationEnabled(False);
+    end;
+  finally
+    lActionRecorder.Free;
+    lSpeedButtonRecorder.Free;
+    lButtonRecorder.Free;
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.SetCheckedUsesDeterministicVclEvents;
+var
+  lCheckBox: TCheckBox;
+  lCheckRecorder: TAgentBridgeClickRecorder;
+  lForm: TForm;
+  lRadioButton: TRadioButton;
+  lRadioRecorder: TAgentBridgeClickRecorder;
+  lResponse: TJSONObject;
+begin
+  lForm := TForm.Create(nil);
+  lForm.Name := 'BridgeCheckedActionForm';
+  lCheckRecorder := TAgentBridgeClickRecorder.Create;
+  lRadioRecorder := TAgentBridgeClickRecorder.Create;
+  try
+    lCheckBox := TCheckBox.Create(lForm);
+    lCheckBox.Name := 'OptionsCheckBox';
+    lCheckBox.State := cbGrayed;
+    lCheckBox.OnClick := lCheckRecorder.Click;
+    lCheckBox.Parent := lForm;
+
+    lRadioButton := TRadioButton.Create(lForm);
+    lRadioButton.Name := 'ModeRadioButton';
+    lRadioButton.Checked := True;
+    lRadioButton.OnClick := lRadioRecorder.Click;
+    lRadioButton.Parent := lForm;
+
+    lForm.Show;
+    Application.ProcessMessages;
+    TAccessibilityAgentBridge.SetMutationEnabled(True);
+    try
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.setChecked","target":{"formName":"BridgeCheckedActionForm",' +
+        '"controlName":"OptionsCheckBox"},"checked":false}'));
+      try
+        AssertOk(lResponse);
+        Assert.AreEqual('background-command', JsonText(lResponse, 'driveMode'));
+        Assert.AreEqual('vcl-checked-state', JsonText(lResponse, 'mutationSemantics'));
+        Assert.AreEqual(cbUnchecked, lCheckBox.State);
+        Assert.AreEqual(1, lCheckRecorder.Clicks);
+      finally
+        lResponse.Free;
+      end;
+
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.setChecked","target":{"formName":"BridgeCheckedActionForm",' +
+        '"controlName":"OptionsCheckBox"},"checked":false}'));
+      try
+        AssertOk(lResponse);
+        Assert.AreEqual(1, lCheckRecorder.Clicks, 'An idempotent checkbox request must not fire OnClick.');
+      finally
+        lResponse.Free;
+      end;
+
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.setChecked","target":{"formName":"BridgeCheckedActionForm",' +
+        '"controlName":"OptionsCheckBox"},"checked":true}'));
+      try
+        AssertOk(lResponse);
+        Assert.IsTrue(lCheckBox.Checked);
+        Assert.AreEqual(2, lCheckRecorder.Clicks);
+      finally
+        lResponse.Free;
+      end;
+
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.setChecked","target":{"formName":"BridgeCheckedActionForm",' +
+        '"controlName":"ModeRadioButton"},"checked":false}'));
+      try
+        AssertOk(lResponse);
+        Assert.IsFalse(lRadioButton.Checked);
+        Assert.AreEqual(1, lRadioRecorder.Clicks);
+      finally
+        lResponse.Free;
+      end;
+
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.setChecked","target":{"formName":"BridgeCheckedActionForm",' +
+        '"controlName":"ModeRadioButton"},"checked":false}'));
+      try
+        AssertOk(lResponse);
+        Assert.AreEqual(1, lRadioRecorder.Clicks, 'An idempotent radio request must not fire OnClick.');
+      finally
+        lResponse.Free;
+      end;
+
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.setChecked","target":{"formName":"BridgeCheckedActionForm",' +
+        '"controlName":"ModeRadioButton"},"checked":true}'));
+      try
+        AssertOk(lResponse);
+        Assert.IsTrue(lRadioButton.Checked);
+        Assert.AreEqual(2, lRadioRecorder.Clicks);
+      finally
+        lResponse.Free;
+      end;
+    finally
+      TAccessibilityAgentBridge.SetMutationEnabled(False);
+    end;
+  finally
+    lRadioRecorder.Free;
+    lCheckRecorder.Free;
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.SelectUsesStockVclNotificationOncePerChange;
+var
+  lComboBox: TComboBox;
+  lComboClickRecorder: TAgentBridgeClickRecorder;
+  lComboRecorder: TAgentBridgeClickRecorder;
+  lForm: TForm;
+  lListBox: TListBox;
+  lListRecorder: TAgentBridgeClickRecorder;
+  lResponse: TJSONObject;
+begin
+  lForm := TForm.Create(nil);
+  lForm.Name := 'BridgeSelectionActionForm';
+  lListRecorder := TAgentBridgeClickRecorder.Create;
+  lComboClickRecorder := TAgentBridgeClickRecorder.Create;
+  lComboRecorder := TAgentBridgeClickRecorder.Create;
+  try
+    lListBox := TListBox.Create(lForm);
+    lListBox.Name := 'OptionsListBox';
+    lListBox.Parent := lForm;
+    lListBox.Items.Add('One');
+    lListBox.Items.Add('Two');
+    lListBox.Items.Add('Three');
+    lListBox.ItemIndex := 0;
+    lListBox.OnClick := lListRecorder.Click;
+
+    lComboBox := TComboBox.Create(lForm);
+    lComboBox.Name := 'OptionsComboBox';
+    lComboBox.Parent := lForm;
+    lComboBox.Items.Assign(lListBox.Items);
+    lComboBox.ItemIndex := 0;
+    lComboBox.OnClick := lComboClickRecorder.Click;
+    lComboBox.OnSelect := lComboRecorder.Click;
+
+    lForm.Show;
+    Application.ProcessMessages;
+    TAccessibilityAgentBridge.SetMutationEnabled(True);
+    try
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.select","target":{"formName":"BridgeSelectionActionForm",' +
+        '"controlName":"OptionsListBox"},"index":1}'));
+      try
+        AssertOk(lResponse);
+        Assert.AreEqual('background-command', JsonText(lResponse, 'driveMode'));
+        Assert.AreEqual('vcl-selection-notification', JsonText(lResponse, 'mutationSemantics'));
+        Assert.AreEqual(1, lListBox.ItemIndex);
+        Assert.AreEqual(1, lListRecorder.Clicks);
+      finally
+        lResponse.Free;
+      end;
+
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.select","target":{"formName":"BridgeSelectionActionForm",' +
+        '"controlName":"OptionsListBox"},"index":1}'));
+      try
+        AssertOk(lResponse);
+        Assert.AreEqual(1, lListRecorder.Clicks, 'An idempotent list selection must not fire OnClick.');
+      finally
+        lResponse.Free;
+      end;
+
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.select","target":{"formName":"BridgeSelectionActionForm",' +
+        '"controlName":"OptionsListBox"},"text":"Three"}'));
+      try
+        AssertOk(lResponse);
+        Assert.AreEqual(2, lListBox.ItemIndex);
+        Assert.AreEqual(2, lListRecorder.Clicks);
+      finally
+        lResponse.Free;
+      end;
+
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.select","target":{"formName":"BridgeSelectionActionForm",' +
+        '"controlName":"OptionsComboBox"},"text":"Two"}'));
+      try
+        AssertOk(lResponse);
+        Assert.AreEqual(1, lComboBox.ItemIndex);
+        Assert.AreEqual(1, lComboClickRecorder.Clicks);
+        Assert.AreEqual(1, lComboRecorder.Clicks);
+      finally
+        lResponse.Free;
+      end;
+
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.select","target":{"formName":"BridgeSelectionActionForm",' +
+        '"controlName":"OptionsComboBox"},"text":"Two"}'));
+      try
+        AssertOk(lResponse);
+        Assert.AreEqual(1, lComboClickRecorder.Clicks, 'An idempotent combo selection must not fire OnClick.');
+        Assert.AreEqual(1, lComboRecorder.Clicks, 'An idempotent combo selection must not fire OnSelect.');
+      finally
+        lResponse.Free;
+      end;
+
+      lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
+        '{"cmd":"control.select","target":{"formName":"BridgeSelectionActionForm",' +
+        '"controlName":"OptionsComboBox"},"index":2}'));
+      try
+        AssertOk(lResponse);
+        Assert.AreEqual(2, lComboBox.ItemIndex);
+        Assert.AreEqual(2, lComboClickRecorder.Clicks);
+        Assert.AreEqual(2, lComboRecorder.Clicks);
+      finally
+        lResponse.Free;
+      end;
+    finally
+      TAccessibilityAgentBridge.SetMutationEnabled(False);
+    end;
+  finally
+    lComboRecorder.Free;
+    lComboClickRecorder.Free;
+    lListRecorder.Free;
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.BackgroundActionsRejectInvalidOrUnsupportedRequests;
+var
+  lButton: TButton;
+  lCheckBox: TCheckBox;
+  lCheckRecorder: TAgentBridgeClickRecorder;
+  lEdit: TEdit;
+  lForm: TForm;
+  lListBox: TListBox;
+  lListRecorder: TAgentBridgeClickRecorder;
+  lMultiListBox: TListBox;
+
+  procedure AssertCommandFailure(const aJson: string; const aErrorCode: string);
+  var
+    lResponse: TJSONObject;
+  begin
+    lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(aJson));
+    try
+      AssertFailure(lResponse, aErrorCode);
+    finally
+      lResponse.Free;
+    end;
+  end;
+
+begin
+  lForm := TForm.Create(nil);
+  lForm.Name := 'BridgeBackgroundErrorForm';
+  lCheckRecorder := TAgentBridgeClickRecorder.Create;
+  lListRecorder := TAgentBridgeClickRecorder.Create;
+  try
+    lButton := TButton.Create(lForm);
+    lButton.Name := 'DisabledButton';
+    lButton.Enabled := False;
+    lButton.Parent := lForm;
+
+    lEdit := TEdit.Create(lForm);
+    lEdit.Name := 'UnsupportedEdit';
+    lEdit.Parent := lForm;
+
+    lCheckBox := TCheckBox.Create(lForm);
+    lCheckBox.Name := 'OptionsCheckBox';
+    lCheckBox.OnClick := lCheckRecorder.Click;
+    lCheckBox.Parent := lForm;
+
+    lListBox := TListBox.Create(lForm);
+    lListBox.Name := 'OptionsListBox';
+    lListBox.Parent := lForm;
+    lListBox.Items.Add('Alpha');
+    lListBox.Items.Add('Beta');
+    lListBox.ItemIndex := 0;
+    lListBox.OnClick := lListRecorder.Click;
+
+    lMultiListBox := TListBox.Create(lForm);
+    lMultiListBox.Name := 'MultiListBox';
+    lMultiListBox.MultiSelect := True;
+    lMultiListBox.Parent := lForm;
+    lMultiListBox.Items.Assign(lListBox.Items);
+    lMultiListBox.ItemIndex := 0;
+
+    lForm.Show;
+    Application.ProcessMessages;
+    TAccessibilityAgentBridge.SetMutationEnabled(True);
+    try
+      AssertCommandFailure(
+        '{"cmd":"control.invoke","target":{"formName":"BridgeBackgroundErrorForm",' +
+        '"controlName":"DisabledButton"}}', 'control_disabled');
+      AssertCommandFailure(
+        '{"cmd":"control.invoke","target":{"formName":"BridgeBackgroundErrorForm",' +
+        '"controlName":"UnsupportedEdit"}}', 'unsupported_control');
+
+      AssertCommandFailure(
+        '{"cmd":"control.setChecked","target":{"formName":"BridgeBackgroundErrorForm",' +
+        '"controlName":"OptionsCheckBox"},"checked":"true"}', 'invalid_request');
+      AssertCommandFailure(
+        '{"cmd":"control.setChecked","target":{"formName":"BridgeBackgroundErrorForm",' +
+        '"controlName":"OptionsCheckBox"}}', 'invalid_request');
+      AssertCommandFailure(
+        '{"cmd":"control.setChecked","target":{"formName":"BridgeBackgroundErrorForm",' +
+        '"controlName":"UnsupportedEdit"},"checked":true}', 'unsupported_control');
+      Assert.IsFalse(lCheckBox.Checked);
+      Assert.AreEqual(0, lCheckRecorder.Clicks);
+
+      AssertCommandFailure(
+        '{"cmd":"control.select","target":{"formName":"BridgeBackgroundErrorForm",' +
+        '"controlName":"OptionsListBox"}}', 'invalid_request');
+      AssertCommandFailure(
+        '{"cmd":"control.select","target":{"formName":"BridgeBackgroundErrorForm",' +
+        '"controlName":"OptionsListBox"},"index":1,"text":"Beta"}', 'invalid_request');
+      AssertCommandFailure(
+        '{"cmd":"control.select","target":{"formName":"BridgeBackgroundErrorForm",' +
+        '"controlName":"OptionsListBox"},"index":"1"}', 'invalid_request');
+      AssertCommandFailure(
+        '{"cmd":"control.select","target":{"formName":"BridgeBackgroundErrorForm",' +
+        '"controlName":"OptionsListBox"},"index":2}', 'index_out_of_bounds');
+      AssertCommandFailure(
+        '{"cmd":"control.select","target":{"formName":"BridgeBackgroundErrorForm",' +
+        '"controlName":"OptionsListBox"},"text":"beta"}', 'item_not_found');
+      AssertCommandFailure(
+        '{"cmd":"control.select","target":{"formName":"BridgeBackgroundErrorForm",' +
+        '"controlName":"UnsupportedEdit"},"index":0}', 'unsupported_control');
+      AssertCommandFailure(
+        '{"cmd":"control.select","target":{"formName":"BridgeBackgroundErrorForm",' +
+        '"controlName":"MultiListBox"},"index":1}', 'unsupported_control');
+      Assert.AreEqual(0, lListBox.ItemIndex);
+      Assert.AreEqual(0, lListRecorder.Clicks);
+    finally
+      TAccessibilityAgentBridge.SetMutationEnabled(False);
+    end;
+
+    AssertCommandFailure(
+      '{"cmd":"control.invoke","target":{"formName":"BridgeBackgroundErrorForm",' +
+      '"controlName":"UnsupportedEdit"}}', 'mutation_disabled');
+  finally
+    lListRecorder.Free;
+    lCheckRecorder.Free;
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityAgentBridgeTests.MutationsAreGatedAndReportBackgroundSemantics;
+var
+  lButton: TButton;
   lClickRecorder: TAgentBridgeClickRecorder;
   lEdit: TEdit;
   lEditRef: string;
   lForm: TForm;
+  lHandle: string;
   lMap: TJSONObject;
   lResponse: TJSONObject;
 begin
   BuildBridgeTestForm(lForm, lEdit, lButton);
   lForm.Show;
   Application.ProcessMessages;
+  lHandle := UIntToStr(NativeUInt(lForm.Handle));
   lClickRecorder := TAgentBridgeClickRecorder.Create;
   try
     lButton.OnClick := lClickRecorder.Click;
     lMap := MapForm(lForm);
     try
       lEditRef := ControlRefByName(lMap, 'SearchEdit');
-      lButtonRef := ControlRefByName(lMap, 'ApplyButton');
     finally
       lMap.Free;
     end;
@@ -2305,8 +3782,7 @@ begin
     lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
       '{"cmd":"control.focus","ref":"' + lEditRef + '"}'));
     try
-      Assert.AreEqual('false', JsonText(lResponse, 'ok'));
-      Assert.AreEqual('mutation_disabled', JsonText(lResponse, 'errorCode'));
+      AssertFailure(lResponse, 'mutation_disabled');
       Assert.AreSame(lButton, lForm.ActiveControl);
     finally
       lResponse.Free;
@@ -2319,6 +3795,7 @@ begin
       try
         AssertOk(lResponse);
         Assert.AreEqual('true', JsonText(lResponse, 'snapshotInvalidated'));
+        Assert.AreEqual('background-command', JsonText(lResponse, 'driveMode'));
         Assert.AreEqual('vcl-focus-request', JsonText(lResponse, 'mutationSemantics'));
         Assert.AreEqual('false', JsonText(lResponse, 'humanEquivalent'));
         Assert.AreEqual('false', JsonText(lResponse, 'userInputEventsGenerated'));
@@ -2328,9 +3805,11 @@ begin
       end;
 
       lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
-        '{"cmd":"control.setText","ref":"' + lEditRef + '","text":"base"}'));
+        '{"cmd":"control.setText","target":{"formHandle":' + lHandle +
+        ',"controlName":"SearchEdit"},"text":"base"}'));
       try
         AssertOk(lResponse);
+        Assert.AreEqual('background-command', JsonText(lResponse, 'driveMode'));
         Assert.AreEqual('raw-property-assignment', JsonText(lResponse, 'mutationSemantics'));
         Assert.AreEqual('false', JsonText(lResponse, 'humanEquivalent'));
         Assert.AreEqual('false', JsonText(lResponse, 'userInputEventsGenerated'));
@@ -2340,9 +3819,11 @@ begin
       end;
 
       lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
-        '{"cmd":"control.typeText","ref":"' + lEditRef + '","text":" plus"}'));
+        '{"cmd":"control.typeText","target":{"formName":"BridgeForm","controlName":"SearchEdit"},' +
+        '"text":" plus"}'));
       try
         AssertOk(lResponse);
+        Assert.AreEqual('background-command', JsonText(lResponse, 'driveMode'));
         Assert.AreEqual('raw-property-assignment', JsonText(lResponse, 'mutationSemantics'));
         Assert.AreEqual('false', JsonText(lResponse, 'humanEquivalent'));
         Assert.AreEqual('false', JsonText(lResponse, 'userInputEventsGenerated'));
@@ -2354,6 +3835,7 @@ begin
       lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute('{"cmd":"keyboard.tab"}'));
       try
         AssertOk(lResponse);
+        Assert.AreEqual('background-command', JsonText(lResponse, 'driveMode'));
         Assert.AreEqual('keyboard-equivalent-navigation', JsonText(lResponse, 'mutationSemantics'));
         Assert.AreEqual('false', JsonText(lResponse, 'humanEquivalent'));
         Assert.AreEqual('false', JsonText(lResponse, 'userInputEventsGenerated'));
@@ -2363,9 +3845,10 @@ begin
       end;
 
       lResponse := JsonObjectFrom(TAccessibilityAgentBridge.Execute(
-        '{"cmd":"control.click","ref":"' + lButtonRef + '"}'));
+        '{"cmd":"control.click","target":{"formName":"BridgeForm","controlName":"ApplyButton"}}'));
       try
         AssertOk(lResponse);
+        Assert.AreEqual('background-command', JsonText(lResponse, 'driveMode'));
         Assert.AreEqual('vcl-event-invocation', JsonText(lResponse, 'mutationSemantics'));
         Assert.AreEqual('false', JsonText(lResponse, 'humanEquivalent'));
         Assert.AreEqual('false', JsonText(lResponse, 'userInputEventsGenerated'));

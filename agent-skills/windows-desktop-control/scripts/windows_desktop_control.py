@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 from contextlib import contextmanager
 import ctypes
 from ctypes import wintypes
@@ -864,13 +865,16 @@ def dispatch_pointer_action(
     button: str | None,
     count: int,
     down_ms: int,
-) -> None:
+    input_guard: Callable[[], int | None] | None = None,
+) -> int | None:
     x = int(point["x"])
     y = int(point["y"])
-    move_cursor(x, y, 0)
+    guard_result = move_cursor(x, y, 0, input_guard)
+    if guard_result is not None:
+        return guard_result
     if action == "move-to-control":
-        return
-    send_mouse_click(str(button), count, down_ms)
+        return None
+    return send_mouse_click(str(button), count, down_ms, input_guard)
 
 
 def command_semantic_control_action(
@@ -907,7 +911,27 @@ def command_semantic_control_action(
 
         root = window_info(int_to_hwnd(root_handle))
         action["requestedRoot"] = root
-        if not activate_hwnd(int_to_hwnd(root_handle), args.timeout_ms):
+        guard_result = guard_real_input(
+            args,
+            require_foreground=False,
+            target_pid=int(root["pid"]),
+            target_hwnd=root_handle,
+        )
+        if guard_result is not None:
+            return guard_result
+        activated_ok, guard_result = activate_hwnd(
+            int_to_hwnd(root_handle),
+            args.timeout_ms,
+            lambda: guard_real_input(
+                args,
+                require_foreground=False,
+                target_pid=int(root["pid"]),
+                target_hwnd=root_handle,
+            ),
+        )
+        if guard_result is not None:
+            return guard_result
+        if not activated_ok:
             return fail(
                 "The target root window could not be activated. Input was not sent.",
                 2,
@@ -975,11 +999,20 @@ def command_semantic_control_action(
                 after={"target": refreshed, "actualForeground": actual_foreground},
             )
 
-        guard_result = guard_real_input(args)
+        guard_result = guard_real_input(args, target_pid=int(root["pid"]), target_hwnd=root_handle)
         if guard_result is not None:
             return guard_result
         action.update({"button": button, "clickCount": count, "targetPoint": point})
-        dispatch_pointer_action(command_name, point, button, count, getattr(args, "down_ms", 40))
+        guard_result = dispatch_pointer_action(
+            command_name,
+            point,
+            button,
+            count,
+            getattr(args, "down_ms", 40),
+            lambda: guard_real_input(args, target_pid=int(root["pid"]), target_hwnd=root_handle),
+        )
+        if guard_result is not None:
+            return guard_result
         print_json(
             {
                 "ok": True,
@@ -1722,10 +1755,17 @@ def command_fast_semantic_map(args: argparse.Namespace) -> int:
     return command_uia_cache_map(build_fast_semantic_uia_args(args, attempts))
 
 
-def activate_hwnd(hwnd: wintypes.HWND, timeout_ms: int) -> bool:
+def activate_hwnd(
+    hwnd: wintypes.HWND,
+    timeout_ms: int,
+    activation_guard: Callable[[], int | None] | None = None,
+) -> tuple[bool, int | None]:
     deadline = time.monotonic() + max(timeout_ms, 1) / 1000.0
     current_thread_id = int(kernel32.GetCurrentThreadId())
     while time.monotonic() <= deadline:
+        guard_result = activation_guard() if activation_guard is not None else None
+        if guard_result is not None:
+            return False, guard_result
         foreground_hwnd = user32.GetForegroundWindow()
         _, foreground_thread_id = get_window_pid_and_thread(foreground_hwnd)
         _, target_thread_id = get_window_pid_and_thread(hwnd)
@@ -1744,9 +1784,9 @@ def activate_hwnd(hwnd: wintypes.HWND, timeout_ms: int) -> bool:
             for thread_id in attached:
                 user32.AttachThreadInput(current_thread_id, thread_id, False)
         if hwnd_to_int(user32.GetForegroundWindow()) == hwnd_to_int(hwnd):
-            return True
+            return True, None
         time.sleep(0.05)
-    return False
+    return False, None
 
 
 def command_foreground_window(_args: argparse.Namespace) -> int:
@@ -1766,7 +1806,34 @@ def command_activate_window(args: argparse.Namespace) -> int:
         requested_hwnd = int_to_hwnd(int(target["hwnd"]))
         activated_hwnd = activatable_root(requested_hwnd)
         activated = window_info(activated_hwnd)
-        ok = activate_hwnd(activated_hwnd, args.timeout_ms)
+        guard_result = guard_real_input(
+            args,
+            require_foreground=False,
+            target_pid=int(activated["pid"]),
+            target_hwnd=hwnd_to_int(activated_hwnd),
+        )
+        if guard_result is not None:
+            return guard_result
+        ok, guard_result = activate_hwnd(
+            activated_hwnd,
+            args.timeout_ms,
+            lambda: guard_real_input(
+                args,
+                require_foreground=False,
+                target_pid=int(activated["pid"]),
+                target_hwnd=hwnd_to_int(activated_hwnd),
+            ),
+        )
+        if guard_result is not None:
+            return guard_result
+        if ok:
+            guard_result = guard_real_input(
+                args,
+                target_pid=int(activated["pid"]),
+                target_hwnd=hwnd_to_int(activated_hwnd),
+            )
+            if guard_result is not None:
+                return guard_result
         payload = {
             "ok": ok,
             "action": "activate-window",
@@ -1777,6 +1844,7 @@ def command_activate_window(args: argparse.Namespace) -> int:
             "reason": None if ok else "foreground-activation-failed",
             "foreground": window_info(user32.GetForegroundWindow()),
             "matches": matches[:5],
+            **foreground_session_evidence(args),
         }
         print_json(payload)
         return 0 if ok else 2
@@ -1869,34 +1937,48 @@ def command_screenshot_window(args: argparse.Namespace) -> int:
         return fail(str(exc))
 
 
-def guard_real_input(args: argparse.Namespace) -> int | None:
-    required_pid = getattr(args, "require_foreground_pid", None)
-    required_hwnd = getattr(args, "require_foreground_hwnd", None)
+def guard_real_input(
+    args: argparse.Namespace,
+    *,
+    require_foreground: bool = True,
+    target_pid: int | None = None,
+    target_hwnd: int | None = None,
+) -> int | None:
+    asserted_pid = getattr(args, "require_foreground_pid", None)
+    asserted_hwnd = getattr(args, "require_foreground_hwnd", None)
     session_id = getattr(args, "session_id", None)
-    session: dict[str, object] | None = None
-    if session_id:
-        session = read_session(session_state_path(args))
-        if session is None:
-            return fail("No foreground session is active. Input was not sent.", 2, reason="session-absent")
-        if session.get("sessionId") != session_id:
-            return fail("The foreground session ID does not match. Input was not sent.", 2, reason="session-mismatch")
-        if int(session.get("expiresAtMs") or 0) <= epoch_ms():
-            return fail("The foreground session has expired. Input was not sent.", 2, reason="session-expired")
-        if not process_alive(int(session.get("controllerPid") or 0)):
-            return fail("The foreground session controller has exited. Input was not sent.", 2, reason="session-controller-exited")
-        session_pid = int(session.get("targetPid") or 0)
-        session_hwnd = int(session.get("targetHwnd") or 0)
+    if not session_id:
+        return fail("A foreground session is required. Input was not sent.", 2, reason="session-required")
+    session = read_session(session_state_path(args))
+    if session is None:
+        return fail("No foreground session is active. Input was not sent.", 2, reason="session-absent")
+    if session.get("sessionId") != session_id:
+        return fail("The foreground session ID does not match. Input was not sent.", 2, reason="session-mismatch")
+    if int(session.get("expiresAtMs") or 0) <= epoch_ms():
+        return fail("The foreground session has expired. Input was not sent.", 2, reason="session-expired")
+    if not process_alive(int(session.get("controllerPid") or 0)):
+        return fail("The foreground session controller has exited. Input was not sent.", 2, reason="session-controller-exited")
+    session_pid = int(session.get("targetPid") or 0)
+    session_hwnd = int(session.get("targetHwnd") or 0)
+    for required_pid in (asserted_pid, target_pid):
         if required_pid is not None and required_pid != session_pid:
             return fail("The required PID does not match the foreground session. Input was not sent.", 2, reason="session-pid-mismatch")
+    for required_hwnd in (asserted_hwnd, target_hwnd):
         if required_hwnd is not None and session_hwnd > 0 and required_hwnd != session_hwnd:
             return fail("The required HWND does not match the foreground session. Input was not sent.", 2, reason="session-hwnd-mismatch")
-        required_pid = session_pid
-        if required_hwnd is None and session_hwnd > 0:
-            required_hwnd = session_hwnd
-
-    if required_pid is None and required_hwnd is None:
+    args._active_foreground_session = {
+        "sessionId": session["sessionId"],
+        "targetPid": session["targetPid"],
+        "targetHwnd": session["targetHwnd"],
+        "expiresAtMs": session["expiresAtMs"],
+    }
+    if not require_foreground:
         return None
 
+    required_pid = target_pid if target_pid is not None else session_pid
+    required_hwnd = target_hwnd if target_hwnd is not None else asserted_hwnd
+    if required_hwnd is None and session_hwnd > 0:
+        required_hwnd = session_hwnd
     actual = window_info(user32.GetForegroundWindow())
     if (
         (required_pid is not None and int(actual["pid"]) != required_pid)
@@ -1911,27 +1993,28 @@ def guard_real_input(args: argparse.Namespace) -> int | None:
             actualForeground=actual,
             sessionId=session_id,
         )
-    if session is not None:
-        args._active_foreground_session = {
-            "sessionId": session["sessionId"],
-            "targetPid": session["targetPid"],
-            "targetHwnd": session["targetHwnd"],
-            "expiresAtMs": session["expiresAtMs"],
-        }
     return None
 
 
 def foreground_session_evidence(args: argparse.Namespace) -> dict[str, object]:
     session = getattr(args, "_active_foreground_session", None)
-    return {"foregroundSession": session} if session is not None else {}
+    return {"driveMode": "foreground-input", "foregroundSession": session} if session is not None else {}
 
 
-def move_cursor(x: int, y: int, duration_ms: int) -> None:
+def move_cursor(
+    x: int,
+    y: int,
+    duration_ms: int,
+    input_guard: Callable[[], int | None] | None = None,
+) -> int | None:
     duration_ms = max(0, duration_ms)
     if duration_ms == 0:
+        guard_result = input_guard() if input_guard is not None else None
+        if guard_result is not None:
+            return guard_result
         if not user32.SetCursorPos(x, y):
             raise OSError(f"SetCursorPos failed: {ctypes.get_last_error()}")
-        return
+        return None
 
     start = POINT()
     if not user32.GetCursorPos(ctypes.byref(start)):
@@ -1939,15 +2022,24 @@ def move_cursor(x: int, y: int, duration_ms: int) -> None:
     steps = max(2, min(120, duration_ms // 16))
     delay = duration_ms / (steps - 1) / 1000.0
     for step in range(steps):
+        guard_result = input_guard() if input_guard is not None else None
+        if guard_result is not None:
+            return guard_result
         next_x = round(start.x + ((x - start.x) * step / (steps - 1)))
         next_y = round(start.y + ((y - start.y) * step / (steps - 1)))
         if not user32.SetCursorPos(next_x, next_y):
             raise OSError(f"SetCursorPos failed: {ctypes.get_last_error()}")
         if step < steps - 1:
             time.sleep(delay)
+    return None
 
 
-def send_mouse_click(button: str, count: int, down_ms: int) -> None:
+def send_mouse_click(
+    button: str,
+    count: int,
+    down_ms: int,
+    input_guard: Callable[[], int | None] | None = None,
+) -> int | None:
     flags = {
         "left": (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
         "right": (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
@@ -1959,9 +2051,15 @@ def send_mouse_click(button: str, count: int, down_ms: int) -> None:
         raise ValueError("Mouse click count must be 1 or 2.")
     down_flag, up_flag = flags[button]
     for _index in range(count):
-        user32.mouse_event(down_flag, 0, 0, 0, 0)
-        time.sleep(max(0, down_ms) / 1000.0)
-        user32.mouse_event(up_flag, 0, 0, 0, 0)
+        guard_result = input_guard() if input_guard is not None else None
+        if guard_result is not None:
+            return guard_result
+        try:
+            user32.mouse_event(down_flag, 0, 0, 0, 0)
+            time.sleep(max(0, down_ms) / 1000.0)
+        finally:
+            user32.mouse_event(up_flag, 0, 0, 0, 0)
+    return None
 
 
 def command_move(args: argparse.Namespace) -> int:
@@ -1970,7 +2068,9 @@ def command_move(args: argparse.Namespace) -> int:
         return guard_result
     try:
         duration_ms = getattr(args, "duration_ms", 0)
-        move_cursor(int(args.x), int(args.y), duration_ms)
+        guard_result = move_cursor(int(args.x), int(args.y), duration_ms, lambda: guard_real_input(args))
+        if guard_result is not None:
+            return guard_result
         print_json(
             {
                 "ok": True,
@@ -1994,13 +2094,19 @@ def command_click(args: argparse.Namespace) -> int:
         return guard_result
     try:
         if args.x is not None and args.y is not None:
-            move_cursor(int(args.x), int(args.y), getattr(args, "duration_ms", 0))
-            guard_result = guard_real_input(args)
+            guard_result = move_cursor(
+                int(args.x),
+                int(args.y),
+                getattr(args, "duration_ms", 0),
+                lambda: guard_real_input(args),
+            )
             if guard_result is not None:
                 return guard_result
         button = getattr(args, "button", "left")
         count = getattr(args, "count", 1)
-        send_mouse_click(button, count, args.down_ms)
+        guard_result = send_mouse_click(button, count, args.down_ms, lambda: guard_real_input(args))
+        if guard_result is not None:
+            return guard_result
         action = getattr(args, "action_name", "click")
         print_json(
             {
@@ -2063,14 +2169,23 @@ def parse_key_chord(chord: str) -> list[int]:
     return [virtual_key_for_name(name) for name in names]
 
 
-def send_key_chord(keys: list[int], down_ms: int) -> None:
+def send_key_chord(
+    keys: list[int],
+    down_ms: int,
+    input_guard: Callable[[], int | None] | None = None,
+) -> int | None:
     pressed: list[int] = []
     error: BaseException | None = None
+    guard_result: int | None = None
     try:
         for vk in keys:
-            send_key_input(vk, False)
+            guard_result = input_guard() if input_guard is not None else None
+            if guard_result is not None:
+                break
             pressed.append(vk)
-        time.sleep(max(0, down_ms) / 1000.0)
+            send_key_input(vk, False)
+        if guard_result is None:
+            time.sleep(max(0, down_ms) / 1000.0)
     except BaseException as exc:  # noqa: BLE001 - all pressed modifiers must still be released
         error = exc
     finally:
@@ -2082,16 +2197,27 @@ def send_key_chord(keys: list[int], down_ms: int) -> None:
                     error = exc
     if error is not None:
         raise error
+    return guard_result
 
 
-def type_unicode_text(text: str, delay_ms: int) -> None:
+def type_unicode_text(
+    text: str,
+    delay_ms: int,
+    input_guard: Callable[[], int | None] | None = None,
+) -> int | None:
     raw = text.encode("utf-16-le")
     units = [raw[index] | (raw[index + 1] << 8) for index in range(0, len(raw), 2)]
     for unit in units:
-        send_unicode_unit(unit, False)
-        send_unicode_unit(unit, True)
+        guard_result = input_guard() if input_guard is not None else None
+        if guard_result is not None:
+            return guard_result
+        try:
+            send_unicode_unit(unit, False)
+        finally:
+            send_unicode_unit(unit, True)
         if delay_ms > 0:
             time.sleep(delay_ms / 1000.0)
+    return None
 
 
 def command_press(args: argparse.Namespace) -> int:
@@ -2100,7 +2226,9 @@ def command_press(args: argparse.Namespace) -> int:
         return guard_result
     try:
         key = args.key.lower()
-        send_key_chord([virtual_key_for_name(key)], args.down_ms)
+        guard_result = send_key_chord([virtual_key_for_name(key)], args.down_ms, lambda: guard_real_input(args))
+        if guard_result is not None:
+            return guard_result
         print_json({"ok": True, "action": "press", "key": key, **foreground_session_evidence(args)})
         return 0
     except Exception as exc:  # noqa: BLE001 - CLI boundary
@@ -2113,7 +2241,9 @@ def command_tab(args: argparse.Namespace) -> int:
         return guard_result
     try:
         keys = [VK_CODES["shift"], VK_CODES["tab"]] if args.shift else [VK_CODES["tab"]]
-        send_key_chord(keys, 0)
+        guard_result = send_key_chord(keys, 0, lambda: guard_real_input(args))
+        if guard_result is not None:
+            return guard_result
         print_json({"ok": True, "action": "tab", "shift": args.shift, **foreground_session_evidence(args)})
         return 0
     except Exception as exc:  # noqa: BLE001 - CLI boundary
@@ -2125,7 +2255,9 @@ def command_type_text(args: argparse.Namespace) -> int:
     if guard_result is not None:
         return guard_result
     try:
-        type_unicode_text(args.text, args.delay_ms)
+        guard_result = type_unicode_text(args.text, args.delay_ms, lambda: guard_real_input(args))
+        if guard_result is not None:
+            return guard_result
         print_json(
             {"ok": True, "action": "type-text", "length": len(args.text), **foreground_session_evidence(args)}
         )
@@ -2140,7 +2272,9 @@ def command_key_chord(args: argparse.Namespace) -> int:
         return guard_result
     try:
         keys = parse_key_chord(args.keys)
-        send_key_chord(keys, args.down_ms)
+        guard_result = send_key_chord(keys, args.down_ms, lambda: guard_real_input(args))
+        if guard_result is not None:
+            return guard_result
         print_json(
             {
                 "ok": True,
@@ -2161,9 +2295,16 @@ def command_clear_and_type(args: argparse.Namespace) -> int:
     if guard_result is not None:
         return guard_result
     try:
-        send_key_chord(parse_key_chord("Ctrl+A"), args.down_ms)
-        send_key_chord([VK_CODES["backspace"]], args.down_ms)
-        type_unicode_text(args.text, args.delay_ms)
+        guard = lambda: guard_real_input(args)
+        guard_result = send_key_chord(parse_key_chord("Ctrl+A"), args.down_ms, guard)
+        if guard_result is not None:
+            return guard_result
+        guard_result = send_key_chord([VK_CODES["backspace"]], args.down_ms, guard)
+        if guard_result is not None:
+            return guard_result
+        guard_result = type_unicode_text(args.text, args.delay_ms, guard)
+        if guard_result is not None:
+            return guard_result
         print_json(
             {
                 "ok": True,
@@ -2782,6 +2923,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--pid", type=int)
     p.add_argument("--title-contains")
     p.add_argument("--timeout-ms", type=int, default=3000)
+    add_foreground_guard_arguments(p)
     p.set_defaults(func=command_activate_window)
 
     p = sub.add_parser("move-to-control")

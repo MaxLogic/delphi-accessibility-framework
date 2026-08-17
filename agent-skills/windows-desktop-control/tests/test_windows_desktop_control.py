@@ -1177,13 +1177,14 @@ class WindowsDesktopControlTests(unittest.TestCase):
             mouse,
         )
 
-    def test_clear_and_type_uses_guarded_event_producing_keyboard_sequence(self) -> None:
+    def test_clear_and_type_replaces_selected_text_without_a_separate_delete(self) -> None:
         helper = load_helper_module()
         calls = []
         original_guard_real_input = helper.guard_real_input
         original_send_key_chord = helper.send_key_chord
         original_type_unicode_text = helper.type_unicode_text
         try:
+            # Real SendInput would take the user's foreground; live certification proves the resulting VCL value.
             helper.guard_real_input = lambda _args: None
             helper.send_key_chord = (
                 lambda keys, down_ms, _guard=None: calls.append(("chord", list(keys), down_ms))
@@ -1208,7 +1209,6 @@ class WindowsDesktopControlTests(unittest.TestCase):
         self.assertEqual(
             [
                 ("chord", helper.parse_key_chord("Ctrl+A"), 4),
-                ("chord", [helper.VK_CODES["backspace"]], 4),
                 ("text", "new value", 3),
             ],
             calls,
@@ -1217,6 +1217,43 @@ class WindowsDesktopControlTests(unittest.TestCase):
         self.assertTrue(payload["humanEquivalent"])
         self.assertTrue(payload["userInputEventsGenerated"])
         self.assertEqual("os-keyboard-input", payload["mutationSemantics"])
+
+    def test_clear_and_type_deletes_selected_text_for_an_empty_replacement(self) -> None:
+        helper = load_helper_module()
+        calls = []
+        original_guard_real_input = helper.guard_real_input
+        original_send_key_chord = helper.send_key_chord
+        original_type_unicode_text = helper.type_unicode_text
+        try:
+            # Real SendInput would take the user's foreground; live certification proves the resulting VCL value.
+            helper.guard_real_input = lambda _args: None
+            helper.send_key_chord = (
+                lambda keys, down_ms, _guard=None: calls.append(("chord", list(keys), down_ms))
+            )
+            helper.type_unicode_text = lambda *_args: calls.append(("text",))
+            args = SimpleNamespace(
+                text="",
+                delay_ms=3,
+                down_ms=4,
+                require_foreground_pid=42,
+                require_foreground_hwnd=500,
+            )
+            output = StringIO()
+            with redirect_stdout(output):
+                result = helper.command_clear_and_type(args)
+        finally:
+            helper.guard_real_input = original_guard_real_input
+            helper.send_key_chord = original_send_key_chord
+            helper.type_unicode_text = original_type_unicode_text
+
+        self.assertEqual(0, result)
+        self.assertEqual(
+            [
+                ("chord", helper.parse_key_chord("Ctrl+A"), 4),
+                ("chord", [helper.VK_CODES["backspace"]], 4),
+            ],
+            calls,
+        )
 
     def test_click_rechecks_foreground_after_visible_pointer_move(self) -> None:
         helper = load_helper_module()

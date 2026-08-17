@@ -2,6 +2,7 @@
 
 ## 2026-08-17
 ### Fixed
+- `clear-and-type` now types non-empty replacement text directly over the current selection, preventing the separate clear key from deleting leading or trailing characters while retaining empty-string clearing and guarded key release.
 - Foreground desktop-control commands now require a valid foreground-session lease before activation or input, revalidate ownership during multi-step input, release held keys and mouse buttons on cancellation, and report `foreground-input` mode evidence.
 - The agent bridge now reports protocol version 2 and background-command capabilities, uses generation-qualified refs that become stale after remap or mutation, and accepts atomic form-name or exact-form-handle mutation targets while rejecting malformed, ambiguous, destroyed, hidden, or disabled targets before mutation.
 - Background command mode now invokes standard and action-backed VCL controls, sets checkbox/radio state, and selects exact list/combo items through native VCL semantics, with exactly-once application events for real changes and none for idempotent requests.

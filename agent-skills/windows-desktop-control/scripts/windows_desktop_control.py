@@ -2490,10 +2490,10 @@ def command_clear_and_type(args: argparse.Namespace) -> int:
         guard_result = send_key_chord(parse_key_chord("Ctrl+A"), args.down_ms, guard)
         if guard_result is not None:
             return guard_result
-        guard_result = send_key_chord([VK_CODES["backspace"]], args.down_ms, guard)
-        if guard_result is not None:
-            return guard_result
-        guard_result = type_unicode_text(args.text, args.delay_ms, guard)
+        if args.text:
+            guard_result = type_unicode_text(args.text, args.delay_ms, guard)
+        else:
+            guard_result = send_key_chord([VK_CODES["backspace"]], args.down_ms, guard)
         if guard_result is not None:
             return guard_result
         print_json(

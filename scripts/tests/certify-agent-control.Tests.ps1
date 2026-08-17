@@ -191,9 +191,10 @@ Describe 'Two-mode agent-control certification contract' {
         $script:lScriptText | Should -Match 'foreground-session.*release'
         $script:lScriptText | Should -Match 'activate-window'
         $script:lScriptText | Should -Match 'click-control'
-        $lForeground | Should -Match "'type-text'"
-        $lForeground | Should -Match "'type-text'.*'--delay-ms'"
-        $lForeground | Should -Not -Match "'clear-and-type'"
+        $lForeground | Should -Match "'clear-and-type'"
+        $lForeground | Should -Match "'clear-and-type'.*'--delay-ms'"
+        $lForeground | Should -Not -Match "'type-text'"
+        $lForeground | Should -Match '\[char\]\s*0x017B'
         $script:lScriptText | Should -Match 'scripts\\__pycache__'
         $script:lScriptText | Should -Match 'tests\\__pycache__'
         $script:lScriptText | Should -Match 'finally\s*\{'

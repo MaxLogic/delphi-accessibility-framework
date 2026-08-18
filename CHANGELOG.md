@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-08-18
+### Changed
+- The project is now distributed under the MIT License.
+
 ## 2026-08-17
 ### Added
 - Application-wide and form-scoped installation can compose any number of ordered additional adapter registrars over the default VCL adapters, while explicit registry composition includes exactly the listed registrars.

@@ -233,6 +233,10 @@ See also:
 - `docs\uia-probe.md`
 - `docs\nvda-checklist.md`
 
+## License
+
+This project is available under the [MIT License](LICENSE).
+
 ## Known limits
 
 - Windows VCL with Microsoft UI Automation is the supported target. The framework includes an MSAA bridge for supported provider fragments when screen readers enter through classic accessibility APIs. FMX and non-Windows platforms are out of scope.

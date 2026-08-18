@@ -273,7 +273,8 @@ begin
   RequireText(lSkillText, '## Choose the control mode', 'desktop-control skill');
   RequireText(lSkillText, 'Routine smoke/regression workflow in a bridge-enabled app',
     'desktop-control skill');
-  RequireText(lSkillText, 'Inspect, populate, select, invoke, open/dismiss modal, verify state',
+  RequireText(lSkillText, 'Inspect, populate, select, invoke controls or named actions/menu commands, ' +
+    'open/dismiss modal, verify state',
     'desktop-control skill');
   RequireText(lSkillText, 'Prove actual pointer, key, accelerator, menu, IME, drag/drop, capture, or ' +
     'screen-reader behavior', 'desktop-control skill');
@@ -400,7 +401,8 @@ begin
   RequireText(lText, 'Next runtime sync step', 'NVDA checklist');
   RequireText(lText, 'add an explicitly labeled edit', 'NVDA checklist');
   RequireText(lText, 'recreate the `TStringGrid` and form HWNDs', 'NVDA checklist');
-  RequireText(lText, 'TAccessibilityTmsAdvStringGridAdapters.CreateRegistry', 'NVDA checklist');
+  RequireText(lText, 'TAccessibilityTmsAdvStringGridAdapters.RegisterAdapters', 'NVDA checklist');
+  RejectText(lText, 'TAccessibilityTmsAdvStringGridAdapters.CreateRegistry', 'NVDA checklist');
   RequireText(lText, 'cell text only', 'NVDA checklist');
   RequireText(lText, 'TAccessibilityScreenReaderDetector', 'NVDA checklist');
   RequireText(lText, 'SPI_GETSCREENREADER', 'NVDA checklist');
@@ -484,6 +486,15 @@ var
 begin
   lText := ReadRepoText('README.md');
 
+  RequireText(lText, '## Overview', 'README');
+  RequireText(lText, 'two complementary capabilities', 'README');
+  RequireText(lText, '### AI agent application control', 'README');
+  RequireText(lText, '### Screen-reader accessibility', 'README');
+  Assert.IsTrue(Pos('### AI agent application control', lText) <
+    Pos('### Screen-reader accessibility', lText),
+    'AI agent application control must be presented before screen-reader accessibility.');
+  Assert.IsTrue(Pos('### Screen-reader accessibility', lText) < Pos('## Screen-reader installation', lText),
+    'The dual-purpose overview must precede installation details.');
   RequireText(lText, 'TAccessibilityManager.Run(Application)', 'README');
   RequireText(lText, 'TAccessibilityManager.Install(Application)', 'README');
   RequireText(lText, 'TAccessibilityManager.Install(Form)', 'README');
@@ -519,10 +530,15 @@ begin
   RequireText(lText, 'Known limits', 'README');
   RequireText(lText, 'MaxLogicFoundation', 'README');
   RequireText(lText, 'does not depend on this framework', 'README');
-  RequireText(lText, 'old overlay/static-text approach', 'README');
+  RequireText(lText, 'Microsoft UI Automation provider fragments attached to forms and returned through ' +
+    '`WM_GETOBJECT`', 'README');
+  RejectText(lText, 'old overlay/static-text approach', 'README');
+  RejectText(lText, 'The older `control.click`', 'README');
+  RejectText(lText, 'large legacy application', 'README');
   RequireText(lText, 'TMS', 'README');
-  RequireText(lText, 'TAccessibilityTmsAdvStringGridAdapters.CreateRegistry', 'README');
-  RequireText(lText, 'Install(Application, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry)', 'README');
+  RequireText(lText, 'TAccessibilityTmsAdvStringGridAdapters.RegisterAdapters', 'README');
+  RequireText(lText, 'TAccessibilityAdapterRegistry.Compose', 'README');
+  RejectText(lText, 'TAccessibilityTmsAdvStringGridAdapters.CreateRegistry', 'README');
   RequireText(lText, 'Use the direct provider builder only for diagnostics', 'README');
   RequireText(lText, 'Native Fallback', 'README');
   RequireText(lText, 'TVirtualStringTree', 'README');

@@ -22,8 +22,12 @@ type
   public
     class procedure Install(aApplication: TApplication); overload; static;
     class procedure Install(aApplication: TApplication; const aRegistry: IAccessibilityAdapterRegistry); overload; static;
+    class procedure Install(aApplication: TApplication;
+      const aAdditionalAdapters: array of TAccessibilityAdapterRegistrar); overload; static;
     class procedure Install(aForm: TCustomForm); overload; static;
     class procedure Install(aForm: TCustomForm; const aRegistry: IAccessibilityAdapterRegistry); overload; static;
+    class procedure Install(aForm: TCustomForm;
+      const aAdditionalAdapters: array of TAccessibilityAdapterRegistrar); overload; static;
     class procedure Run(aApplication: TApplication); static;
     class procedure Uninstall; static;
   end;
@@ -121,12 +125,17 @@ type
   private
     fHook: TAccessibilityFormWindowHook;
     fRegistry: IAccessibilityAdapterRegistry;
+    fAdapterRegistrars: TArray<TAccessibilityAdapterRegistrar>;
+    fUsesAdapterRegistrars: Boolean;
   public
     destructor Destroy; override;
     class function FindOn(aForm: TCustomForm): TAccessibilityInstalledFormMarker; static;
     procedure InstallProvider(aForm: TCustomForm; const aRegistry: IAccessibilityAdapterRegistry;
       const aApi: IAccessibilityUiaApi);
+    function AdapterRegistrarsMatch(const aRegistrars: array of TAccessibilityAdapterRegistrar): Boolean;
+    procedure RememberAdapterRegistrars(const aRegistrars: array of TAccessibilityAdapterRegistrar);
     procedure RememberRegistry(const aRegistry: IAccessibilityAdapterRegistry);
+    function Registry: IAccessibilityAdapterRegistry;
     function RegistryMatches(const aRegistry: IAccessibilityAdapterRegistry): Boolean;
   end;
 
@@ -250,8 +259,10 @@ type
 
   TAccessibilityManagerState = class
   private
+    fApplicationAdapterRegistrars: TArray<TAccessibilityAdapterRegistrar>;
     fAppInstalled: Boolean;
     fApplicationRegistry: IAccessibilityAdapterRegistry;
+    fApplicationUsesAdapterRegistrars: Boolean;
     fHintController: TAccessibilityHintController;
     fHintControllerAppWide: Boolean;
     fIdleDispatching: Boolean;
@@ -281,8 +292,12 @@ type
     function InstalledFormCount: Integer;
     procedure InstallApplication(aApplication: TApplication); overload;
     procedure InstallApplication(aApplication: TApplication; const aRegistry: IAccessibilityAdapterRegistry); overload;
+    procedure InstallApplication(aApplication: TApplication;
+      const aAdditionalAdapters: array of TAccessibilityAdapterRegistrar); overload;
     procedure InstallForm(aForm: TCustomForm); overload;
     procedure InstallForm(aForm: TCustomForm; const aRegistry: IAccessibilityAdapterRegistry); overload;
+    procedure InstallForm(aForm: TCustomForm;
+      const aAdditionalAdapters: array of TAccessibilityAdapterRegistrar); overload;
     procedure SetFormInstaller(const aInstaller: IAccessibilityFormInstaller);
     procedure SetUiaApi(const aApi: IAccessibilityUiaApi);
     procedure Uninstall;
@@ -339,6 +354,54 @@ function SameRegistry(const aLeft: IAccessibilityAdapterRegistry;
   const aRight: IAccessibilityAdapterRegistry): Boolean;
 begin
   Result := aLeft = aRight;
+end;
+
+function CreateDefaultRegistryWithAdapters(
+  const aAdditionalAdapters: array of TAccessibilityAdapterRegistrar): IAccessibilityAdapterRegistry;
+var
+  i: Integer;
+begin
+  Result := TAccessibilityVclAdapters.CreateDefaultRegistry;
+  for i := 0 to High(aAdditionalAdapters) do
+  begin
+    if not Assigned(aAdditionalAdapters[i]) then
+    begin
+      raise EArgumentException.Create('Additional adapter registrar must not be nil.');
+    end;
+    aAdditionalAdapters[i](Result);
+  end;
+end;
+
+function CopyAdapterRegistrars(
+  const aRegistrars: array of TAccessibilityAdapterRegistrar): TArray<TAccessibilityAdapterRegistrar>;
+var
+  i: Integer;
+begin
+  SetLength(Result, Length(aRegistrars));
+  for i := 0 to High(aRegistrars) do
+  begin
+    Result[i] := aRegistrars[i];
+  end;
+end;
+
+function SameAdapterRegistrars(const aLeft: TArray<TAccessibilityAdapterRegistrar>;
+  const aRight: array of TAccessibilityAdapterRegistrar): Boolean;
+var
+  i: Integer;
+begin
+  Result := Length(aLeft) = Length(aRight);
+  if not Result then
+  begin
+    Exit;
+  end;
+
+  for i := 0 to High(aLeft) do
+  begin
+    if PPointer(@aLeft[i])^ <> PPointer(@aRight[i])^ then
+    begin
+      Exit(False);
+    end;
+  end;
 end;
 
 function TryProviderDirectChildAt(const aProvider: IRawElementProviderSimple; aIndex: Integer;
@@ -1770,6 +1833,24 @@ end;
 procedure TAccessibilityInstalledFormMarker.RememberRegistry(const aRegistry: IAccessibilityAdapterRegistry);
 begin
   fRegistry := aRegistry;
+end;
+
+function TAccessibilityInstalledFormMarker.AdapterRegistrarsMatch(
+  const aRegistrars: array of TAccessibilityAdapterRegistrar): Boolean;
+begin
+  Result := fUsesAdapterRegistrars and SameAdapterRegistrars(fAdapterRegistrars, aRegistrars);
+end;
+
+procedure TAccessibilityInstalledFormMarker.RememberAdapterRegistrars(
+  const aRegistrars: array of TAccessibilityAdapterRegistrar);
+begin
+  fAdapterRegistrars := CopyAdapterRegistrars(aRegistrars);
+  fUsesAdapterRegistrars := True;
+end;
+
+function TAccessibilityInstalledFormMarker.Registry: IAccessibilityAdapterRegistry;
+begin
+  Result := fRegistry;
 end;
 
 function TAccessibilityInstalledFormMarker.RegistryMatches(
@@ -3915,6 +3996,28 @@ begin
   ScanCurrentForms;
 end;
 
+procedure TAccessibilityManagerState.InstallApplication(aApplication: TApplication;
+  const aAdditionalAdapters: array of TAccessibilityAdapterRegistrar);
+var
+  lRegistry: IAccessibilityAdapterRegistry;
+begin
+  if fAppInstalled then
+  begin
+    if not fApplicationUsesAdapterRegistrars or
+      not SameAdapterRegistrars(fApplicationAdapterRegistrars, aAdditionalAdapters) then
+    begin
+      raise EInvalidOperation.Create('Call TAccessibilityManager.Uninstall before changing app-wide adapter registrars.');
+    end;
+    lRegistry := fApplicationRegistry;
+  end else begin
+    lRegistry := CreateDefaultRegistryWithAdapters(aAdditionalAdapters);
+    fApplicationAdapterRegistrars := CopyAdapterRegistrars(aAdditionalAdapters);
+    fApplicationUsesAdapterRegistrars := True;
+  end;
+
+  InstallApplication(aApplication, lRegistry);
+end;
+
 procedure TAccessibilityManagerState.InstallForm(aForm: TCustomForm);
 begin
   InstallFormWithRegistry(aForm, nil);
@@ -3924,6 +4027,43 @@ procedure TAccessibilityManagerState.InstallForm(aForm: TCustomForm;
   const aRegistry: IAccessibilityAdapterRegistry);
 begin
   InstallFormWithRegistry(aForm, aRegistry);
+end;
+
+procedure TAccessibilityManagerState.InstallForm(aForm: TCustomForm;
+  const aAdditionalAdapters: array of TAccessibilityAdapterRegistrar);
+var
+  lMarker: TAccessibilityInstalledFormMarker;
+  lRegistry: IAccessibilityAdapterRegistry;
+begin
+  if fAppInstalled then
+  begin
+    if not fApplicationUsesAdapterRegistrars or
+      not SameAdapterRegistrars(fApplicationAdapterRegistrars, aAdditionalAdapters) then
+    begin
+      raise EInvalidOperation.Create('Pass the active app-wide adapter registrars or call TAccessibilityManager.Uninstall first.');
+    end;
+    InstallFormWithRegistry(aForm, fApplicationRegistry);
+    Exit;
+  end;
+
+  lMarker := TAccessibilityInstalledFormMarker.FindOn(aForm);
+  if lMarker <> nil then
+  begin
+    if not lMarker.AdapterRegistrarsMatch(aAdditionalAdapters) then
+    begin
+      raise EInvalidOperation.Create('Call TAccessibilityManager.Uninstall before changing form adapter registrars.');
+    end;
+    InstallFormWithRegistry(aForm, lMarker.Registry);
+    Exit;
+  end;
+
+  lRegistry := CreateDefaultRegistryWithAdapters(aAdditionalAdapters);
+  InstallFormWithRegistry(aForm, lRegistry);
+  lMarker := TAccessibilityInstalledFormMarker.FindOn(aForm);
+  if lMarker <> nil then
+  begin
+    lMarker.RememberAdapterRegistrars(aAdditionalAdapters);
+  end;
 end;
 
 procedure TAccessibilityManagerState.InstallFormWithRegistry(aForm: TCustomForm;
@@ -4077,7 +4217,9 @@ end;
 procedure TAccessibilityManagerState.Uninstall;
 begin
   fAppInstalled := False;
+  fApplicationAdapterRegistrars := nil;
   fApplicationRegistry := nil;
+  fApplicationUsesAdapterRegistrars := False;
   RestoreApplicationIdleHook;
   ReleaseHintController;
   RemoveInstalledMarkers;
@@ -4095,6 +4237,12 @@ begin
   ManagerState.InstallApplication(aApplication, aRegistry);
 end;
 
+class procedure TAccessibilityManager.Install(aApplication: TApplication;
+  const aAdditionalAdapters: array of TAccessibilityAdapterRegistrar);
+begin
+  ManagerState.InstallApplication(aApplication, aAdditionalAdapters);
+end;
+
 class procedure TAccessibilityManager.Install(aForm: TCustomForm);
 begin
   ManagerState.InstallForm(aForm);
@@ -4103,6 +4251,12 @@ end;
 class procedure TAccessibilityManager.Install(aForm: TCustomForm; const aRegistry: IAccessibilityAdapterRegistry);
 begin
   ManagerState.InstallForm(aForm, aRegistry);
+end;
+
+class procedure TAccessibilityManager.Install(aForm: TCustomForm;
+  const aAdditionalAdapters: array of TAccessibilityAdapterRegistrar);
+begin
+  ManagerState.InstallForm(aForm, aAdditionalAdapters);
 end;
 
 class procedure TAccessibilityManager.Run(aApplication: TApplication);

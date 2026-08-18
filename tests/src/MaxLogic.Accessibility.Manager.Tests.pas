@@ -20,6 +20,12 @@ type
     [Test]
     procedure ApplicationInstallWithCustomRegistryScansCurrentTmsForms;
     [Test]
+    [Category('AccessibilityManager,AdapterRegistrars')]
+    procedure ApplicationInstallComposesDefaultsAndAdditionalAdapterRegistrars;
+    [Test]
+    [Category('AccessibilityManager,AdapterRegistrars')]
+    procedure ApplicationInstallWithSameAdapterRegistrarsIsIdempotent;
+    [Test]
     procedure DemoEnableToggleInstallsUninstallsAndSyncsCurrentAndFutureForms;
     [Test]
     procedure ApplicationCustomRegistryRejectsDefaultFormInstall;
@@ -136,6 +142,9 @@ type
     procedure RuntimeLabeledEditAdditionAndReparentingStayCurrent;
     [Test]
     procedure FormInstallWithCustomRegistryUsesTmsProviderThroughWmGetObject;
+    [Test]
+    [Category('AccessibilityManager,AdapterRegistrars')]
+    procedure FormInstallWithSameAdapterRegistrarsIsIdempotent;
     [Test]
     procedure FormRegistrySwitchRequiresUninstall;
     [Test]
@@ -667,6 +676,11 @@ type
     fForm: TForm;
     fListBox: TSelectionReadProbeListBox;
     fListBoxFragment: IRawElementProviderFragment;
+  end;
+
+  TAdditionalPanelAdapter = class(TInterfacedObject, IAccessibilityControlAdapter)
+  public
+    function CreateInfo(aControl: TControl; const aFallback: TAccessibilityTextInfo): TAccessibilityControlInfo;
   end;
 
   TLyingRadioGroupAdapter = class(TInterfacedObject, IAccessibilityControlAdapter, IAccessibilityVclProviderAdapter)
@@ -1677,6 +1691,25 @@ begin
   Assert.IsTrue(Supports(aFragment, IRawElementProviderSimple, Result));
 end;
 
+function TAdditionalPanelAdapter.CreateInfo(aControl: TControl; const aFallback: TAccessibilityTextInfo):
+  TAccessibilityControlInfo;
+begin
+  Result := TAccessibilityControlInfo.Include(aControl, 'Additional panel', aFallback.HelpText);
+end;
+
+procedure RegisterAdditionalPanelAdapter(const aRegistry: IAccessibilityAdapterRegistry);
+begin
+  aRegistry.RegisterAdapter(TPanel, TAdditionalPanelAdapter.Create);
+end;
+
+function TmsRegistry: IAccessibilityAdapterRegistry;
+begin
+  Result := TAccessibilityAdapterRegistry.Compose([
+    TAccessibilityVclAdapters.RegisterDefaultAdapters,
+    TAccessibilityTmsAdvStringGridAdapters.RegisterAdapters
+  ]);
+end;
+
 function FragmentFromSimple(const aProvider: IRawElementProviderSimple): IRawElementProviderFragment;
 begin
   Result := nil;
@@ -2291,7 +2324,7 @@ begin
   lApi := TManagerTestUiaApi.Create;
   TAccessibilityManagerInternals.SetUiaApi(lApi);
   try
-    TAccessibilityManager.Install(Application, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+    TAccessibilityManager.Install(Application, [TAccessibilityTmsAdvStringGridAdapters.RegisterAdapters]);
     CreateManagerTmsGridFixture(lForm, lGrid);
     try
       Assert.IsNotNull(lGrid);
@@ -2328,7 +2361,7 @@ begin
   try
     Assert.IsNotNull(lGrid);
 
-    TAccessibilityManager.Install(Application, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+    TAccessibilityManager.Install(Application, [TAccessibilityTmsAdvStringGridAdapters.RegisterAdapters]);
 
     Assert.IsTrue(TAccessibilityManagerInternals.InstalledFormCount >= 1);
     AssertManagerGridCellName(lApi, lForm, 'Alice');
@@ -2336,6 +2369,74 @@ begin
     lForm.Free;
     ResetManager;
     Screen.OnActiveFormChange := lOriginalActiveFormChange;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.ApplicationInstallComposesDefaultsAndAdditionalAdapterRegistrars;
+var
+  lForm: TForm;
+  lGrid: TAdvStringGrid;
+  lGridProvider: IRawElementProviderSimple;
+  lLabel: TLabel;
+  lLabelProvider: IRawElementProviderSimple;
+  lLookup: IAccessibilityVclProviderLookup;
+  lPanel: TPanel;
+  lPanelProvider: IRawElementProviderSimple;
+  lRootProvider: IRawElementProviderSimple;
+begin
+  ResetManager;
+  CreateManagerTmsGridFixture(lForm, lGrid);
+  try
+    lLabel := TLabel.Create(lForm);
+    lLabel.Caption := 'Default label';
+    lLabel.Parent := lForm;
+
+    lPanel := TPanel.Create(lForm);
+    lPanel.Parent := lForm;
+
+    TAccessibilityManager.Install(Application, [
+      TAccessibilityTmsAdvStringGridAdapters.RegisterAdapters,
+      RegisterAdditionalPanelAdapter
+    ]);
+
+    Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider));
+    Assert.IsTrue(Supports(lRootProvider, IAccessibilityVclProviderLookup, lLookup));
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lLabel, lLabelProvider));
+    Assert.AreEqual('Default label', ProviderStringProperty(FragmentFromSimple(lLabelProvider), UIA_NamePropertyId));
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lPanel, lPanelProvider));
+    Assert.AreEqual('Additional panel',
+      ProviderStringProperty(FragmentFromSimple(lPanelProvider), UIA_NamePropertyId));
+    Assert.IsTrue(lLookup.TryFindProviderForControl(lGrid, lGridProvider));
+    Assert.AreEqual(UIA_DataGridControlTypeId,
+      ProviderIntProperty(FragmentFromSimple(lGridProvider), UIA_ControlTypePropertyId));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.ApplicationInstallWithSameAdapterRegistrarsIsIdempotent;
+var
+  lForm: TForm;
+  lRecorder: IFormInstallRecorder;
+begin
+  ResetManager;
+  lRecorder := TFormInstallRecorder.Create;
+  TAccessibilityManagerInternals.SetFormInstaller(lRecorder);
+  lForm := TForm.Create(nil);
+  try
+    TAccessibilityManager.Install(Application, [
+      TAccessibilityTmsAdvStringGridAdapters.RegisterAdapters,
+      RegisterAdditionalPanelAdapter
+    ]);
+    TAccessibilityManager.Install(Application, [
+      TAccessibilityTmsAdvStringGridAdapters.RegisterAdapters,
+      RegisterAdditionalPanelAdapter
+    ]);
+    Assert.AreEqual(1, lRecorder.CountFor(lForm));
+  finally
+    lForm.Free;
+    ResetManager;
   end;
 end;
 
@@ -2432,7 +2533,7 @@ begin
   ResetManager;
   lOriginalActiveFormChange := Screen.OnActiveFormChange;
   try
-    TAccessibilityManager.Install(Application, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+    TAccessibilityManager.Install(Application, [TAccessibilityTmsAdvStringGridAdapters.RegisterAdapters]);
     CreateManagerTmsGridFixture(lForm, lGrid);
     try
       Assert.IsNotNull(lGrid);
@@ -2468,8 +2569,8 @@ var
 begin
   ResetManager;
   lOriginalActiveFormChange := Screen.OnActiveFormChange;
-  lFirstRegistry := TAccessibilityTmsAdvStringGridAdapters.CreateRegistry;
-  lSecondRegistry := TAccessibilityTmsAdvStringGridAdapters.CreateRegistry;
+  lFirstRegistry := TmsRegistry;
+  lSecondRegistry := TmsRegistry;
   try
     TAccessibilityManager.Install(Application, lFirstRegistry);
     TAccessibilityManager.Install(Application, lFirstRegistry);
@@ -2516,7 +2617,7 @@ begin
 
     lRaised := False;
     try
-      TAccessibilityManager.Install(Application, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+      TAccessibilityManager.Install(Application, [TAccessibilityTmsAdvStringGridAdapters.RegisterAdapters]);
     except
       on EInvalidOperation do
       begin
@@ -3481,7 +3582,7 @@ begin
     lStatusBar.HandleNeeded;
     lGrid.HandleNeeded;
     lAdvGrid.HandleNeeded;
-    TAccessibilityManager.Install(lForm, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+    TAccessibilityManager.Install(lForm, [TAccessibilityTmsAdvStringGridAdapters.RegisterAdapters]);
     Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider));
     lRootFragment := FragmentFromSimple(lRootProvider);
     lStatusProvider := SimpleProvider(FirstChildFragment(lRootFragment));
@@ -3772,7 +3873,7 @@ begin
   try
     lGrid.GotoCell(1, 1);
     lForm.ActiveControl := lGrid;
-    TAccessibilityManager.Install(lForm, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+    TAccessibilityManager.Install(lForm, [TAccessibilityTmsAdvStringGridAdapters.RegisterAdapters]);
     Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider));
     lGridFragment := FirstChildFragment(FragmentFromSimple(lRootProvider));
     lPattern := ProviderPattern(lGridFragment, UIA_GridPatternId);
@@ -3933,7 +4034,7 @@ begin
   CreateManagerTmsGridFixture(lForm, lGrid);
   try
     lGrid.Cells[2, 2] := 'Removed TMS cell';
-    TAccessibilityManager.Install(lForm, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+    TAccessibilityManager.Install(lForm, [TAccessibilityTmsAdvStringGridAdapters.RegisterAdapters]);
     Assert.IsTrue(TAccessibilityManagerInternals.TryGetInstalledFormProvider(lForm, lRootProvider));
     lGridFragment := FirstChildFragment(FragmentFromSimple(lRootProvider));
     lPattern := ProviderPattern(lGridFragment, UIA_GridPatternId);
@@ -4863,9 +4964,34 @@ begin
   try
     Assert.IsNotNull(lGrid);
 
-    TAccessibilityManager.Install(lForm, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+    TAccessibilityManager.Install(lForm, [TAccessibilityTmsAdvStringGridAdapters.RegisterAdapters]);
 
     AssertManagerGridCellName(lApi, lForm, 'Alice');
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.FormInstallWithSameAdapterRegistrarsIsIdempotent;
+var
+  lForm: TForm;
+  lRecorder: IFormInstallRecorder;
+begin
+  ResetManager;
+  lRecorder := TFormInstallRecorder.Create;
+  TAccessibilityManagerInternals.SetFormInstaller(lRecorder);
+  lForm := TForm.Create(nil);
+  try
+    TAccessibilityManager.Install(lForm, [
+      TAccessibilityTmsAdvStringGridAdapters.RegisterAdapters,
+      RegisterAdditionalPanelAdapter
+    ]);
+    TAccessibilityManager.Install(lForm, [
+      TAccessibilityTmsAdvStringGridAdapters.RegisterAdapters,
+      RegisterAdditionalPanelAdapter
+    ]);
+    Assert.AreEqual(1, lRecorder.CountFor(lForm));
   finally
     lForm.Free;
     ResetManager;
@@ -4881,8 +5007,8 @@ var
   lSecondRegistry: IAccessibilityAdapterRegistry;
 begin
   ResetManager;
-  lFirstRegistry := TAccessibilityTmsAdvStringGridAdapters.CreateRegistry;
-  lSecondRegistry := TAccessibilityTmsAdvStringGridAdapters.CreateRegistry;
+  lFirstRegistry := TmsRegistry;
+  lSecondRegistry := TmsRegistry;
   CreateManagerTmsGridFixture(lForm, lGrid);
   try
     Assert.IsNotNull(lGrid);
@@ -4926,7 +5052,7 @@ begin
 
       lRaised := False;
       try
-        TAccessibilityManager.Install(lForm, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+        TAccessibilityManager.Install(lForm, [TAccessibilityTmsAdvStringGridAdapters.RegisterAdapters]);
       except
         on EInvalidOperation do
         begin
@@ -9263,7 +9389,7 @@ begin
     lGrid.HandleNeeded;
     lForm.ActiveControl := lGrid;
 
-    TAccessibilityManager.Install(lForm, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+    TAccessibilityManager.Install(lForm, [TAccessibilityTmsAdvStringGridAdapters.RegisterAdapters]);
     lGrid.Row := 2;
     lGrid.Perform(CM_CHANGED, 0, 0);
 
@@ -9307,7 +9433,7 @@ begin
     lGrid.HandleNeeded;
     lForm.ActiveControl := lGrid;
 
-    TAccessibilityManager.Install(lForm, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+    TAccessibilityManager.Install(lForm, [TAccessibilityTmsAdvStringGridAdapters.RegisterAdapters]);
     TAccessibilityDiagnostics.EnableProviderHotspotMetrics;
     TAccessibilityDiagnostics.ResetProviderHotspotMetrics;
     lGrid.Row := 2;

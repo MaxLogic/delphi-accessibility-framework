@@ -909,7 +909,7 @@ begin
 
     lApi := TProbeUiaApi.Create;
     TAccessibilityManagerInternals.SetUiaApi(lApi);
-    TAccessibilityManager.Install(lForm, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+    TAccessibilityManager.Install(lForm, [TAccessibilityTmsAdvStringGridAdapters.RegisterAdapters]);
 
     lMessage := Default(TMessage);
     lMessage.Msg := WM_GETOBJECT;

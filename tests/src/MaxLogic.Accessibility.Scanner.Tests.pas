@@ -13,6 +13,12 @@ type
     [Test]
     procedure AdapterRegistryResolvesNearestRegisteredClass;
     [Test]
+    [Category('Scanner,AdapterRegistrars')]
+    procedure AdapterRegistrarsComposeExplicitRegistryInOrderWithoutDefaults;
+    [Test]
+    [Category('Scanner,AdapterRegistrars')]
+    procedure AdapterRegistrarsRejectNilRegistrar;
+    [Test]
     procedure RuntimeControlChangesRefreshObservedTree;
     [Test]
     procedure RuntimeControlChangesCoalesceUntilObservedTreeIsRead;
@@ -90,6 +96,16 @@ function TNamedAdapter.CreateInfo(aControl: TControl; const aFallback: TAccessib
   TAccessibilityControlInfo;
 begin
   Result := TAccessibilityControlInfo.Include(aControl, fName, aFallback.HelpText);
+end;
+
+procedure RegisterButtonAdapter(const aRegistry: IAccessibilityAdapterRegistry);
+begin
+  aRegistry.RegisterAdapter(TButton, TNamedAdapter.Create('first adapter'));
+end;
+
+procedure RegisterReplacementButtonAdapter(const aRegistry: IAccessibilityAdapterRegistry);
+begin
+  aRegistry.RegisterAdapter(TButton, TNamedAdapter.Create('replacement adapter'));
 end;
 
 constructor TWindowProcChainProbe.Create(aControl: TWinControl);
@@ -312,6 +328,56 @@ begin
   finally
     lForm.Free;
   end;
+end;
+
+procedure TAccessibilityScannerTests.AdapterRegistrarsComposeExplicitRegistryInOrderWithoutDefaults;
+var
+  lButton: TButton;
+  lButtonNode: IAccessibilityScanNode;
+  lForm: TForm;
+  lLabel: TLabel;
+  lRegistry: IAccessibilityAdapterRegistry;
+  lTree: IAccessibilityScanTree;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lButton := TButton.Create(lForm);
+    lButton.Parent := lForm;
+    lLabel := TLabel.Create(lForm);
+    lLabel.Caption := 'Default label';
+    lLabel.Parent := lForm;
+
+    lRegistry := TAccessibilityAdapterRegistry.Compose([
+      RegisterButtonAdapter,
+      RegisterReplacementButtonAdapter
+    ]);
+    lTree := TAccessibilityScanner.ScanForm(lForm, lRegistry);
+
+    lButtonNode := lTree.FindNode(lButton);
+    Assert.IsNotNull(lButtonNode, 'Composed button adapter was not registered.');
+    Assert.AreEqual('replacement adapter', lButtonNode.Name);
+    Assert.IsNull(lRegistry.ResolveAdapter(lLabel));
+  finally
+    lForm.Free;
+  end;
+end;
+
+procedure TAccessibilityScannerTests.AdapterRegistrarsRejectNilRegistrar;
+var
+  lRaised: Boolean;
+  lRegistrar: TAccessibilityAdapterRegistrar;
+begin
+  lRegistrar := nil;
+  lRaised := False;
+  try
+    TAccessibilityAdapterRegistry.Compose([lRegistrar]);
+  except
+    on EArgumentException do
+    begin
+      lRaised := True;
+    end;
+  end;
+  Assert.IsTrue(lRaised, 'A nil adapter registrar must fail before returning a partial registry.');
 end;
 
 procedure TAccessibilityScannerTests.RuntimeControlChangesRefreshObservedTree;

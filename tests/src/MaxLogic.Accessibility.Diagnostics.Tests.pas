@@ -136,8 +136,9 @@ uses
   Vcl.Grids,
   Vcl.StdCtrls, AdvGrid,
   MaxLogic.Accessibility.Diagnostics,
-  MaxLogic.Accessibility.Manager, MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.TmsAdvStringGridAdapters,
-  MaxLogic.Accessibility.UIAutomationCore, MaxLogic.Accessibility.VclAdapters;
+  MaxLogic.Accessibility.Manager, MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.Scanner,
+  MaxLogic.Accessibility.TmsAdvStringGridAdapters, MaxLogic.Accessibility.UIAutomationCore,
+  MaxLogic.Accessibility.VclAdapters;
 
 type
   IListBoxPerformanceTestUiaApi = interface(IAccessibilityUiaApi)
@@ -211,6 +212,14 @@ type
     function Execute: TWaitResult;
     property Enabled: Boolean read fEnabled;
   end;
+
+function TmsRegistry: IAccessibilityAdapterRegistry;
+begin
+  Result := TAccessibilityAdapterRegistry.Compose([
+    TAccessibilityVclAdapters.RegisterDefaultAdapters,
+    TAccessibilityTmsAdvStringGridAdapters.RegisterAdapters
+  ]);
+end;
 
 constructor TDiagnosticsShutdownContentionProbe.Create;
 begin
@@ -923,7 +932,7 @@ begin
     lForm.HandleNeeded;
     lGrid.HandleNeeded;
 
-    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm, TmsRegistry);
     Assert.IsNotNull(lProvider);
   finally
     lForm.Free;
@@ -966,7 +975,7 @@ begin
     lGrid.HandleNeeded;
     lForm.ActiveControl := lGrid;
 
-    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm, TmsRegistry);
     Assert.AreEqual(S_OK, lProvider.FragmentProvider.Navigate(NavigateDirection_FirstChild, lGridFragment));
     Assert.IsNotNull(lGridFragment);
     Assert.IsTrue(Supports(lGridFragment, IRawElementProviderFragmentRoot, lGridRoot));
@@ -1016,7 +1025,7 @@ begin
     lForm.HandleNeeded;
     lGrid.HandleNeeded;
 
-    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm, TmsRegistry);
     Assert.AreEqual(S_OK, lProvider.FragmentProvider.Navigate(NavigateDirection_FirstChild, lGridFragment));
     Assert.IsNotNull(lGridFragment);
     Assert.IsTrue(Supports(lGridFragment, IAccessibilityProviderChildAccess, lAccess));
@@ -1071,7 +1080,7 @@ begin
     lForm.HandleNeeded;
     lGrid.HandleNeeded;
 
-    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+    lProvider := TAccessibilityVclProviderBuilder.BuildForm(lForm, TmsRegistry);
     Assert.AreEqual(S_OK, lProvider.FragmentProvider.Navigate(NavigateDirection_FirstChild, lGridFragment));
     Assert.IsNotNull(lGridFragment);
     Assert.AreEqual(S_OK, lGridFragment.Navigate(NavigateDirection_FirstChild, lCurrent));

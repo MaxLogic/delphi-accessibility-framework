@@ -33,6 +33,8 @@ type
     function ResolveAdapter(aControl: TControl): IAccessibilityControlAdapter;
   end;
 
+  TAccessibilityAdapterRegistrar = procedure(const aRegistry: IAccessibilityAdapterRegistry);
+
   IAccessibilityScanNode = interface
     ['{23EEB75F-8D0F-4EF0-BBFE-F172BBA2D1BF}']
     function Child(aIndex: Integer): IAccessibilityScanNode;
@@ -66,6 +68,8 @@ type
   private
     fAdapters: TDictionary<TControlClass, IAccessibilityControlAdapter>;
   public
+    class function Compose(const aRegistrars: array of TAccessibilityAdapterRegistrar):
+      IAccessibilityAdapterRegistry; static;
     constructor Create;
     destructor Destroy; override;
     procedure RegisterAdapter(aControlClass: TControlClass; const aAdapter: IAccessibilityControlAdapter);
@@ -791,6 +795,22 @@ constructor TAccessibilityAdapterRegistry.Create;
 begin
   inherited Create;
   fAdapters := TDictionary<TControlClass, IAccessibilityControlAdapter>.Create;
+end;
+
+class function TAccessibilityAdapterRegistry.Compose(
+  const aRegistrars: array of TAccessibilityAdapterRegistrar): IAccessibilityAdapterRegistry;
+var
+  i: Integer;
+begin
+  Result := TAccessibilityAdapterRegistry.Create;
+  for i := 0 to High(aRegistrars) do
+  begin
+    if not Assigned(aRegistrars[i]) then
+    begin
+      raise EArgumentException.Create('Adapter registrar must not be nil.');
+    end;
+    aRegistrars[i](Result);
+  end;
 end;
 
 destructor TAccessibilityAdapterRegistry.Destroy;

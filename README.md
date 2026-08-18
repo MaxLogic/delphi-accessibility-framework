@@ -1,10 +1,24 @@
 # MaxLogic Delphi Accessibility Framework
 
-UIA-first accessibility helpers for Delphi 12 VCL applications.
+AI-agent application control and screen-reader accessibility for Delphi 12 VCL applications.
 
-The framework exposes normally invisible or weakly exposed VCL controls through Microsoft UI Automation provider fragments. It does not use the old overlay/static-text approach as the main design; providers are attached to forms and returned through `WM_GETOBJECT`.
+## Overview
 
-## Install
+The framework gives Windows VCL applications two complementary capabilities.
+
+### AI agent application control
+
+For most development teams, this is the more immediate day-to-day benefit. An opt-in application bridge gives AI agents a structured remote-control interface with a process-local view of VCL forms, controls, actions, geometry, values, and state. With mutations explicitly enabled, an agent can populate fields, change checked and selected state, invoke controls or named `TCustomAction` and `TMenuItem` commands, navigate focus, operate bridge-visible modal dialogs, and verify the result through bridge readback.
+
+Routine automation uses pseudo-headless **Background Command Mode**, which does not activate the application, move the pointer, or synthesize mouse and keyboard input. **Foreground Input Mode** is available under an announced, bounded lease when a test specifically needs real mouse, keyboard, accelerator, IME, drag/drop, capture, or screen-reader behavior. See [Agent Bridge](#agent-bridge) for the protocol, helper commands, and safety model.
+
+### Screen-reader accessibility
+
+The accessibility layer exposes normally invisible or weakly exposed VCL controls through Microsoft UI Automation provider fragments attached to forms and returned through `WM_GETOBJECT`. It supplies names, values, relationships, roles, patterns, navigation, hit testing, focus, and change events while preserving native HWND accessibility where Windows already provides the correct semantics.
+
+The two capabilities complement each other but prove different things: bridge readback verifies process-local application behavior, while external UIA and live screen-reader passes verify the accessibility boundary and spoken experience.
+
+## Screen-reader installation
 
 For normal application-wide adoption, create the initial forms as usual and replace the VCL `Application.Run` line:
 
@@ -82,7 +96,7 @@ The default VCL adapter registry covers:
 - `TLabel`: UIA text fragment with caption-derived name and hint-derived help text.
 - `TButton`: UIA button fragment with caption-derived name, hint-derived help text, native window handle, and Invoke support.
 - `TSpeedButton`: UIA button fragment with Invoke and toggle support when the button has toggle semantics.
-- `TEdit`, `TLabeledEdit`, and `TComboBox`: UIA input fragments with associated label/name, value text, help text, and native window handles where applicable. `UIA_LabeledByPropertyId` returns the exact visible label provider for explicit `TCustomLabel.FocusControl` and `TLabeledEdit.EditLabel` relationships, or for one unambiguous adjacent same-parent label above or beside the input. Installed providers refresh that relationship after runtime association, movement, addition, removal, or reparenting, and the existing accessible Name fallback remains available.
+- `TEdit`, `TLabeledEdit`, and `TComboBox`: UIA input fragments with associated label/name, value text, help text, and native window handles where applicable. `UIA_LabeledByPropertyId` returns the exact visible label provider for explicit `TCustomLabel.FocusControl` and `TLabeledEdit.EditLabel` relationships, or for one unambiguous adjacent same-parent label above or beside the input. Installed providers refresh that relationship after runtime association, movement, addition, removal, or reparenting. Accessible Name fallback is available when no label relationship applies.
 - `TCheckBox`: UIA checkbox fragment with caption-derived name, hint-derived help text, native window handle, Toggle support, and MSAA checkbutton state when reached through the framework tree. The manager preserves the real checkbox HWND accessibility path. On hover it also raises a UIA focus event from the framework provider and emits native HWND focus/state WinEvents, so screen readers can query state without framework-injected English state text.
 - `TRadioButton`: UIA radio-button fragment with caption-derived name, hint-derived help text, native window handle, SelectionItem support, and MSAA radio-button selected state when reached through the framework tree. The manager preserves the real standalone radio-button HWND accessibility path. On hover it also raises a UIA focus event from the framework provider and emits native HWND focus/state WinEvents. Radio buttons intentionally do not expose TogglePattern.
 - `TGroupBox` and `TRadioGroup`: UIA group fragments for named option regions. `TRadioGroup` internal button hover is routed to the framework radio-item provider instead of treating the private child buttons as standalone radio controls.
@@ -94,13 +108,13 @@ The default VCL adapter registry covers:
 - Runtime properties: installed providers expose current Name, HelpText, Value, enabled/offscreen state, and bounds for supported VCL forms and controls, and publish corresponding UIA property changes and MSAA notifications when those effective values change. This includes status-bar HelpText and `TStringGrid`/opt-in `TAdvStringGrid` root Name and HelpText.
 - VCL balloon hints: title and description are exposed through UIA notification text without requiring MaxLogicFoundation.
 - `TMemo`: UIA edit provider with per-line mouse hit testing while keyboard caret navigation remains with the native edit behavior.
-- `TListBox`: UIA list/list-item providers remain available in the framework form tree for mouse hit testing and selection queries, while the real listbox HWND keeps the native accessibility path for fast arrow-key item focus speech.
+- `TListBox`: UIA list/list-item providers are available in the framework form tree for mouse hit testing and selection queries, while the real listbox HWND uses the native accessibility path for fast arrow-key item focus speech.
 - `TStatusBar`: UIA status-bar provider using the visible simple-panel or panel text.
 - `TStringGrid`: UIA DataGrid/DataItem providers for visible cells, per-cell hit testing, current-cell focus, hidden-cell omission, and runtime cell-value and row/column reconciliation.
 
 TMS `TAdvStringGrid` support is available in the opt-in unit `MaxLogic.Accessibility.TmsAdvStringGridAdapters`. It keeps ordinary applications from compiling TMS units unless they explicitly include the adapter.
 
-For app-wide TMS support or another custom adapter registry, use the explicit lifecycle:
+For app-wide TMS support, pass the additional adapter registrars to the manager. The default VCL adapters are registered first, followed by the listed registrars from left to right. Add further adapter packages as additional entries in the same array.
 
 ```delphi
 uses
@@ -109,7 +123,9 @@ uses
   MaxLogic.Accessibility.TmsAdvStringGridAdapters;
 
 begin
-  TAccessibilityManager.Install(Application, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+  TAccessibilityManager.Install(Application, [
+    TAccessibilityTmsAdvStringGridAdapters.RegisterAdapters
+  ]);
   try
     Application.Run;
   finally
@@ -127,7 +143,9 @@ uses
 
 procedure TMainForm.FormCreate(Sender: TObject);
 begin
-  TAccessibilityManager.Install(Self, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+  TAccessibilityManager.Install(Self, [
+    TAccessibilityTmsAdvStringGridAdapters.RegisterAdapters
+  ]);
 end;
 ```
 
@@ -135,21 +153,25 @@ Use the direct provider builder only for diagnostics or for applications that in
 
 ```delphi
 uses
+  MaxLogic.Accessibility.Scanner,
   MaxLogic.Accessibility.TmsAdvStringGridAdapters,
   MaxLogic.Accessibility.VclAdapters;
 
 lProvider := TAccessibilityVclProviderBuilder.BuildForm(
   Form,
-  TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+  TAccessibilityAdapterRegistry.Compose([
+    TAccessibilityVclAdapters.RegisterDefaultAdapters,
+    TAccessibilityTmsAdvStringGridAdapters.RegisterAdapters
+  ]));
 ```
 
-The opt-in TMS registry includes the default VCL adapters plus `TAdvStringGrid` DataGrid/DataItem support for stripped HTML text, wide text fallback, per-cell hit testing, current-cell focus, hidden column and hidden row remapping, visible representatives for merged ranges whose base row or column is hidden, merged-cell spans that count visible coordinates, fully hidden merge omission, scrolled-cell pruning, and runtime cell-value and row/column reconciliation.
+The opt-in TMS registrar adds only `TAdvStringGrid` DataGrid/DataItem support: stripped HTML text, wide text fallback, per-cell hit testing, current-cell focus, hidden column and hidden row remapping, visible representatives for merged ranges whose base row or column is hidden, merged-cell spans that count visible coordinates, fully hidden merge omission, scrolled-cell pruning, and runtime cell-value and row/column reconciliation. `TAccessibilityAdapterRegistry.Compose` registers exactly the explicitly listed registrar set; include `TAccessibilityVclAdapters.RegisterDefaultAdapters` when the explicit registry also needs the defaults.
 
-MaxLogicFoundation remains independent. The framework can be used without MaxLogicFoundation, and MaxLogicFoundation does not depend on this framework.
+MaxLogicFoundation is independent. The framework can be used without MaxLogicFoundation, and MaxLogicFoundation does not depend on this framework.
 
 ## Native Fallback
 
-The manager only returns framework providers for controls that are part of the framework scan tree or for non-focusable containers needed to hit-test descendant providers. Focusable windowed controls without a framework adapter are left unhooked so their native `WM_GETOBJECT`/MSAA/UIA implementation can still answer screen readers. Standard VCL `TCheckBox`, standalone `TRadioButton`, `TListBox`, and `TCheckListBox` controls remain on their native HWND accessibility path even though the framework keeps provider fragments for form-tree traversal; their child window hook observes hover/focus but does not answer `WM_GETOBJECT` for those native-HWND paths.
+The manager only returns framework providers for controls that are part of the framework scan tree or for non-focusable containers needed to hit-test descendant providers. Focusable windowed controls without a framework adapter are left unhooked so their native `WM_GETOBJECT`/MSAA/UIA implementation answers screen readers. Standard VCL `TCheckBox`, standalone `TRadioButton`, `TListBox`, and `TCheckListBox` controls use their native HWND accessibility path alongside framework provider fragments for form-tree traversal; their child window hook observes hover/focus but does not answer `WM_GETOBJECT` for those native-HWND paths.
 
 For controls such as `TVirtualStringTree` that already provide their own accessibility, do not register a framework adapter unless the framework is meant to replace that native tree. If a custom adapter is registered, it becomes the explicit accessibility surface for that control.
 
@@ -178,13 +200,13 @@ python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py
 python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-select --pipe-name <name> --form-name MainForm --control-name lstOptions --clear-selection
 ```
 
-`bridge-invoke` and `bridge-action-invoke` wait for a terminal result by default. Modal openers use `--async`, separate bridge discovery/dismissal, and `bridge-operation-status`. The older `control.click` remains available as an explicitly synchronous compatibility command, and `keyboard.tab` remains the low-level application-internal tab command; neither is the default modal path.
+`bridge-invoke` and `bridge-action-invoke` wait for a terminal result by default. Modal openers use `--async`, separate bridge discovery/dismissal, and `bridge-operation-status`. `control.click` executes synchronously, while `keyboard.tab` performs low-level application-internal tab navigation. Use the typed queued helpers for modal workflows.
 
 Use Foreground Input Mode only when real input or foreground-dependent behavior is what the test must prove. Bridge results prove process-local application behavior, not human-equivalent input, the external UIA boundary, or NVDA output. The full operator workflow is in [`agent-skills/windows-desktop-control/SKILL.md`](agent-skills/windows-desktop-control/SKILL.md), and the wire contract is in [`docs/agent-bridge.md`](docs/agent-bridge.md).
 
 `MaxLogic.Accessibility.AgentBridge.PipeServer` provides the built-in local named pipe transport. `TAccessibilityAgentBridgePipeServer.Start` opens a process-specific pipe by default, accepts one or more sequential UTF-8 JSON request lines per connection, marshals each command onto the VCL main thread, and returns one UTF-8 JSON response line per request. `Start` and `Stop` are idempotent for the same pipe name.
 
-A large legacy application can still expose the core executor through its own pipe, local HTTP endpoint, or debug window-message handler and call `TAccessibilityAgentBridge.Execute` on the VCL main thread. Mutations are disabled by default and require `TAccessibilityAgentBridge.SetMutationEnabled(True)`.
+Applications can expose the core executor through their own pipe, local HTTP endpoint, or debug window-message handler and call `TAccessibilityAgentBridge.Execute` on the VCL main thread. Mutations are disabled by default and require `TAccessibilityAgentBridge.SetMutationEnabled(True)`.
 
 See `docs\agent-bridge.md` for the command contract.
 
@@ -204,8 +226,6 @@ UIA probe scenarios:
 - `TStringGridCells`: VCL `TStringGrid` DataGrid provider, visible cell providers, per-cell hit testing, current-cell focus, hidden-cell omission, and cell-only names.
 - `TAdvStringGridCells`: opt-in TMS `TAdvStringGrid` DataGrid provider, stripped HTML text, wide text fallback, hidden-base merged-cell text and spans, GridItem coordinates, per-cell hit testing, focus, fully hidden merge omission, hidden row/column remapping, hidden-cell omission, and scrolled-cell pruning.
 
-The smoke app lives in `projects\MaxLogicAccessibilityFrameworkSmoke.dpr`. The probe script builds it before executing each scenario and expects `UIA_PROBE_OK` output for success.
-
 The complex demo's `Dynamic content` tab also provides a deterministic `Next runtime sync step` walkthrough for live NVDA correlation. Its isolated steps cover runtime form/control properties, control add/reparent/remove, explicit/inferred/`TLabeledEdit` relationship changes, `TStringGrid` and `TAdvStringGrid` value/shape changes, and control/form HWND recreation. See `docs\nvda-checklist.md` for the expected sequence.
 
 See also:
@@ -219,5 +239,5 @@ See also:
 - `TAccessibilityManager.Install(Application)` discovers future forms when `Screen.OnActiveFormChange` fires. Forms that are created and never become active should call `TAccessibilityManager.Install(Form)` explicitly after their controls exist.
 - Changing the app-wide or form-scoped adapter registry after accessibility is installed requires `TAccessibilityManager.Uninstall` first. This avoids silently mixing default and custom provider trees.
 - Registry compatibility is instance-based. Repeated custom installs should reuse the same registry instance, or call `TAccessibilityManager.Uninstall` before switching to another registry.
-- Screen-reader speech varies by reader and settings. The UIA probe is automated proof of provider behavior; the NVDA checklist remains the manual acceptance pass for spoken output.
+- Screen-reader speech varies by reader and settings. The UIA probe is automated proof of provider behavior; the NVDA checklist is the manual acceptance pass for spoken output.
 - For HWND-backed controls whose native accessibility is intentionally preserved, an external `AutomationElement.FocusedElement` query can resolve the native Win32 proxy rather than the framework fragment. Validate framework-specific properties such as inferred `LabeledBy` through the framework provider tree or the external `AutomationFocusChanged` event sender; the native proxy's independent label heuristic is outside the framework's control.

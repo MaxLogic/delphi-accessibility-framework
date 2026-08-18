@@ -2,6 +2,7 @@
 
 ## 2026-08-17
 ### Added
+- Application-wide and form-scoped installation can compose any number of ordered additional adapter registrars over the default VCL adapters, while explicit registry composition includes exactly the listed registrars.
 - Background command mode can now invoke named VCL actions and menu commands owned by a form or data module, with exact queued-target lifetime checks and a typed `bridge-action-invoke` helper.
 - Background command mode can now replace or clear the exact selection in multi-select VCL list boxes by index or exact text, emitting one native selection event only for a real change.
 
@@ -14,6 +15,7 @@
 - Desktop control now provides typed, capability-checked background commands with bounded invoke waiting and a two-mode exact-candidate certification workflow; the demo modal remains bridge-addressable without synthesizing mouse or keyboard input.
 
 ### Changed
+- The opt-in TMS adapter package now registers only its own `TAdvStringGrid` adapter; its standalone `CreateRegistry` helper was removed in favor of the shared composition API.
 - Desktop-control documentation now defaults routine bridge-enabled testing to Background Command Mode and reserves announced, leased Foreground Input Mode for real mouse, keyboard, foreground-dependent, and screen-reader behavior.
 - Generationless snapshot refs and lease-less foreground commands are no longer accepted; typed bridge helpers fail closed instead of escalating to foreground input when protocol requirements are unavailable.
 

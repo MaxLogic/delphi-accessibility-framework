@@ -13,6 +13,9 @@ type
     [Test]
     procedure DefaultVclRegistryDoesNotApplyTmsSpecificTextHandling;
     [Test]
+    [Category('AdvStringGridAccessibility,AdapterRegistrars')]
+    procedure TmsRegistrarAddsOnlyTmsAdapter;
+    [Test]
     procedure OptInProviderExposesDataGridPatternsAndCellText;
     [Test]
     procedure OptInProviderGridPatternGetItemReturnsValidOffscreenCells;
@@ -448,7 +451,32 @@ end;
 
 function TmsRegistry: IAccessibilityAdapterRegistry;
 begin
-  Result := TAccessibilityTmsAdvStringGridAdapters.CreateRegistry;
+  Result := TAccessibilityAdapterRegistry.Compose([
+    TAccessibilityVclAdapters.RegisterDefaultAdapters,
+    TAccessibilityTmsAdvStringGridAdapters.RegisterAdapters
+  ]);
+end;
+
+procedure TAdvStringGridAccessibilityTests.TmsRegistrarAddsOnlyTmsAdapter;
+var
+  lForm: TForm;
+  lGrid: TAdvStringGrid;
+  lLabel: TLabel;
+  lRegistry: IAccessibilityAdapterRegistry;
+begin
+  lForm := TForm.Create(nil);
+  try
+    lGrid := TAdvStringGrid.Create(lForm);
+    lLabel := TLabel.Create(lForm);
+    lRegistry := TAccessibilityAdapterRegistry.Create;
+
+    TAccessibilityTmsAdvStringGridAdapters.RegisterAdapters(lRegistry);
+
+    Assert.IsNotNull(lRegistry.ResolveAdapter(lGrid));
+    Assert.IsNull(lRegistry.ResolveAdapter(lLabel));
+  finally
+    lForm.Free;
+  end;
 end;
 
 function SimpleProvider(const aFragment: IRawElementProviderFragment): IRawElementProviderSimple;

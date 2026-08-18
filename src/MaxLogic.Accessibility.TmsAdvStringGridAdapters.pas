@@ -8,7 +8,6 @@ uses
 type
   TAccessibilityTmsAdvStringGridAdapters = record
   public
-    class function CreateRegistry: IAccessibilityAdapterRegistry; static;
     class procedure RegisterAdapters(const aRegistry: IAccessibilityAdapterRegistry); static;
   end;
 
@@ -1565,12 +1564,6 @@ begin
   fPreparedVisibleColCount := fGrid.VisibleColCount;
   fPreparedVisibleRowCount := fGrid.VisibleRowCount;
   fPreparedValid := True;
-end;
-
-class function TAccessibilityTmsAdvStringGridAdapters.CreateRegistry: IAccessibilityAdapterRegistry;
-begin
-  Result := TAccessibilityVclAdapters.CreateDefaultRegistry;
-  RegisterAdapters(Result);
 end;
 
 class procedure TAccessibilityTmsAdvStringGridAdapters.RegisterAdapters(

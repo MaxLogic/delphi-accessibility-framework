@@ -263,7 +263,7 @@ begin
 
   if aEnabled then
   begin
-    TAccessibilityManager.Install(Application, TAccessibilityTmsAdvStringGridAdapters.CreateRegistry);
+    TAccessibilityManager.Install(Application, [TAccessibilityTmsAdvStringGridAdapters.RegisterAdapters]);
   end else begin
     TAccessibilityManager.Uninstall;
   end;

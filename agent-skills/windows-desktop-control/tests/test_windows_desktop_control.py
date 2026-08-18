@@ -3611,6 +3611,60 @@ class WindowsDesktopControlTests(unittest.TestCase):
         finally:
             helper.bridge_request_bounded = original_request
 
+    def test_bridge_select_supports_scalar_array_and_clear_payloads(self) -> None:
+        helper = load_helper_module()
+        requests = []
+
+        def fake_request(_pipe_name, request, _timeout_ms):
+            # A live named pipe requires a nondeterministic external VCL process; this tests our request boundary.
+            payload = json.loads(request)
+            requests.append(payload)
+            if payload["cmd"] == "hello":
+                return {
+                    "ok": True,
+                    "protocolVersion": 2,
+                    "mutationEnabled": True,
+                    "capabilities": ["background-command-mode", "atomic-control-targets"],
+                }
+            return {
+                "ok": True,
+                "cmd": "control.select",
+                "protocolVersion": 2,
+                "driveMode": "background-command",
+            }
+
+        original_request = helper.bridge_request_bounded
+        helper.bridge_request_bounded = fake_request
+        try:
+            cases = [
+                (["--index", "2"], {"index": 2}),
+                (["--text", "Beta"], {"text": "Beta"}),
+                (["--indices", "1", "3"], {"indices": [1, 3]}),
+                (["--texts", "Alpha", "Gamma"], {"texts": ["Alpha", "Gamma"]}),
+                (["--clear-selection"], {"indices": []}),
+            ]
+            for selector_args, expected_selector in cases:
+                with self.subTest(selector=selector_args[0]):
+                    requests.clear()
+                    output = StringIO()
+                    with redirect_stdout(output):
+                        exit_code = helper.main([
+                            "bridge-select", "--pipe-name", "Bridge.42", "--form-name", "MainForm",
+                            "--control-name", "OptionsList", *selector_args,
+                        ])
+                    self.assertEqual(0, exit_code, output.getvalue())
+                    self.assertEqual("hello", requests[0]["cmd"])
+                    self.assertEqual(
+                        {
+                            "cmd": "control.select",
+                            "target": {"formName": "MainForm", "controlName": "OptionsList"},
+                            **expected_selector,
+                        },
+                        requests[1],
+                    )
+        finally:
+            helper.bridge_request_bounded = original_request
+
     def test_bridge_invoke_waits_consumes_and_reports_terminal_result(self) -> None:
         helper = load_helper_module()
         responses = [
@@ -3665,6 +3719,123 @@ class WindowsDesktopControlTests(unittest.TestCase):
             ],
             requests[2:],
         )
+
+    def test_bridge_action_invoke_reuses_wait_and_async_lifecycle(self) -> None:
+        helper = load_helper_module()
+        requests = []
+
+        def fake_request(_pipe_name, request, _timeout_ms):
+            # A live named pipe requires a nondeterministic external VCL process; this tests our request boundary.
+            payload = json.loads(request)
+            requests.append(payload)
+            if payload["cmd"] == "hello":
+                return {
+                    "ok": True,
+                    "protocolVersion": 2,
+                    "mutationEnabled": True,
+                    "capabilities": ["background-command-mode", "action-invoke"],
+                }
+            if payload["cmd"] == "action.invoke":
+                return {
+                    "ok": True, "cmd": "action.invoke", "protocolVersion": 2,
+                    "driveMode": "background-command", "operationId": "op10", "status": "queued",
+                }
+            return {
+                "ok": True, "cmd": "operation.status", "protocolVersion": 2,
+                "driveMode": "background-command", "operationId": "op10", "status": "succeeded",
+                "terminal": True, "consumed": True,
+            }
+
+        original_request = helper.bridge_request_bounded
+        helper.bridge_request_bounded = fake_request
+        try:
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = helper.main([
+                    "bridge-action-invoke", "--pipe-name", "Bridge.42", "--form-name", "MainForm",
+                    "--component-name", "SaveAction",
+                ])
+            self.assertEqual(0, exit_code, output.getvalue())
+            self.assertEqual("succeeded", json.loads(output.getvalue())["status"])
+            self.assertEqual(
+                {"cmd": "action.invoke", "target": {"formName": "MainForm", "componentName": "SaveAction"}},
+                requests[1],
+            )
+            self.assertEqual(
+                {"cmd": "operation.status", "operationId": "op10", "consume": True}, requests[2],
+            )
+
+            requests.clear()
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = helper.main([
+                    "bridge-action-invoke", "--pipe-name", "Bridge.42", "--data-module-name", "MainData",
+                    "--component-name", "RefreshAction", "--async",
+                ])
+            self.assertEqual(0, exit_code, output.getvalue())
+            self.assertEqual(
+                {
+                    "cmd": "action.invoke",
+                    "target": {"dataModuleName": "MainData", "componentName": "RefreshAction"},
+                },
+                requests[1],
+            )
+            self.assertEqual(2, len(requests))
+
+            requests.clear()
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = helper.main([
+                    "bridge-action-invoke", "--pipe-name", "Bridge.42", "--form-hwnd", "501",
+                    "--component-name", "ApplyMenu", "--async",
+                ])
+            self.assertEqual(0, exit_code, output.getvalue())
+            self.assertEqual(
+                {"cmd": "action.invoke", "target": {"formHandle": 501, "componentName": "ApplyMenu"}},
+                requests[1],
+            )
+        finally:
+            helper.bridge_request_bounded = original_request
+
+    def test_bridge_action_invoke_validates_owner_and_capability(self) -> None:
+        helper = load_helper_module()
+        for values in [
+            {"form_name": None, "form_hwnd": None, "data_module_name": None, "component_name": "Save"},
+            {"form_name": "Main", "form_hwnd": 501, "data_module_name": None, "component_name": "Save"},
+            {"form_name": "Main", "form_hwnd": None, "data_module_name": None, "component_name": ""},
+            {"form_name": None, "form_hwnd": 0, "data_module_name": None, "component_name": "Save"},
+        ]:
+            with self.subTest(values=values):
+                with self.assertRaises(ValueError):
+                    helper.build_bridge_action_target(SimpleNamespace(**values))
+
+        requests = []
+
+        def fake_request(_pipe_name, request, _timeout_ms):
+            # A live named pipe requires a nondeterministic external VCL process; this tests negotiation only.
+            requests.append(json.loads(request))
+            return {
+                "ok": True,
+                "protocolVersion": 2,
+                "mutationEnabled": True,
+                "capabilities": ["background-command-mode"],
+            }
+
+        original_request = helper.bridge_request_bounded
+        helper.bridge_request_bounded = fake_request
+        try:
+            output = StringIO()
+            with redirect_stdout(output):
+                exit_code = helper.main([
+                    "bridge-action-invoke", "--pipe-name", "Bridge.42", "--data-module-name", "MainData",
+                    "--component-name", "RefreshAction",
+                ])
+        finally:
+            helper.bridge_request_bounded = original_request
+
+        self.assertNotEqual(0, exit_code, output.getvalue())
+        self.assertEqual([{"cmd": "hello"}], requests)
+        self.assertIn("action-invoke", output.getvalue())
 
     def test_bridge_invoke_failure_and_timeout_are_nonzero_with_evidence(self) -> None:
         helper = load_helper_module()

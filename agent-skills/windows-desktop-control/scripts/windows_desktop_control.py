@@ -1131,6 +1131,28 @@ def build_bridge_target(args: argparse.Namespace) -> dict[str, object]:
     return {"target": {"formHandle": form_hwnd, "controlName": control_name}}
 
 
+def build_bridge_action_target(args: argparse.Namespace) -> dict[str, object]:
+    form_name = getattr(args, "form_name", None)
+    form_hwnd = getattr(args, "form_hwnd", None)
+    data_module_name = getattr(args, "data_module_name", None)
+    component_name = getattr(args, "component_name", None)
+    if sum(value is not None for value in (form_name, form_hwnd, data_module_name)) != 1:
+        raise ValueError("Provide exactly one action owner.")
+    if not component_name:
+        raise ValueError("--component-name is required and must be non-empty.")
+    if form_name is not None:
+        if not form_name:
+            raise ValueError("--form-name must be non-empty.")
+        return {"target": {"formName": form_name, "componentName": component_name}}
+    if form_hwnd is not None:
+        if not isinstance(form_hwnd, int) or isinstance(form_hwnd, bool) or form_hwnd <= 0:
+            raise ValueError("--form-hwnd must be a positive integer.")
+        return {"target": {"formHandle": form_hwnd, "componentName": component_name}}
+    if not data_module_name:
+        raise ValueError("--data-module-name must be non-empty.")
+    return {"target": {"dataModuleName": data_module_name, "componentName": component_name}}
+
+
 def bridge_remaining_timeout_ms(deadline: float) -> int:
     remaining = deadline - time.monotonic()
     if remaining <= 0:
@@ -1154,6 +1176,7 @@ def require_bridge_v2(
     args: argparse.Namespace,
     deadline: float,
     target: dict[str, object] | None = None,
+    required_capability: str | None = None,
 ) -> None:
     response = bridge_typed_request(args, {"cmd": "hello"}, deadline)
     version = response.get("protocolVersion")
@@ -1170,6 +1193,8 @@ def require_bridge_v2(
         capability = "snapshot-refs-v2" if "ref" in target else "atomic-control-targets"
         if capability not in capabilities:
             raise RuntimeError(f"Bridge does not advertise {capability}.")
+    if required_capability is not None and required_capability not in capabilities:
+        raise RuntimeError(f"Bridge does not advertise {required_capability}.")
 
 
 def require_background_response(response: dict[str, object], command: str) -> None:
@@ -1207,10 +1232,13 @@ def command_bridge_invoke(args: argparse.Namespace) -> int:
     last_status: str | None = None
     try:
         deadline = time.monotonic() + max(args.timeout_ms, 1) / 1000.0
-        target = build_bridge_target(args)
-        require_bridge_v2(args, deadline, target)
-        response = bridge_typed_request(args, {"cmd": "control.invoke", **target}, deadline)
-        require_background_response(response, "control.invoke")
+        command = getattr(args, "bridge_command", "control.invoke")
+        target_builder = getattr(args, "target_builder", build_bridge_target)
+        target = target_builder(args)
+        capability_target = target if command == "control.invoke" else None
+        require_bridge_v2(args, deadline, capability_target, getattr(args, "required_capability", None))
+        response = bridge_typed_request(args, {"cmd": command, **target}, deadline)
+        require_background_response(response, command)
         if response.get("ok") is not True:
             print_json(response)
             return 2
@@ -1278,7 +1306,16 @@ def command_bridge_set_checked(args: argparse.Namespace) -> int:
 
 
 def command_bridge_select(args: argparse.Namespace) -> int:
-    values = {"index": args.index} if args.index is not None else {"text": args.text}
+    if args.index is not None:
+        values = {"index": args.index}
+    elif args.text is not None:
+        values = {"text": args.text}
+    elif args.indices is not None:
+        values = {"indices": args.indices}
+    elif args.texts is not None:
+        values = {"texts": args.texts}
+    else:
+        values = {"indices": []}
     return run_typed_bridge_mutation(args, "control.select", values)
 
 
@@ -3060,6 +3097,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--async", dest="async_mode", action="store_true")
     p.set_defaults(func=command_bridge_invoke)
 
+    p = sub.add_parser("bridge-action-invoke")
+    p.add_argument("--pipe-name", required=True)
+    p.add_argument("--timeout-ms", type=int, default=5000)
+    action_owner = p.add_mutually_exclusive_group(required=True)
+    action_owner.add_argument("--form-name")
+    action_owner.add_argument("--form-hwnd", type=int)
+    action_owner.add_argument("--data-module-name")
+    p.add_argument("--component-name", required=True)
+    p.add_argument("--async", dest="async_mode", action="store_true")
+    p.set_defaults(
+        func=command_bridge_invoke,
+        bridge_command="action.invoke",
+        target_builder=build_bridge_action_target,
+        required_capability="action-invoke",
+    )
+
     p = sub.add_parser("bridge-operation-status")
     add_typed_bridge_arguments(p, False)
     p.add_argument("--operation-id", required=True)
@@ -3083,6 +3136,9 @@ def build_parser() -> argparse.ArgumentParser:
     selection = p.add_mutually_exclusive_group(required=True)
     selection.add_argument("--index", type=int)
     selection.add_argument("--text")
+    selection.add_argument("--indices", nargs="+", type=int)
+    selection.add_argument("--texts", nargs="+")
+    selection.add_argument("--clear-selection", action="store_true")
     p.set_defaults(func=command_bridge_select)
 
     p = sub.add_parser("bridge-focus")

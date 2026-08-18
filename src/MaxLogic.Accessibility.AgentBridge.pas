@@ -25,8 +25,8 @@ implementation
 uses
   System.Classes, System.Diagnostics, System.Generics.Collections, System.Generics.Defaults, System.JSON,
   System.SysUtils, System.Types, System.TypInfo, System.Variants,
-  Winapi.Messages, Winapi.Windows, Vcl.Buttons, Vcl.ComCtrls, Vcl.Controls, Vcl.ExtCtrls, Vcl.Forms, Vcl.Grids,
-  Vcl.StdCtrls,
+  Winapi.Messages, Winapi.Windows, Vcl.ActnList, Vcl.Buttons, Vcl.ComCtrls, Vcl.Controls, Vcl.ExtCtrls, Vcl.Forms,
+  Vcl.Grids, Vcl.Menus, Vcl.StdCtrls,
   MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.Framework, MaxLogic.Accessibility.Manager,
   MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.Scanner, MaxLogic.Accessibility.Text,
   MaxLogic.Accessibility.VclAdapters;
@@ -55,27 +55,27 @@ type
 
   TAgentBridgeOperation = class(TComponent)
   private
-    fControl: TControl;
     fErrorCode: string;
     fErrorMessage: string;
     fId: string;
     fSequence: UInt64;
     fStatus: TAgentBridgeOperationStatus;
-    procedure DetachControl;
+    fTarget: TComponent;
+    procedure DetachTarget;
   protected
     procedure Notification(aComponent: TComponent; aOperation: TOperation); override;
   public
-    constructor Create(const aId: string; aSequence: UInt64; aControl: TControl); reintroduce;
+    constructor Create(const aId: string; aSequence: UInt64; aTarget: TComponent); reintroduce;
     destructor Destroy; override;
     procedure MarkFailed(const aErrorCode: string; const aErrorMessage: string);
     procedure MarkRunning;
     procedure MarkSucceeded;
-    property Control: TControl read fControl;
     property ErrorCode: string read fErrorCode;
     property ErrorMessage: string read fErrorMessage;
     property Id: string read fId;
     property Sequence: UInt64 read fSequence;
     property Status: TAgentBridgeOperationStatus read fStatus;
+    property Target: TComponent read fTarget;
   end;
 
   TAgentBridgeRttiPropertyCache = class
@@ -142,6 +142,7 @@ type
     function ControlScreenRectFromParentOrigin(aControl: TControl; const aParentClientOrigin: TPoint): TRect;
     function ControlScreenRectFromSnapshot(aControl: TControl): TRect;
     function ExecuteClick(aRequest: TJSONObject): TJSONObject;
+    function ExecuteActionInvoke(aRequest: TJSONObject): TJSONObject;
     function ExecuteControlInfo(aRequest: TJSONObject): TJSONObject;
     function ExecuteControlResolve(aRequest: TJSONObject): TJSONObject;
     function ExecuteControlsInfo(aRequest: TJSONObject): TJSONObject;
@@ -162,6 +163,8 @@ type
     function Failure(const aErrorCode: string; const aMessage: string): TJSONObject;
     function FocusFailure(aControl: TControl; const aMessage: string): TJSONObject;
     function FindControlByName(aOwner: TComponent; const aName: string; out aMatchCount: Integer): TControl;
+    function FindComponentByName(aOwner: TComponent; const aName: string; out aMatchCount: Integer): TComponent;
+    function FindDataModuleByName(const aName: string; out aMatchCount: Integer): TDataModule;
     function FindFormByName(const aName: string; out aMatchCount: Integer): TCustomForm;
     function FormSummaryJson(aForm: TCustomForm): TJSONObject;
     function HitControlAt(const aPoint: TPoint): TControl;
@@ -198,28 +201,28 @@ var
   gBridgeState: TAccessibilityAgentBridgeState;
   gMutationEnabled: Boolean;
 
-constructor TAgentBridgeOperation.Create(const aId: string; aSequence: UInt64; aControl: TControl);
+constructor TAgentBridgeOperation.Create(const aId: string; aSequence: UInt64; aTarget: TComponent);
 begin
   inherited Create(nil);
-  fControl := aControl;
   fId := aId;
   fSequence := aSequence;
   fStatus := abosQueued;
-  fControl.FreeNotification(Self);
+  fTarget := aTarget;
+  fTarget.FreeNotification(Self);
 end;
 
 destructor TAgentBridgeOperation.Destroy;
 begin
-  DetachControl;
+  DetachTarget;
   inherited Destroy;
 end;
 
-procedure TAgentBridgeOperation.DetachControl;
+procedure TAgentBridgeOperation.DetachTarget;
 begin
-  if fControl <> nil then
+  if fTarget <> nil then
   begin
-    fControl.RemoveFreeNotification(Self);
-    fControl := nil;
+    fTarget.RemoveFreeNotification(Self);
+    fTarget := nil;
   end;
 end;
 
@@ -228,7 +231,7 @@ begin
   fStatus := abosFailed;
   fErrorCode := aErrorCode;
   fErrorMessage := Copy(aErrorMessage, 1, cAgentBridgeOperationErrorMessageLength);
-  DetachControl;
+  DetachTarget;
 end;
 
 procedure TAgentBridgeOperation.MarkRunning;
@@ -244,16 +247,16 @@ begin
   if fStatus = abosRunning then
   begin
     fStatus := abosSucceeded;
-    DetachControl;
+    DetachTarget;
   end;
 end;
 
 procedure TAgentBridgeOperation.Notification(aComponent: TComponent; aOperation: TOperation);
 begin
   inherited Notification(aComponent, aOperation);
-  if (aOperation = opRemove) and (aComponent = fControl) then
+  if (aOperation = opRemove) and (aComponent = fTarget) then
   begin
-    fControl := nil;
+    fTarget := nil;
     if fStatus in [abosQueued, abosRunning] then
     begin
       fStatus := abosFailed;
@@ -1913,6 +1916,9 @@ begin
   end else if lCommand = 'control.invoke' then
   begin
     Result := ExecuteInvoke(aRequest);
+  end else if lCommand = 'action.invoke' then
+  begin
+    Result := ExecuteActionInvoke(aRequest);
   end else if lCommand = 'control.setChecked' then
   begin
     Result := ExecuteSetChecked(aRequest);
@@ -2154,6 +2160,7 @@ begin
   lCapabilities.AddElement(TJSONString.Create('background-command-mode'));
   lCapabilities.AddElement(TJSONString.Create('snapshot-refs-v2'));
   lCapabilities.AddElement(TJSONString.Create('atomic-control-targets'));
+  lCapabilities.AddElement(TJSONString.Create('action-invoke'));
   lResponse := TJSONObject.Create;
   AddBool(lResponse, 'ok', True);
   lResponse.AddPair('cmd', 'hello');
@@ -2248,6 +2255,202 @@ begin
     raise;
   end;
   Result := SuccessMutation('control.invoke', 'queued-vcl-event-invocation');
+  Result.AddPair('operationId', lOperationId);
+  Result.AddPair('status', 'queued');
+end;
+
+function TAccessibilityAgentBridgeState.ExecuteActionInvoke(aRequest: TJSONObject): TJSONObject;
+var
+  lAction: TCustomAction;
+  lComponent: TComponent;
+  lComponentName: string;
+  lComponentNameValue: TJSONValue;
+  lDataModule: TDataModule;
+  lDataModuleName: string;
+  lDataModuleNamePresent: Boolean;
+  lDataModuleNameValue: TJSONValue;
+  lForm: TCustomForm;
+  lFormHandle: UInt64;
+  lFormHandlePresent: Boolean;
+  lFormName: string;
+  lFormNamePresent: Boolean;
+  lFormNameValue: TJSONValue;
+  i: Integer;
+  lMatchCount: Integer;
+  lMenuItem: TMenuItem;
+  lOperation: TAgentBridgeOperation;
+  lOperationId: string;
+  lOwner: TComponent;
+  lOwnerSelectorCount: Integer;
+  lTarget: TJSONObject;
+  lTargetValue: TJSONValue;
+begin
+  if not gMutationEnabled then
+  begin
+    Exit(Failure('mutation_disabled', 'Mutation commands are disabled.'));
+  end;
+
+  lTargetValue := aRequest.GetValue('target');
+  if not (lTargetValue is TJSONObject) then
+  begin
+    Exit(Failure('invalid_request', 'Action target must be an object.'));
+  end;
+  lTarget := TJSONObject(lTargetValue); //PALOFF STWA6 guarded by JSON type assertion
+  if lTarget.Count <> 2 then
+  begin
+    Exit(Failure('invalid_request', 'Action target requires exactly one owner selector and componentName.'));
+  end;
+  lComponentNameValue := lTarget.GetValue('componentName');
+  lFormNamePresent := lTarget.GetValue('formName') <> nil;
+  lFormHandlePresent := lTarget.GetValue('formHandle') <> nil;
+  lDataModuleNamePresent := lTarget.GetValue('dataModuleName') <> nil;
+  lOwnerSelectorCount := 0;
+  if lFormNamePresent then
+  begin
+    Inc(lOwnerSelectorCount);
+  end;
+  if lFormHandlePresent then
+  begin
+    Inc(lOwnerSelectorCount);
+  end;
+  if lDataModuleNamePresent then
+  begin
+    Inc(lOwnerSelectorCount);
+  end;
+  if (lComponentNameValue = nil) or (lComponentNameValue.ClassType <> TJSONString) or
+    (lOwnerSelectorCount <> 1) then
+  begin
+    Exit(Failure('invalid_request', 'Action target requires componentName and exactly one owner selector.'));
+  end;
+  lComponentName := lComponentNameValue.Value;
+  if lComponentName = '' then
+  begin
+    Exit(Failure('invalid_request', 'Action target componentName must not be empty.'));
+  end;
+
+  lForm := nil;
+  if lFormNamePresent then
+  begin
+    lFormNameValue := lTarget.GetValue('formName');
+    if (lFormNameValue.ClassType <> TJSONString) or (lFormNameValue.Value = '') then
+    begin
+      Exit(Failure('invalid_request', 'Action target formName must be a non-empty string.'));
+    end;
+    lFormName := lFormNameValue.Value;
+    lForm := FindFormByName(lFormName, lMatchCount);
+    if lMatchCount > 1 then
+    begin
+      Exit(Failure('ambiguous_form', 'More than one current form has the requested name: ' + lFormName));
+    end;
+    if lForm = nil then
+    begin
+      Exit(Failure('form_not_found', 'Requested form is not a current VCL form.'));
+    end;
+    lOwner := lForm;
+  end else if lFormHandlePresent then
+  begin
+    if (not RequestUInt64(lTarget, 'formHandle', lFormHandle)) or (lFormHandle = 0) then
+    begin
+      Exit(Failure('invalid_request', 'Action target formHandle must be a non-zero integer.'));
+    end;
+    for i := 0 to Pred(Screen.CustomFormCount) do
+    begin
+      if UInt64(NativeUInt(Screen.CustomForms[i].Handle)) = lFormHandle then
+      begin
+        lForm := Screen.CustomForms[i];
+        Break;
+      end;
+    end;
+    if lForm = nil then
+    begin
+      Exit(Failure('form_not_found', 'Requested form handle is not a current VCL form.'));
+    end;
+    lOwner := lForm;
+  end else begin
+    lDataModuleNameValue := lTarget.GetValue('dataModuleName');
+    if (lDataModuleNameValue.ClassType <> TJSONString) or (lDataModuleNameValue.Value = '') then
+    begin
+      Exit(Failure('invalid_request', 'Action target dataModuleName must be a non-empty string.'));
+    end;
+    lDataModuleName := lDataModuleNameValue.Value;
+    lDataModule := FindDataModuleByName(lDataModuleName, lMatchCount);
+    if lMatchCount > 1 then
+    begin
+      Exit(Failure('ambiguous_data_module',
+        'More than one current data module has the requested name: ' + lDataModuleName));
+    end;
+    if lDataModule = nil then
+    begin
+      Exit(Failure('data_module_not_found', 'Requested data module is not a current VCL data module.'));
+    end;
+    if csDestroying in lDataModule.ComponentState then
+    begin
+      Exit(Failure('data_module_not_actionable', 'Requested data module is being destroyed.'));
+    end;
+    lOwner := lDataModule;
+  end;
+  if (lForm <> nil) and
+    ((csDestroying in lForm.ComponentState) or (not lForm.Visible) or (not lForm.Enabled)) then
+  begin
+    Exit(Failure('form_not_actionable', 'Requested form is not actionable.'));
+  end;
+
+  lComponent := FindComponentByName(lOwner, lComponentName, lMatchCount);
+  if lMatchCount > 1 then
+  begin
+    Exit(Failure('ambiguous_component',
+      'More than one component under the requested form has the name: ' + lComponentName));
+  end;
+  if lComponent = nil then
+  begin
+    Exit(Failure('component_not_found', 'Requested action component was not found: ' + lComponentName));
+  end;
+  if not ((lComponent is TCustomAction) or (lComponent is TMenuItem)) then
+  begin
+    Exit(Failure('unsupported_component', 'Component does not expose a supported VCL action or menu command.'));
+  end;
+  if lComponent is TCustomAction then
+  begin
+    lAction := TCustomAction(lComponent); //PALOFF STWA6 guarded by component type assertion
+    if (csDestroying in lAction.ComponentState) or (not lAction.Visible) or (not lAction.Enabled) then
+    begin
+      Exit(Failure('action_not_actionable', 'Requested action is hidden, disabled, or being destroyed.'));
+    end;
+  end else begin
+    lMenuItem := TMenuItem(lComponent); //PALOFF STWA6 guarded by component type assertion
+    if (csDestroying in lMenuItem.ComponentState) or (not lMenuItem.Visible) or (not lMenuItem.Enabled) then
+    begin
+      Exit(Failure('action_not_actionable', 'Requested menu command is hidden, disabled, or being destroyed.'));
+    end;
+    if (not Assigned(lMenuItem.OnClick)) and (lMenuItem.Action = nil) and (not lMenuItem.AutoCheck) then
+    begin
+      Exit(Failure('unsupported_component', 'Menu component does not expose an invokable command.'));
+    end;
+  end;
+
+  if not MakeOperationRoom then
+  begin
+    Exit(Failure('operation_limit', 'Too many queued or running bridge operations.'));
+  end;
+
+  Inc(fNextOperationSequence);
+  lOperationId := 'op' + UIntToStr(fNextOperationSequence);
+  lOperation := TAgentBridgeOperation.Create(lOperationId, fNextOperationSequence, lComponent);
+  try
+    InvalidateSnapshot;
+    fOperations.Add(lOperationId, lOperation);
+  except
+    lOperation.Free;
+    raise;
+  end;
+
+  try
+    TThread.ForceQueue(nil, RunQueuedOperation);
+  except
+    fOperations.Remove(lOperationId);
+    raise;
+  end;
+  Result := SuccessMutation('action.invoke', 'queued-vcl-action-invocation');
   Result.AddPair('operationId', lOperationId);
   Result.AddPair('status', 'queued');
 end;
@@ -2361,15 +2564,24 @@ end;
 function TAccessibilityAgentBridgeState.ExecuteSelect(aRequest: TJSONObject): TJSONObject;
 var
   i: Integer;
+  j: Integer;
+  lChanged: Boolean;
   lComboBox: TCustomComboBox;
   lControl: TControl;
   lFailure: TJSONObject;
   lIndex: Integer;
   lIndexValue: TJSONValue;
+  lIndices: TJSONArray;
+  lIndicesValue: TJSONValue;
   lItems: TStrings;
   lListBox: TCustomListBox;
+  lMatchCount: Integer;
+  lSelectorCount: Integer;
+  lSelectionBits: TBits;
   lText: string;
   lTextValue: TJSONValue;
+  lTexts: TJSONArray;
+  lTextsValue: TJSONValue;
 begin
   lComboBox := nil;
   lListBox := nil;
@@ -2380,11 +2592,33 @@ begin
 
   lIndexValue := aRequest.GetValue('index');
   lTextValue := aRequest.GetValue('text');
-  if ((lIndexValue = nil) = (lTextValue = nil)) or
-    ((lIndexValue <> nil) and not (lIndexValue is TJSONNumber)) or
-    ((lTextValue <> nil) and not (lTextValue is TJSONString)) then
+  lIndicesValue := aRequest.GetValue('indices');
+  lTextsValue := aRequest.GetValue('texts');
+  lSelectorCount := 0;
+  if lIndexValue <> nil then
   begin
-    Exit(Failure('invalid_request', 'control.select requires exactly one integer index or string text.'));
+    Inc(lSelectorCount);
+  end;
+  if lTextValue <> nil then
+  begin
+    Inc(lSelectorCount);
+  end;
+  if lIndicesValue <> nil then
+  begin
+    Inc(lSelectorCount);
+  end;
+  if lTextsValue <> nil then
+  begin
+    Inc(lSelectorCount);
+  end;
+  if (lSelectorCount <> 1) or
+    ((lIndexValue <> nil) and not (lIndexValue is TJSONNumber)) or
+    ((lTextValue <> nil) and (lTextValue.ClassType <> TJSONString)) or
+    ((lIndicesValue <> nil) and not (lIndicesValue is TJSONArray)) or
+    ((lTextsValue <> nil) and not (lTextsValue is TJSONArray)) then
+  begin
+    Exit(Failure('invalid_request',
+      'control.select requires exactly one index, text, indices, or texts selector.'));
   end;
 
   if not ResolveRequestControl(aRequest, True, lControl, lFailure) then
@@ -2395,10 +2629,6 @@ begin
   if lControl is TCustomListBox then
   begin
     lListBox := TCustomListBox(lControl);
-    if lListBox.MultiSelect then
-    begin
-      Exit(Failure('unsupported_control', 'Multi-select list controls are not supported by control.select.'));
-    end;
     lItems := lListBox.Items;
   end else if lControl is TCustomComboBox then
   begin
@@ -2406,6 +2636,92 @@ begin
     lItems := lComboBox.Items;
   end else begin
     Exit(Failure('unsupported_control', 'Control does not expose a supported single selection.'));
+  end;
+
+  if (lListBox <> nil) and lListBox.MultiSelect then
+  begin
+    if (lIndicesValue = nil) and (lTextsValue = nil) then
+    begin
+      Exit(Failure('unsupported_control', 'Multi-select lists require an indices or texts array.'));
+    end;
+
+    lSelectionBits := TBits.Create;
+    try
+      lSelectionBits.Size := lItems.Count;
+      if lIndicesValue <> nil then
+      begin
+        lIndices := TJSONArray(lIndicesValue); //PALOFF STWA6 guarded by is TJSONArray
+        for i := 0 to Pred(lIndices.Count) do
+        begin
+          if not (lIndices.Items[i] is TJSONNumber) or not TryStrToInt(lIndices.Items[i].Value, lIndex) then
+          begin
+            Exit(Failure('invalid_request', 'control.select indices must contain only integers.'));
+          end;
+          if (lIndex < 0) or (lIndex >= lItems.Count) then
+          begin
+            Exit(Failure('index_out_of_bounds', 'Selection index is outside the available item range.'));
+          end;
+          lSelectionBits[lIndex] := True;
+        end;
+      end else begin
+        lTexts := TJSONArray(lTextsValue); //PALOFF STWA6 guarded by is TJSONArray
+        for i := 0 to Pred(lTexts.Count) do
+        begin
+          if lTexts.Items[i].ClassType <> TJSONString then
+          begin
+            Exit(Failure('invalid_request', 'control.select texts must contain only strings.'));
+          end;
+          lText := lTexts.Items[i].Value;
+          lIndex := -1;
+          lMatchCount := 0;
+          for j := 0 to Pred(lItems.Count) do
+          begin
+            if lItems[j] = lText then
+            begin
+              lIndex := j;
+              Inc(lMatchCount);
+            end;
+          end;
+          if lMatchCount = 0 then
+          begin
+            Exit(Failure('item_not_found', 'No item exactly matches the requested text.'));
+          end;
+          if lMatchCount > 1 then
+          begin
+            Exit(Failure('ambiguous_item_text', 'More than one item exactly matches the requested text.'));
+          end;
+          lSelectionBits[lIndex] := True;
+        end;
+      end;
+
+      lChanged := False;
+      for i := 0 to Pred(lItems.Count) do
+      begin
+        if lListBox.Selected[i] <> lSelectionBits[i] then
+        begin
+          lChanged := True;
+          Break;
+        end;
+      end;
+
+      InvalidateSnapshot;
+      if lChanged then
+      begin
+        for i := 0 to Pred(lItems.Count) do
+        begin
+          lListBox.Selected[i] := lSelectionBits[i];
+        end;
+        lListBox.Perform(CN_COMMAND, MakeWParam(0, LBN_SELCHANGE), 0);
+      end;
+    finally
+      lSelectionBits.Free;
+    end;
+    Exit(SuccessMutation('control.select', 'vcl-selection-notification'));
+  end;
+
+  if (lIndicesValue <> nil) or (lTextsValue <> nil) then
+  begin
+    Exit(Failure('invalid_request', 'Single-select lists and combos require an index or text selector.'));
   end;
 
   if lIndexValue <> nil then
@@ -2606,6 +2922,59 @@ begin
   end;
 end;
 
+function TAccessibilityAgentBridgeState.FindComponentByName(aOwner: TComponent; const aName: string;
+  out aMatchCount: Integer): TComponent;
+var
+  i: Integer;
+  lChildMatchCount: Integer;
+  lChildResult: TComponent;
+  lComponent: TComponent;
+begin
+  Result := nil;
+  aMatchCount := 0;
+  if aOwner = nil then
+  begin
+    Exit;
+  end;
+
+  if SameText(aOwner.Name, aName) then
+  begin
+    Result := aOwner;
+    Inc(aMatchCount);
+  end;
+
+  for i := 0 to Pred(aOwner.ComponentCount) do
+  begin
+    lComponent := aOwner.Components[i];
+    lChildResult := FindComponentByName(lComponent, aName, lChildMatchCount);
+    Inc(aMatchCount, lChildMatchCount);
+    if (Result = nil) and (lChildResult <> nil) then
+    begin
+      Result := lChildResult;
+    end;
+  end;
+end;
+
+function TAccessibilityAgentBridgeState.FindDataModuleByName(const aName: string;
+  out aMatchCount: Integer): TDataModule;
+var
+  i: Integer;
+begin
+  Result := nil;
+  aMatchCount := 0;
+  for i := 0 to Pred(Screen.DataModuleCount) do
+  begin
+    if SameText(Screen.DataModules[i].Name, aName) then
+    begin
+      Inc(aMatchCount);
+      if Result = nil then
+      begin
+        Result := Screen.DataModules[i];
+      end;
+    end;
+  end;
+end;
+
 function TAccessibilityAgentBridgeState.FindFormByName(const aName: string; out aMatchCount: Integer): TCustomForm;
 var
   i: Integer;
@@ -2742,11 +3111,11 @@ end;
 
 procedure TAccessibilityAgentBridgeState.RunQueuedOperation;
 var
-  lControl: TControl;
   lOperation: TAgentBridgeOperation;
   lQueuedOperation: TAgentBridgeOperation;
   lQueuedOperationId: string;
   lQueuedSequence: UInt64;
+  lTarget: TComponent;
 begin
   lQueuedOperationId := '';
   lQueuedSequence := High(UInt64);
@@ -2765,8 +3134,8 @@ begin
     Exit;
   end;
 
-  lControl := lQueuedOperation.Control;
-  if lControl = nil then
+  lTarget := lQueuedOperation.Target;
+  if lTarget = nil then
   begin
     lQueuedOperation.MarkFailed('target_destroyed', 'The queued invoke target is no longer available.');
     Exit;
@@ -2774,7 +3143,37 @@ begin
 
   lQueuedOperation.MarkRunning;
   try
-    TAgentBridgeControlAccess(lControl).Click;
+    if lTarget is TControl then
+    begin
+      TAgentBridgeControlAccess(lTarget).Click;
+    end else if lTarget is TCustomAction then
+    begin
+      if (csDestroying in lTarget.ComponentState) or (not TCustomAction(lTarget).Visible) or
+        (not TCustomAction(lTarget).Enabled) then
+      begin
+        lQueuedOperation.MarkFailed('action_not_actionable',
+          'The queued action is hidden, disabled, or being destroyed.');
+        Exit;
+      end;
+      if not TCustomAction(lTarget).Execute then
+      begin
+        lQueuedOperation.MarkFailed('invoke_failed', 'The VCL action declined execution.');
+        Exit;
+      end;
+    end else if lTarget is TMenuItem then
+    begin
+      if (csDestroying in lTarget.ComponentState) or (not TMenuItem(lTarget).Visible) or
+        (not TMenuItem(lTarget).Enabled) then
+      begin
+        lQueuedOperation.MarkFailed('action_not_actionable',
+          'The queued menu command is hidden, disabled, or being destroyed.');
+        Exit;
+      end;
+      TMenuItem(lTarget).Click;
+    end else begin
+      lQueuedOperation.MarkFailed('unsupported_target', 'The queued invoke target type is not supported.');
+      Exit;
+    end;
     lQueuedOperation.MarkSucceeded;
   except
     on lError: Exception do

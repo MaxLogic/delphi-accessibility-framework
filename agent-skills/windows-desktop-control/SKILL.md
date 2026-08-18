@@ -1,6 +1,6 @@
 ---
 name: windows-desktop-control
-description: Control Windows desktop applications from Codex in foreground or background mode, with explicit takeover/release announcements for foreground mouse/keyboard control, window screenshots, optional UIA inspection, Win32 input/messages, and optional MaxLogic Accessibility Agent Bridge support. Use when a task asks to drive a local Windows app, inspect or screenshot a window, test accessibility behavior, collect spoken screen-reader evidence, move/click/type/tab through controls, or coordinate UIA with an app-specific diagnostic bridge.
+description: Safely control Windows desktop applications from Codex. Default to pseudo-headless Background Command Mode for routine bridge-enabled workflows such as form input, exact list selection, named action or menu invocation, and modal control without stealing the user's mouse or keyboard. Use announced, leased Foreground Input Mode only when real pointer, keyboard, accelerator, IME, drag/drop, capture, foreground-dependent, or screen-reader behavior must be tested. Also use this skill for window discovery, screenshots, external UIA inspection, and accessibility evidence.
 ---
 
 # Windows Desktop Control
@@ -10,7 +10,7 @@ description: Control Windows desktop applications from Codex in foreground or ba
 | Requirement | Mode |
 | --- | --- |
 | Routine smoke/regression workflow in a bridge-enabled app | **Background Command Mode** |
-| Inspect, populate, select, invoke, open/dismiss modal, verify state | **Background Command Mode** |
+| Inspect, populate, select, invoke controls or named actions/menu commands, open/dismiss modal, verify state | **Background Command Mode** |
 | Prove actual pointer, key, accelerator, menu, IME, drag/drop, capture, or screen-reader behavior | **Foreground Input Mode** |
 | No bridge and no reliable background semantic API | **Foreground Input Mode**, after starting an announced `foreground-session` lease |
 
@@ -65,10 +65,14 @@ python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py
 python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-set-text --pipe-name <name> --form-name MainForm --control-name edtSearch --text "query"
 python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-set-checked --pipe-name <name> --form-name MainForm --control-name chkEnabled --checked
 python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-select --pipe-name <name> --form-name MainForm --control-name cmbQueue --text "Ready"
+python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-select --pipe-name <name> --form-name MainForm --control-name lstOptions --indices 1 3
+python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-select --pipe-name <name> --form-name MainForm --control-name lstOptions --texts "Alpha" "Gamma"
+python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-select --pipe-name <name> --form-name MainForm --control-name lstOptions --clear-selection
 python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-focus --pipe-name <name> --form-name MainForm --control-name edtSearch
 python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-tab --pipe-name <name>
 python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-invoke --pipe-name <name> --form-name MainForm --control-name btnApply
 python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-invoke --pipe-name <name> --form-name MainForm --control-name btnShowModal --async
+python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-action-invoke --pipe-name <name> --data-module-name MainDataModule --component-name actRefresh
 python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-operation-status --pipe-name <name> --operation-id <id>
 
 # Modal round trip: retain the opener operationId and the discovered form handle.
@@ -152,13 +156,17 @@ Use Background Command Mode when the user should be able to keep working while a
 
 Background Command Mode uses:
 
-- Typed `bridge-focus`, `bridge-set-text`, `bridge-set-checked`, `bridge-select`, `bridge-tab`, and `bridge-invoke` commands after a protocol-v2 capability check.
-- `bridge-invoke` waiting for terminal completion by default; use `--async` only when the caller must keep controlling an open modal, then finish with `bridge-operation-status`.
+- Typed `bridge-focus`, `bridge-set-text`, `bridge-set-checked`, `bridge-select`, `bridge-tab`, `bridge-invoke`, and `bridge-action-invoke` commands after a protocol-v2 capability check.
+- `bridge-invoke` and `bridge-action-invoke` waiting for terminal completion by default; use `--async` only when the caller must keep controlling an open modal, then finish with `bridge-operation-status`.
 - `form.map`, `control.resolve`, and other process-local bridge reads for state and target discovery.
 - `win32-map` for fast HWND-backed title/class/rectangle discovery without UIA traversal.
 - `screenshot-window` for visual evidence without activating the target window.
 
-If hello reports protocol version 1, disabled mutations, or missing `background-command-mode`, stop the command workflow and report the incompatibility. Targeted helpers additionally require `snapshot-refs-v2` for `--ref` or `atomic-control-targets` for `--form-name`/`--form-hwnd`; `bridge-tab` and operation status need no target capability. The workflow never silently falls back to Foreground Input Mode.
+Use `bridge-action-invoke` for one uniquely named `TCustomAction` or `TMenuItem` owned by a selected form or data module. It calls the native VCL `Execute` or `Click` path, so menu-only application commands do not need a proxy button. Wait for completion by default; add `--async` when the action opens a modal that must be controlled through the same bridge.
+
+For a single-select list or combo, use `bridge-select --index` or `--text`. For a `TCustomListBox` with `MultiSelect=True`, use `--indices` or `--texts` to replace the complete selected set, or `--clear-selection` to clear it. Text matching is exact-case and must identify one item. The bridge validates the complete request before mutation and emits the native selection event only when the selected set changes.
+
+If hello reports protocol version 1, disabled mutations, or missing `background-command-mode`, stop the command workflow and report the incompatibility. Targeted control helpers additionally require `snapshot-refs-v2` for `--ref` or `atomic-control-targets` for `--form-name`/`--form-hwnd`; `bridge-action-invoke` requires `action-invoke`; `bridge-tab` and operation status need no target capability. The workflow never silently falls back to Foreground Input Mode.
 
 Do not claim command-mode results are human-equivalent input, external UIA, or NVDA proof. Some applications intentionally behave differently when inactive; actual focus, capture, menus, accelerators, IME, drag/drop, and screen-reader tracking need Foreground Input Mode.
 

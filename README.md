@@ -159,9 +159,28 @@ Negative hover caching is conservative for custom providers. Built-in form, pane
 
 ### Agent Bridge
 
-`MaxLogic.Accessibility.AgentBridge` exposes a JSON command executor for diagnostic automation. It supports a protocol-v2 `hello` probe, visible form listing, `form.map` snapshots with generation-qualified refs such as `@s12a1`, VCL coordinate hit testing, atomic named targets, and gated semantic mutations including `control.invoke`, `control.setChecked`, and `control.select`. For fast automation coordinate discovery, `form.map` also supports `detail:"geometry"` with `visibleOnly:true`, returning process-local VCL roles, handles, rectangles, and target points without UIA traversal or accessibility/text-state scanning.
+`MaxLogic.Accessibility.AgentBridge` exposes a JSON command executor for diagnostic automation. It supports a protocol-v2 `hello` probe, visible form listing, `form.map` snapshots with generation-qualified refs such as `@s12a1`, VCL coordinate hit testing, atomic named targets, and gated semantic mutations including `control.invoke`, `action.invoke`, `control.setText`, `control.setChecked`, and `control.select`. For fast automation coordinate discovery, `form.map` also supports `detail:"geometry"` with `visibleOnly:true`, returning process-local VCL roles, handles, rectangles, and target points without UIA traversal or accessibility/text-state scanning.
 
-Background Command Mode is the default for routine testing when a compatible bridge is installed and mutations are enabled. The desktop-control helper provides typed `bridge-set-text`, `bridge-set-checked`, `bridge-select`, `bridge-focus`, `bridge-tab`, and `bridge-invoke` commands without activating the app or synthesizing mouse/keyboard input. Typed helpers fail closed when required protocol or capabilities are unavailable and never escalate to Foreground Input Mode. `bridge-invoke` waits for a terminal result by default; modal openers use `--async`, separate bridge discovery/dismissal, and `bridge-operation-status`. The older `control.click` remains available as an explicitly synchronous compatibility command, and `keyboard.tab` remains the low-level application-internal tab command; neither is the default modal path. Use Foreground Input Mode, with an announced `foreground-session` lease, only for actual mouse, keyboard, accelerator, menu, IME, drag/drop, capture, or screen-reader behavior. Bridge results prove process-local application behavior, not human-equivalent input, the external UIA boundary, or NVDA output.
+#### Two automation modes
+
+| Mode | Use it for | Effect on the user's desktop |
+| --- | --- | --- |
+| **Background Command Mode** | Routine form filling, exact selection, action/menu invocation, state verification, and modal workflows | Pseudo-headless: the app stays visible, but the bridge does not activate it, move the pointer, or synthesize mouse/keyboard input |
+| **Foreground Input Mode** | Tests of real pointer, keyboard, accelerator, menu navigation, IME, drag/drop, capture, or screen-reader behavior | Temporarily takes over real input under an announced, bounded `foreground-session` lease |
+
+Background Command Mode is the default for routine testing when a compatible bridge is installed and mutations are enabled. The desktop-control helper provides typed `bridge-set-text`, `bridge-set-checked`, `bridge-select`, `bridge-focus`, `bridge-tab`, `bridge-invoke`, and `bridge-action-invoke` commands. Typed helpers fail closed when required protocol or capabilities are unavailable and never escalate to Foreground Input Mode.
+
+`bridge-action-invoke` executes one uniquely named `TCustomAction` or `TMenuItem` under a selected form or data module, so a menu-only application command does not need a proxy button. `bridge-select` uses `--index` or exact-case `--text` for a combo or single-select list. On a multi-select VCL list box, `--indices` or `--texts` replaces the complete selected set and `--clear-selection` clears it; text must identify one exact-case item and validation completes before the state changes.
+
+```powershell
+python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-action-invoke --pipe-name <name> --data-module-name MainDataModule --component-name actRefresh
+python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-select --pipe-name <name> --form-name MainForm --control-name lstOptions --indices 1 3
+python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-select --pipe-name <name> --form-name MainForm --control-name lstOptions --clear-selection
+```
+
+`bridge-invoke` and `bridge-action-invoke` wait for a terminal result by default. Modal openers use `--async`, separate bridge discovery/dismissal, and `bridge-operation-status`. The older `control.click` remains available as an explicitly synchronous compatibility command, and `keyboard.tab` remains the low-level application-internal tab command; neither is the default modal path.
+
+Use Foreground Input Mode only when real input or foreground-dependent behavior is what the test must prove. Bridge results prove process-local application behavior, not human-equivalent input, the external UIA boundary, or NVDA output. The full operator workflow is in [`agent-skills/windows-desktop-control/SKILL.md`](agent-skills/windows-desktop-control/SKILL.md), and the wire contract is in [`docs/agent-bridge.md`](docs/agent-bridge.md).
 
 `MaxLogic.Accessibility.AgentBridge.PipeServer` provides the built-in local named pipe transport. `TAccessibilityAgentBridgePipeServer.Start` opens a process-specific pipe by default, accepts one or more sequential UTF-8 JSON request lines per connection, marshals each command onto the VCL main thread, and returns one UTF-8 JSON response line per request. `Start` and `Stop` are idempotent for the same pipe name.
 

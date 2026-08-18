@@ -85,11 +85,11 @@ The switch creates a fresh `AccessibilityComplexDemo.a11y.log` beside the execut
 {"cmd":"hello"}
 ```
 
-The response includes `ok`, `protocolVersion`, `frameworkName`, `processId`, `mutationEnabled`, and `capabilities`. Protocol version 2 advertises `background-command-mode`, `snapshot-refs-v2`, and `atomic-control-targets`. Typed mutation helpers require version 2, enabled mutations, and `background-command-mode` before sending the mutation. Targeted helpers additionally require `snapshot-refs-v2` for a ref target shape or `atomic-control-targets` for a form-name/form-handle target shape; tab and operation-status commands need no target capability.
+The response includes `ok`, `protocolVersion`, `frameworkName`, `processId`, `mutationEnabled`, and `capabilities`. Protocol version 2 advertises `background-command-mode`, `snapshot-refs-v2`, `atomic-control-targets`, and `action-invoke`. Typed mutation helpers require version 2, enabled mutations, and `background-command-mode` before sending the mutation. Targeted control helpers additionally require `snapshot-refs-v2` for a ref target shape or `atomic-control-targets` for a form-name/form-handle target shape. `bridge-action-invoke` requires `action-invoke`; tab and operation-status commands need no target capability.
 
 Protocol version 2 introduces intentional protocol-version-2 compatibility breaks: snapshot refs are generation-qualified as `@s<snapshotId>a<index>`, every mutation invalidates the current snapshot, protocol-v2 refs, atomic targets, and operation-status Boolean fields use strict JSON types, and atomic named targets reject duplicate, hidden, disabled, destroyed, or ambiguous controls. There is no hidden v1 emulation mode. An older or incompatible bridge is a reported command-mode blocker; automation must not silently switch to Foreground Input Mode. Raw `bridge-request` remains the deliberate escape hatch for an operator who intentionally targets an older bridge. Read-only generic UIA/Win32 inspection may continue only when it independently satisfies the task.
 
-The desktop-control helper exposes `bridge-invoke`, `bridge-operation-status`, `bridge-set-text`, `bridge-set-checked`, `bridge-select`, `bridge-focus`, and `bridge-tab`. Each typed mutation performs the handshake before mutation and validates `protocolVersion`, `driveMode`, and the response command.
+The desktop-control helper exposes `bridge-invoke`, `bridge-action-invoke`, `bridge-operation-status`, `bridge-set-text`, `bridge-set-checked`, `bridge-select`, `bridge-focus`, and `bridge-tab`. Each typed mutation performs the handshake before mutation and validates `protocolVersion`, `driveMode`, and the response command.
 
 ## Snapshots
 
@@ -180,7 +180,9 @@ Supported mutation commands:
 {"cmd":"control.setText","target":{"formName":"MainForm","controlName":"Edit1"},"text":"exact text"}
 {"cmd":"control.setChecked","target":{"formName":"MainForm","controlName":"CheckBox1"},"checked":true}
 {"cmd":"control.select","target":{"formName":"MainForm","controlName":"ComboBox1"},"text":"Ready"}
+{"cmd":"control.select","target":{"formName":"MainForm","controlName":"OptionsList"},"indices":[1,3]}
 {"cmd":"control.invoke","target":{"formName":"MainForm","controlName":"ApplyButton"}}
+{"cmd":"action.invoke","target":{"dataModuleName":"MainDataModule","componentName":"SaveAction"}}
 {"cmd":"operation.status","operationId":"op1"}
 {"cmd":"keyboard.tab"}
 {"cmd":"control.click","ref":"@s12a2"}
@@ -191,7 +193,9 @@ Mutation responses include `snapshotInvalidated: true`, `mutationSemantics`, `hu
 
 `control.invoke` queues one exact button-like control instance and immediately returns `operationId` with `status:"queued"`. Poll `operation.status` for `queued`, `running`, `succeeded`, or `failed`; a terminal read consumes the record by default. The typed `bridge-invoke` helper waits for and prints the consumed terminal result by default. Use `bridge-invoke --async` for a modal opener, discover the bridge-visible modal by form handle, invoke its dismiss button through the bridge, then read the opener with `bridge-operation-status`.
 
-`control.setChecked` supports stock VCL checkbox/radio semantics. `control.select` supports a single-select list or combo by zero-based index or exact-case text. Changed state runs the native VCL application event path once; an idempotent request runs no event. Unsupported or non-actionable controls fail before mutation.
+`action.invoke` queues one uniquely named `TCustomAction` or `TMenuItem` under exactly one owner selected by `formName`, `formHandle`, or `dataModuleName`. It calls the native VCL `Execute` or `Click` path without activating the application or synthesizing input. The exact component instance is observed until dispatch; destruction or loss of visibility/enabled state fails the operation without invoking a replacement. `bridge-action-invoke` uses the same default-wait and `--async` lifecycle as `bridge-invoke`.
+
+`control.setChecked` supports stock VCL checkbox/radio semantics. `control.select` supports a single-select list or combo by zero-based `index` or exact-case `text`. For a `TCustomListBox` with `MultiSelect=True`, use an `indices` or `texts` array to replace the complete selected set; an empty array clears it. Every array entry is validated before state changes, and text must resolve to exactly one item. Changed state runs the native VCL application event path once; an idempotent request runs no event. Unsupported or non-actionable controls fail before mutation.
 
 `control.setText` and the historically named `control.typeText` both report `mutationSemantics:"raw-property-assignment"`. The latter appends to the VCL `Text` property; neither command represents human typing or guarantees keyboard input events (`userInputEventsGenerated:false`). Use guarded operating-system input when normal key processing is part of the proof.
 

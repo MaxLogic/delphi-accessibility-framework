@@ -1,6 +1,10 @@
 # Changelog
 
 ## 2026-08-17
+### Added
+- Background command mode can now invoke named VCL actions and menu commands owned by a form or data module, with exact queued-target lifetime checks and a typed `bridge-action-invoke` helper.
+- Background command mode can now replace or clear the exact selection in multi-select VCL list boxes by index or exact text, emitting one native selection event only for a real change.
+
 ### Fixed
 - `clear-and-type` now types non-empty replacement text directly over the current selection, preventing the separate clear key from deleting leading or trailing characters while retaining empty-string clearing and guarded key release.
 - Foreground desktop-control commands now require a valid foreground-session lease before activation or input, revalidate ownership during multi-step input, release held keys and mouse buttons on cancellation, and report `foreground-input` mode evidence.

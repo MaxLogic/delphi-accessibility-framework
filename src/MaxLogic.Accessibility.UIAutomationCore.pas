@@ -194,6 +194,8 @@ const
   UIA_EditControlTypeId = 50004;
   UIA_ListItemControlTypeId = 50007;
   UIA_ListControlTypeId = 50008;
+  UIA_MenuControlTypeId = 50009;
+  UIA_MenuItemControlTypeId = 50011;
   UIA_RadioButtonControlTypeId = 50013;
   UIA_StatusBarControlTypeId = 50017;
   UIA_TabControlTypeId = 50018;

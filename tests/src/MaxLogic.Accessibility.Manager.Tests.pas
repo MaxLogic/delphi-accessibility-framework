@@ -42,6 +42,9 @@ type
     procedure ApplicationInstallAnnouncesActionBarSelectionAndUnhooksCleanly;
     [Test]
     [Category('AccessibilityManager,ActionMenuSpeech')]
+    procedure ApplicationInstallPublishesActionPopupSelectionThroughMsaa;
+    [Test]
+    [Category('AccessibilityManager,ActionMenuSpeech')]
     procedure ApplicationInstallAnnouncesParentlessActionBarThroughRootOwner;
     [Test]
     [Category('AccessibilityManager,ActionMenuSpeech')]
@@ -2742,6 +2745,84 @@ begin
   end;
 end;
 
+procedure TAccessibilityManagerTests.ApplicationInstallPublishesActionPopupSelectionThroughMsaa;
+var
+  lAccessible: IAccessible;
+  lAction: TAction;
+  lApi: IManagerTestUiaApi;
+  lBarItem: TActionBarItem;
+  lChild: OleVariant;
+  lFileAction: TAction;
+  lFileItem: TActionClientItem;
+  lForm: TForm;
+  lManager: TActionManager;
+  lMenuBar: TActionMainMenuBar;
+  lName: WideString;
+  lPopup: TCustomActionPopupMenu;
+  lRole: OleVariant;
+  lWinEvents: TWinEventRecorder;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lWinEvents := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents); //PALOFF WARN53 test retains the concrete recorder
+  lForm := TForm.Create(nil);
+  try
+    lForm.HandleNeeded;
+    lManager := TActionManager.Create(lForm);
+    lMenuBar := TActionMainMenuBar.Create(lForm);
+    lMenuBar.Parent := lForm;
+    lBarItem := lManager.ActionBars.Add;
+    lBarItem.ActionBar := lMenuBar;
+    lFileAction := TAction.Create(lForm);
+    lFileAction.ActionList := lManager;
+    lFileAction.Caption := '&File';
+    lFileItem := lBarItem.Items.Add;
+    lFileItem.Action := lFileAction;
+    lAction := TAction.Create(lForm);
+    lAction.ActionList := lManager;
+    lAction.Caption := '&Open';
+    lFileItem.Items.Add.Action := lAction;
+    lMenuBar.RecreateControls;
+    lPopup := TCustomActionPopupMenu.Create(lMenuBar);
+    lPopup.Parent := lMenuBar;
+    lPopup.ActionClient := lFileItem;
+    lPopup.HandleNeeded;
+
+    TAccessibilityManager.Install(Application);
+    Assert.IsNotNull(lPopup.ActionControls[0]);
+    NotifyWinEvent(EVENT_OBJECT_FOCUS, lPopup.Handle, OBJID_CLIENT, 1);
+
+    Assert.AreEqual(0, lWinEvents.Calls,
+      'The supplemental self-focus event must wait until the native WinEvent callback returns.');
+    Application.ProcessMessages;
+
+    Assert.AreEqual(0, lWinEvents.Calls,
+      'The supplemental self-focus event must give external screen readers time to consume the native event.');
+    TThread.Sleep(100);
+    Application.ProcessMessages;
+
+    Assert.AreEqual(1, lWinEvents.Calls);
+    Assert.AreEqual(EVENT_OBJECT_FOCUS, lWinEvents.LastEvent);
+    Assert.AreEqual(Integer(lPopup.Handle), Integer(lWinEvents.LastHwnd));
+    Assert.AreEqual(Cardinal(OBJID_CLIENT), lWinEvents.LastObjectId);
+    Assert.AreEqual(Cardinal(CHILDID_SELF), lWinEvents.LastChildId);
+    Assert.AreEqual<HRESULT>(S_OK, AccessibleObjectFromWindow(lPopup.Handle, OBJID_CLIENT,
+      IID_IAccessible, lAccessible));
+    Assert.IsNotNull(lAccessible);
+    lChild := CHILDID_SELF;
+    Assert.AreEqual(S_OK, lAccessible.Get_accName(lChild, lName));
+    Assert.AreEqual('Open', string(lName));
+    Assert.AreEqual(S_OK, lAccessible.Get_accRole(lChild, lRole));
+    Assert.AreEqual(ROLE_SYSTEM_MENUITEM, Integer(lRole));
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
 procedure TAccessibilityManagerTests.ApplicationInstallSkipsActionBarSelectionWhenNoUiaClients;
 var
   lAction: TAction;
@@ -2750,11 +2831,14 @@ var
   lForm: TForm;
   lManager: TActionManager;
   lMenuBar: TActionMainMenuBar;
+  lWinEvents: TWinEventRecorder;
 begin
   ResetManager;
   lApi := TManagerTestUiaApi.Create;
   lApi.SetClientsAreListening(False);
   TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lWinEvents := TWinEventRecorder.Create;
+  TAccessibilityManagerInternals.SetWinEventSink(lWinEvents); //PALOFF WARN53 test retains the concrete recorder
   lForm := TForm.Create(nil);
   try
     lManager := TActionManager.Create(lForm);
@@ -2774,6 +2858,15 @@ begin
     lMenuBar.ActionControls[0].Selected := True;
 
     Assert.AreEqual(0, lApi.NotificationCalls);
+    Assert.AreEqual(0, lWinEvents.Calls,
+      'The supplemental self-focus event must wait until the native WinEvent callback returns.');
+    Application.ProcessMessages;
+    Assert.AreEqual(0, lWinEvents.Calls,
+      'The supplemental self-focus event must give external screen readers time to consume the native event.');
+    TThread.Sleep(100);
+    Application.ProcessMessages;
+    Assert.AreEqual(1, lWinEvents.Calls);
+    Assert.AreEqual(Cardinal(CHILDID_SELF), lWinEvents.LastChildId);
   finally
     lForm.Free;
     ResetManager;

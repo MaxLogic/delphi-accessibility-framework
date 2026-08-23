@@ -103,7 +103,7 @@ The default VCL adapter registry covers:
 - `TPanel`: UIA pane when the panel has useful text or accessible children; decorative empty panels are omitted.
 - `TPageControl` and `TTabSheet`: UIA tab/tab-item fragments for page-control tab headers.
 - `TToolBar` and `TToolButton`: UIA toolbar/button fragments for toolbar commands.
-- VCL action bars and custom action popup menus: selected commands raise caption-based UIA notifications during keyboard and pointer navigation, covering action-menu windows whose native MSAA client object has no usable item tree.
+- VCL action bars and custom action popup menus: selected commands are exposed as focused MSAA menu items and also raise caption-based UIA notifications during keyboard and pointer navigation, covering action-menu windows whose native MSAA client object has no usable item tree. The supplemental MSAA focus event uses a 75 ms coalescing timer after the native menu callback so NVDA can consume the native and corrected events in order.
 - Generic `TGraphicControl`: text fallback for caption/text/hint-style controls.
 - VCL hints: control `Hint` is exposed as UIA `HelpText`, and visible hint text raises a UIA notification when UIA clients are listening.
 - Runtime properties: installed providers expose current Name, HelpText, Value, enabled/offscreen state, and bounds for supported VCL forms and controls, and publish corresponding UIA property changes and MSAA notifications when those effective values change. This includes status-bar HelpText and `TStringGrid`/opt-in `TAdvStringGrid` root Name and HelpText.

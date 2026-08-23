@@ -105,6 +105,10 @@ begin
       Result := ROLE_SYSTEM_LIST;
     UIA_ListItemControlTypeId:
       Result := ROLE_SYSTEM_LISTITEM;
+    UIA_MenuControlTypeId:
+      Result := ROLE_SYSTEM_MENUPOPUP;
+    UIA_MenuItemControlTypeId:
+      Result := ROLE_SYSTEM_MENUITEM;
     UIA_PaneControlTypeId:
       Result := ROLE_SYSTEM_PANE;
     UIA_RadioButtonControlTypeId:

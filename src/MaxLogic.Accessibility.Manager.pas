@@ -46,15 +46,18 @@ implementation
 
 uses
   System.Classes, System.Diagnostics, System.Generics.Collections, System.SysUtils, System.Types, System.Variants,
-  Winapi.Messages, Winapi.oleacc, Vcl.ActnMan, Vcl.ComCtrls, Vcl.Controls, Vcl.ExtCtrls, Vcl.Grids, Vcl.StdCtrls,
+  Winapi.Messages, Winapi.oleacc, Vcl.ActnMan, Vcl.ActnMenus, Vcl.ComCtrls, Vcl.Controls, Vcl.ExtCtrls, Vcl.Grids,
+  Vcl.StdCtrls,
   MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.Hints, MaxLogic.Accessibility.Msaa,
   MaxLogic.Accessibility.Text, MaxLogic.Accessibility.VclAdapters;
 
 const
+  cActionMenuFocusDelayMs = 75;
   cMaxHoverMissChildCount = 128;
   cMsaaObjIdClient = Cardinal($FFFFFFFC);
 
 type
+  TAccessibilityActionMenuWindowHook = class;
   TAccessibilityControlWindowHook = class;
   TAccessibilityFormWindowHook = class;
   TAccessibilityProviderNodeAccess = class(TAccessibilityProviderNode);
@@ -137,6 +140,30 @@ type
     procedure RememberRegistry(const aRegistry: IAccessibilityAdapterRegistry);
     function Registry: IAccessibilityAdapterRegistry;
     function RegistryMatches(const aRegistry: IAccessibilityAdapterRegistry): Boolean;
+  end;
+
+  TAccessibilityActionMenuWindowHook = class(TComponent)
+  private
+    fActionBar: TCustomActionBar;
+    fApi: IAccessibilityUiaApi;
+    fFocusEventPending: Boolean;
+    fHwnd: HWND;
+    fMsaaAccessible: IAccessible;
+    fOriginalWindowProc: TWndMethod;
+    fProvider: IAccessibilityProviderNode;
+    fUiaProviderReturned: Boolean;
+    procedure Detach;
+    procedure EnsureProvider;
+    procedure ReleaseProvider;
+    procedure ScheduleFocusEvent;
+  protected
+    procedure Notification(aComponent: TComponent; aOperation: TOperation); override;
+  public
+    constructor Create(aActionBar: TCustomActionBar; const aApi: IAccessibilityUiaApi); reintroduce;
+    destructor Destroy; override;
+    function Matches(aActionBar: TCustomActionBar): Boolean;
+    procedure PublishSelection(const aCaption: string; aEnabled: Boolean);
+    procedure WindowProc(var aMessage: TMessage);
   end;
 
   TAccessibilityFormWindowHook = class(TComponent)
@@ -260,6 +287,7 @@ type
   TAccessibilityManagerState = class
   private
     fApplicationAdapterRegistrars: TArray<TAccessibilityAdapterRegistrar>;
+    fActionMenuHooks: TObjectList<TAccessibilityActionMenuWindowHook>;
     fActionMenuWinEventDispatching: Boolean;
     fActionMenuWinEventHook: THandle;
     fAppInstalled: Boolean;
@@ -280,12 +308,14 @@ type
     procedure EnsureApplicationRegistry(const aRegistry: IAccessibilityAdapterRegistry);
     procedure EnsureFormRegistryAllowed(const aRegistry: IAccessibilityAdapterRegistry);
     procedure EnsureInstalledFormsRegistry(const aRegistry: IAccessibilityAdapterRegistry);
+    function GetActionMenuHook(aActionBar: TCustomActionBar): TAccessibilityActionMenuWindowHook;
     procedure HookActionMenuWinEvents;
     procedure HookScreen;
     procedure HookApplicationIdle;
     procedure InstallHintController(aApplication: TApplication; aAppWide: Boolean);
     procedure InstallFormWithRegistry(aForm: TCustomForm; const aRegistry: IAccessibilityAdapterRegistry);
     procedure RemoveInstalledMarkers;
+    procedure ReleaseActionMenuHooks;
     procedure ReleaseHintController;
     procedure RestoreActionMenuWinEventHook;
     procedure RestoreScreenHook;
@@ -1878,6 +1908,184 @@ function TAccessibilityInstalledFormMarker.RegistryMatches(
   const aRegistry: IAccessibilityAdapterRegistry): Boolean;
 begin
   Result := SameRegistry(fRegistry, aRegistry);
+end;
+
+constructor TAccessibilityActionMenuWindowHook.Create(aActionBar: TCustomActionBar;
+  const aApi: IAccessibilityUiaApi);
+begin
+  inherited Create(nil);
+  if aActionBar = nil then
+  begin
+    raise EArgumentException.Create('Action bar must not be nil.');
+  end;
+
+  fActionBar := aActionBar;
+  fApi := aApi;
+  fActionBar.FreeNotification(Self);
+  fOriginalWindowProc := fActionBar.WindowProc;
+  fActionBar.WindowProc := WindowProc;
+end;
+
+destructor TAccessibilityActionMenuWindowHook.Destroy;
+begin
+  Detach;
+  inherited Destroy;
+end;
+
+procedure TAccessibilityActionMenuWindowHook.Detach;
+begin
+  if fActionBar <> nil then
+  begin
+    if SameWndMethod(fActionBar.WindowProc, WindowProc) then
+    begin
+      fActionBar.WindowProc := fOriginalWindowProc;
+    end;
+    fActionBar.RemoveFreeNotification(Self);
+    fActionBar := nil;
+  end;
+  ReleaseProvider;
+end;
+
+procedure TAccessibilityActionMenuWindowHook.EnsureProvider;
+var
+  lHwnd: HWND;
+begin
+  if (fActionBar = nil) or not fActionBar.HandleAllocated then
+  begin
+    Exit;
+  end;
+
+  lHwnd := fActionBar.Handle;
+  if (fProvider <> nil) and (fHwnd = lHwnd) then
+  begin
+    Exit;
+  end;
+
+  ReleaseProvider;
+  fHwnd := lHwnd;
+  fProvider := TAccessibilityProviderFactory.CreateRoot([4], fHwnd, fApi);
+  fProvider.SetProperty(UIA_ControlTypePropertyId, UIA_MenuItemControlTypeId);
+  fProvider.SetProperty(UIA_ClassNamePropertyId, fActionBar.ClassName);
+  fProvider.SetProperty(UIA_FrameworkIdPropertyId, 'VCL');
+  fProvider.SetProperty(UIA_IsContentElementPropertyId, True);
+  fProvider.SetProperty(UIA_IsControlElementPropertyId, True);
+  fProvider.SetProperty(UIA_IsOffscreenPropertyId, False);
+  fProvider.SetProperty(UIA_IsKeyboardFocusablePropertyId, True);
+end;
+
+function TAccessibilityActionMenuWindowHook.Matches(aActionBar: TCustomActionBar): Boolean;
+begin
+  Result := fActionBar = aActionBar;
+end;
+
+procedure TAccessibilityActionMenuWindowHook.Notification(aComponent: TComponent; aOperation: TOperation);
+begin
+  inherited Notification(aComponent, aOperation);
+  if (aOperation = opRemove) and (aComponent = fActionBar) then
+  begin
+    if SameWndMethod(fActionBar.WindowProc, WindowProc) then
+    begin
+      fActionBar.WindowProc := fOriginalWindowProc;
+    end;
+    fActionBar := nil;
+    ReleaseProvider;
+  end;
+end;
+
+procedure TAccessibilityActionMenuWindowHook.PublishSelection(const aCaption: string; aEnabled: Boolean);
+begin
+  EnsureProvider;
+  if fProvider = nil then
+  begin
+    Exit;
+  end;
+
+  fProvider.SetProperty(UIA_NamePropertyId, aCaption);
+  fProvider.SetProperty(UIA_IsEnabledPropertyId, aEnabled);
+  fProvider.SetProperty(UIA_HasKeyboardFocusPropertyId, True);
+end;
+
+procedure TAccessibilityActionMenuWindowHook.ReleaseProvider;
+begin
+  if fFocusEventPending and (fHwnd <> 0) then
+  begin
+    KillTimer(fHwnd, UINT_PTR(Self));
+  end;
+  fFocusEventPending := False;
+  if fUiaProviderReturned and (fHwnd <> 0) then
+  begin
+    ReleaseUiaProviderWindowMapping(fApi, fHwnd);
+  end;
+  fUiaProviderReturned := False;
+  fMsaaAccessible := nil;
+  if fProvider <> nil then
+  begin
+    fProvider.Disconnect;
+    fProvider := nil;
+  end;
+  fHwnd := 0;
+end;
+
+procedure TAccessibilityActionMenuWindowHook.ScheduleFocusEvent;
+begin
+  if fHwnd = 0 then
+  begin
+    Exit;
+  end;
+
+  if SetTimer(fHwnd, UINT_PTR(Self), cActionMenuFocusDelayMs, nil) <> 0 then
+  begin
+    fFocusEventPending := True;
+  end else begin
+    fFocusEventPending := False;
+    NotifyAccessibilityWinEvent(EVENT_OBJECT_FOCUS, fHwnd, cMsaaObjIdClient, CHILDID_SELF);
+  end;
+end;
+
+procedure TAccessibilityActionMenuWindowHook.WindowProc(var aMessage: TMessage);
+var
+  lResult: Winapi.Windows.LRESULT;
+begin
+  if (aMessage.Msg = WM_TIMER) and (aMessage.WParam = UINT_PTR(Self)) then
+  begin
+    KillTimer(fHwnd, UINT_PTR(Self));
+    fFocusEventPending := False;
+    if (fProvider <> nil) and (fHwnd <> 0) then
+    begin
+      NotifyAccessibilityWinEvent(EVENT_OBJECT_FOCUS, fHwnd, cMsaaObjIdClient, CHILDID_SELF);
+    end;
+    aMessage.Result := 0;
+    Exit;
+  end;
+
+  if (fProvider <> nil) and (fActionBar <> nil) and (aMessage.Msg = WM_GETOBJECT) then
+  begin
+    if (aMessage.LParam = LPARAM(UiaRootObjectId)) and
+      TAccessibilityProviderWindowMessages.TryHandleGetObject(fActionBar.Handle, aMessage.WParam,
+      aMessage.LParam, fProvider.RawElementProvider, fApi, lResult) then
+    begin
+      fUiaProviderReturned := True;
+      aMessage.Result := lResult;
+      Exit;
+    end;
+
+    if (aMessage.LParam = LPARAM(OBJID_CLIENT)) and
+      TAccessibilityMsaaBridge.TryHandleGetObject(aMessage.WParam, aMessage.LParam,
+      fProvider.RawElementProvider, fMsaaAccessible, lResult) then
+    begin
+      aMessage.Result := lResult;
+      Exit;
+    end;
+  end;
+
+  try
+    fOriginalWindowProc(aMessage);
+  finally
+    if aMessage.Msg = WM_NCDESTROY then
+    begin
+      ReleaseProvider;
+    end;
+  end;
 end;
 
 constructor TAccessibilityFormWindowHook.Create(aForm: TCustomForm; const aProvider: IAccessibilityProviderNode;
@@ -3820,11 +4028,13 @@ end;
 constructor TAccessibilityManagerState.Create;
 begin
   inherited Create;
+  fActionMenuHooks := TObjectList<TAccessibilityActionMenuWindowHook>.Create(True);
 end;
 
 destructor TAccessibilityManagerState.Destroy;
 begin
   Uninstall;
+  fActionMenuHooks.Free;
   inherited Destroy;
 end;
 
@@ -3851,6 +4061,7 @@ procedure TAccessibilityManagerState.ActionMenuFocusChanged(aHwnd: HWND; aObject
 var
   lActionBar: TCustomActionBar;
   lActionControl: TCustomActionControl;
+  lActionMenuHook: TAccessibilityActionMenuWindowHook;
   lAnnouncementText: string;
   lControl: TWinControl;
   lForm: TCustomForm;
@@ -3860,7 +4071,7 @@ var
 begin
   if (not fAppInstalled) or fActionMenuWinEventDispatching or (aHwnd = 0) or
     (aObjectId <> Longint(OBJID_CLIENT)) or
-    (aChildId <= 0) or not TAccessibilityProviderEvents.ClientsAreListening(fUiaApi) then
+    (aChildId <= 0) then
   begin
     Exit;
   end;
@@ -3872,8 +4083,12 @@ begin
   end;
 
   lActionBar := TCustomActionBar(lControl);
+  if (lActionBar.ActionClient = nil) or (aChildId > lActionBar.ActionClient.Items.Count) then
+  begin
+    Exit;
+  end;
   lActionControl := lActionBar.ActionControls[Pred(aChildId)];
-  if (lActionControl = nil) or not lActionControl.Selected then
+  if lActionControl = nil then
   begin
     Exit;
   end;
@@ -3884,33 +4099,42 @@ begin
     Exit;
   end;
 
-  lForm := GetParentForm(lActionBar);
-  if lForm = nil then
-  begin
-    lRootHwnd := GetAncestor(aHwnd, GA_ROOTOWNER);
-    lRootControl := FindControl(lRootHwnd);
-    if lRootControl is TCustomForm then
-    begin
-      lForm := TCustomForm(lRootControl);
-    end else if lRootControl <> nil then
-    begin
-      lForm := GetParentForm(lRootControl);
-    end;
-  end;
-
-  if lForm = nil then
-  begin
-    Exit;
-  end;
-
-  lMarker := TAccessibilityInstalledFormMarker.FindOn(lForm);
-  if (lMarker = nil) or (lMarker.fHook = nil) or (lMarker.fHook.fProvider = nil) then
-  begin
-    Exit;
-  end;
-
   fActionMenuWinEventDispatching := True;
   try
+    lActionMenuHook := GetActionMenuHook(lActionBar);
+    lActionMenuHook.PublishSelection(lAnnouncementText, lActionControl.Enabled);
+    lActionMenuHook.ScheduleFocusEvent;
+
+    if not TAccessibilityProviderEvents.ClientsAreListening(fUiaApi) then
+    begin
+      Exit;
+    end;
+
+    lForm := GetParentForm(lActionBar);
+    if lForm = nil then
+    begin
+      lRootHwnd := GetAncestor(aHwnd, GA_ROOTOWNER);
+      lRootControl := FindControl(lRootHwnd);
+      if lRootControl is TCustomForm then
+      begin
+        lForm := TCustomForm(lRootControl);
+      end else if lRootControl <> nil then
+      begin
+        lForm := GetParentForm(lRootControl);
+      end;
+    end;
+
+    if lForm = nil then
+    begin
+      Exit;
+    end;
+
+    lMarker := TAccessibilityInstalledFormMarker.FindOn(lForm);
+    if (lMarker = nil) or (lMarker.fHook = nil) or (lMarker.fHook.fProvider = nil) then
+    begin
+      Exit;
+    end;
+
     TAccessibilityProviderEvents.RaiseNotification(lMarker.fHook.fProvider.RawElementProvider,
       NotificationKind_Other, NotificationProcessing_MostRecent, lAnnouncementText, 'vcl-action-menu-selection',
       fUiaApi); //PALOFF WARN53 intentional object-to-interface bridge
@@ -3978,6 +4202,23 @@ begin
       raise EInvalidOperation.Create('Call TAccessibilityManager.Uninstall before changing a form adapter registry.');
     end;
   end;
+end;
+
+function TAccessibilityManagerState.GetActionMenuHook(
+  aActionBar: TCustomActionBar): TAccessibilityActionMenuWindowHook;
+var
+  lHook: TAccessibilityActionMenuWindowHook;
+begin
+  for lHook in fActionMenuHooks do
+  begin
+    if lHook.Matches(aActionBar) then
+    begin
+      Exit(lHook);
+    end;
+  end;
+
+  Result := TAccessibilityActionMenuWindowHook.Create(aActionBar, fUiaApi);
+  fActionMenuHooks.Add(Result);
 end;
 
 procedure TAccessibilityManagerState.HookScreen;
@@ -4251,6 +4492,11 @@ begin
   end;
 end;
 
+procedure TAccessibilityManagerState.ReleaseActionMenuHooks;
+begin
+  fActionMenuHooks.Clear;
+end;
+
 procedure TAccessibilityManagerState.ReleaseHintController;
 begin
   if fHintController = nil then
@@ -4340,6 +4586,7 @@ procedure TAccessibilityManagerState.Uninstall;
 begin
   fAppInstalled := False;
   RestoreActionMenuWinEventHook;
+  ReleaseActionMenuHooks;
   fApplicationAdapterRegistrars := nil;
   fApplicationRegistry := nil;
   fApplicationUsesAdapterRegistrars := False;

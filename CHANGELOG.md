@@ -2,7 +2,7 @@
 
 ## 2026-08-23
 ### Fixed
-- Keyboard and pointer selection in VCL action bars and custom action popup menus now announces the selected command through UI Automation, including menus whose native MSAA client object exposes no usable child items.
+- Keyboard and pointer selection in VCL action bars and custom action popup menus now exposes the selected command as an MSAA menu item and raises its focus event through a 75 ms coalescing timer after the native menu callback, allowing NVDA to announce menus whose native MSAA client object exposes no usable child items without racing the native unnamed event. UI Automation notification support remains available for UIA clients.
 
 ## 2026-08-18
 ### Changed

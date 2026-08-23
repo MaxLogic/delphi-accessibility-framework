@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-08-23
+### Fixed
+- Keyboard and pointer selection in VCL action bars and custom action popup menus now announces the selected command through UI Automation, including menus whose native MSAA client object exposes no usable child items.
+
 ## 2026-08-18
 ### Changed
 - The project is now distributed under the MIT License.

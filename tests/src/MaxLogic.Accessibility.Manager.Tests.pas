@@ -38,6 +38,15 @@ type
     [Test]
     procedure ApplicationInstallScansCurrentFormsAndIsIdempotent;
     [Test]
+    [Category('AccessibilityManager,ActionMenuSpeech')]
+    procedure ApplicationInstallAnnouncesActionBarSelectionAndUnhooksCleanly;
+    [Test]
+    [Category('AccessibilityManager,ActionMenuSpeech')]
+    procedure ApplicationInstallAnnouncesParentlessActionBarThroughRootOwner;
+    [Test]
+    [Category('AccessibilityManager,ActionMenuSpeech')]
+    procedure ApplicationInstallSkipsActionBarSelectionWhenNoUiaClients;
+    [Test]
     procedure RunInstallsCurrentFormsAndUninstallsAfterApplicationRun;
     [Test]
     procedure RunUninstallsPartialApplicationInstallWhenInstallFails;
@@ -355,9 +364,10 @@ type
 implementation
 
 uses
-  System.Classes, System.Diagnostics, System.Generics.Collections, System.IOUtils, System.SysUtils, System.Types,
-  System.Variants, Winapi.ActiveX, Winapi.Messages, Winapi.oleacc, Winapi.Windows, Vcl.Buttons, Vcl.ComCtrls,
-  Vcl.Controls, Vcl.ExtCtrls, Vcl.Forms, Vcl.Grids, Vcl.StdCtrls, AdvGrid, AccessibilityDemoMainForm,
+  System.Actions, System.Classes, System.Diagnostics, System.Generics.Collections, System.IOUtils, System.SysUtils,
+  System.Types, System.Variants, Winapi.ActiveX, Winapi.Messages, Winapi.oleacc, Winapi.Windows, Vcl.ActnList,
+  Vcl.ActnMan, Vcl.ActnMenus, Vcl.Buttons, Vcl.ComCtrls, Vcl.Controls, Vcl.ExtCtrls, Vcl.Forms, Vcl.Grids,
+  Vcl.StdCtrls, Vcl.StdStyleActnCtrls, AdvGrid, AccessibilityDemoMainForm,
   MaxLogic.Accessibility.Manager,
   MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.ProviderCore, MaxLogic.Accessibility.Scanner,
   MaxLogic.Accessibility.TmsAdvStringGridAdapters, MaxLogic.Accessibility.UIAutomationCore,
@@ -2683,6 +2693,131 @@ begin
     end;
   finally
     lFirst.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.ApplicationInstallAnnouncesActionBarSelectionAndUnhooksCleanly;
+var
+  lAction: TAction;
+  lApi: IManagerTestUiaApi;
+  lBarItem: TActionBarItem;
+  lForm: TForm;
+  lManager: TActionManager;
+  lMenuBar: TActionMainMenuBar;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lManager := TActionManager.Create(lForm);
+    lMenuBar := TActionMainMenuBar.Create(lForm);
+    lMenuBar.Parent := lForm;
+    lBarItem := lManager.ActionBars.Add;
+    lBarItem.ActionBar := lMenuBar;
+    lAction := TAction.Create(lForm);
+    lAction.ActionList := lManager;
+    lAction.Caption := '&File';
+    lBarItem.Items.Add.Action := lAction;
+    lMenuBar.RecreateControls;
+    lMenuBar.HandleNeeded;
+
+    TAccessibilityManager.Install(Application);
+    Assert.IsNotNull(lMenuBar.ActionControls[0]);
+    lMenuBar.ActionControls[0].Selected := True;
+
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('File', lApi.LastNotificationText);
+    Assert.AreEqual(Integer(lForm.Handle), Integer(ProviderNativeWindowHandle(FragmentFromSimple(
+    lApi.LastNotificationProvider))));
+
+    TAccessibilityManager.Uninstall;
+    NotifyWinEvent(EVENT_OBJECT_FOCUS, lMenuBar.Handle, OBJID_CLIENT, 1);
+    Assert.AreEqual(1, lApi.NotificationCalls, 'Uninstall left the action-menu WinEvent hook active.');
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.ApplicationInstallSkipsActionBarSelectionWhenNoUiaClients;
+var
+  lAction: TAction;
+  lApi: IManagerTestUiaApi;
+  lBarItem: TActionBarItem;
+  lForm: TForm;
+  lManager: TActionManager;
+  lMenuBar: TActionMainMenuBar;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(False);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lManager := TActionManager.Create(lForm);
+    lMenuBar := TActionMainMenuBar.Create(lForm);
+    lMenuBar.Parent := lForm;
+    lBarItem := lManager.ActionBars.Add;
+    lBarItem.ActionBar := lMenuBar;
+    lAction := TAction.Create(lForm);
+    lAction.ActionList := lManager;
+    lAction.Caption := '&File';
+    lBarItem.Items.Add.Action := lAction;
+    lMenuBar.RecreateControls;
+    lMenuBar.HandleNeeded;
+
+    TAccessibilityManager.Install(Application);
+    Assert.IsNotNull(lMenuBar.ActionControls[0]);
+    lMenuBar.ActionControls[0].Selected := True;
+
+    Assert.AreEqual(0, lApi.NotificationCalls);
+  finally
+    lForm.Free;
+    ResetManager;
+  end;
+end;
+
+procedure TAccessibilityManagerTests.ApplicationInstallAnnouncesParentlessActionBarThroughRootOwner;
+var
+  lAction: TAction;
+  lApi: IManagerTestUiaApi;
+  lBarItem: TActionBarItem;
+  lForm: TForm;
+  lManager: TActionManager;
+  lMenuBar: TActionMainMenuBar;
+begin
+  ResetManager;
+  lApi := TManagerTestUiaApi.Create;
+  lApi.SetClientsAreListening(True);
+  TAccessibilityManagerInternals.SetUiaApi(lApi);
+  lForm := TForm.Create(nil);
+  try
+    lForm.HandleNeeded;
+    lManager := TActionManager.Create(lForm);
+    lMenuBar := TActionMainMenuBar.Create(lForm);
+    lMenuBar.ParentWindow := lForm.Handle;
+    lBarItem := lManager.ActionBars.Add;
+    lBarItem.ActionBar := lMenuBar;
+    lAction := TAction.Create(lForm);
+    lAction.ActionList := lManager;
+    lAction.Caption := '&Open';
+    lBarItem.Items.Add.Action := lAction;
+    lMenuBar.RecreateControls;
+    lMenuBar.HandleNeeded;
+
+    TAccessibilityManager.Install(Application);
+    Assert.IsNotNull(lMenuBar.ActionControls[0]);
+    lMenuBar.ActionControls[0].Selected := True;
+
+    Assert.AreEqual(1, lApi.NotificationCalls);
+    Assert.AreEqual('Open', lApi.LastNotificationText);
+    Assert.AreEqual(Integer(lForm.Handle), Integer(ProviderNativeWindowHandle(FragmentFromSimple(
+      lApi.LastNotificationProvider))));
+  finally
+    lForm.Free;
     ResetManager;
   end;
 end;

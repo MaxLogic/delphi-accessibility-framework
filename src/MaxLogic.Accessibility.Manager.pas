@@ -46,7 +46,7 @@ implementation
 
 uses
   System.Classes, System.Diagnostics, System.Generics.Collections, System.SysUtils, System.Types, System.Variants,
-  Winapi.Messages, Winapi.oleacc, Vcl.ComCtrls, Vcl.Controls, Vcl.ExtCtrls, Vcl.Grids, Vcl.StdCtrls,
+  Winapi.Messages, Winapi.oleacc, Vcl.ActnMan, Vcl.ComCtrls, Vcl.Controls, Vcl.ExtCtrls, Vcl.Grids, Vcl.StdCtrls,
   MaxLogic.Accessibility.Diagnostics, MaxLogic.Accessibility.Hints, MaxLogic.Accessibility.Msaa,
   MaxLogic.Accessibility.Text, MaxLogic.Accessibility.VclAdapters;
 
@@ -260,6 +260,8 @@ type
   TAccessibilityManagerState = class
   private
     fApplicationAdapterRegistrars: TArray<TAccessibilityAdapterRegistrar>;
+    fActionMenuWinEventDispatching: Boolean;
+    fActionMenuWinEventHook: THandle;
     fAppInstalled: Boolean;
     fApplicationRegistry: IAccessibilityAdapterRegistry;
     fApplicationUsesAdapterRegistrars: Boolean;
@@ -273,16 +275,19 @@ type
     fScreenHookInstalled: Boolean;
     fUiaApi: IAccessibilityUiaApi;
     procedure ActiveFormChanged(aSender: TObject);
+    procedure ActionMenuFocusChanged(aHwnd: HWND; aObjectId: Integer; aChildId: Integer);
     procedure ApplicationIdle(aSender: TObject; var aDone: Boolean);
     procedure EnsureApplicationRegistry(const aRegistry: IAccessibilityAdapterRegistry);
     procedure EnsureFormRegistryAllowed(const aRegistry: IAccessibilityAdapterRegistry);
     procedure EnsureInstalledFormsRegistry(const aRegistry: IAccessibilityAdapterRegistry);
+    procedure HookActionMenuWinEvents;
     procedure HookScreen;
     procedure HookApplicationIdle;
     procedure InstallHintController(aApplication: TApplication; aAppWide: Boolean);
     procedure InstallFormWithRegistry(aForm: TCustomForm; const aRegistry: IAccessibilityAdapterRegistry);
     procedure RemoveInstalledMarkers;
     procedure ReleaseHintController;
+    procedure RestoreActionMenuWinEventHook;
     procedure RestoreScreenHook;
     procedure RestoreApplicationIdleHook;
     procedure ScanCurrentForms;
@@ -308,6 +313,22 @@ var
   gRetainedControlHooks: TList<TAccessibilityControlWindowHook>;
   gRetainedFormHooks: TList<TAccessibilityFormWindowHook>;
   gWinEventSink: IAccessibilityWinEventSink;
+
+procedure AccessibilityActionMenuWinEventProc(aHook: THandle; aEvent: DWORD; aHwnd: HWND; aObjectId,
+  aChildId: Longint; aEventThread: DWORD; aEventTime: DWORD); stdcall;
+begin
+  try
+    if (gManagerState <> nil) and (aEvent = EVENT_OBJECT_FOCUS) then
+    begin
+      gManagerState.ActionMenuFocusChanged(aHwnd, aObjectId, aChildId);
+    end;
+  except
+    on E: Exception do
+    begin
+      OutputDebugString(PChar('MaxLogic accessibility action-menu WinEvent callback failed: ' + E.Message));
+    end;
+  end;
+end;
 
 procedure NotifyAccessibilityWinEvent(aEvent: DWORD; aHwnd: HWND; aObjectId: Cardinal; aChildId: Cardinal);
 begin
@@ -3826,6 +3847,78 @@ begin
   end;
 end;
 
+procedure TAccessibilityManagerState.ActionMenuFocusChanged(aHwnd: HWND; aObjectId: Integer; aChildId: Integer);
+var
+  lActionBar: TCustomActionBar;
+  lActionControl: TCustomActionControl;
+  lAnnouncementText: string;
+  lControl: TWinControl;
+  lForm: TCustomForm;
+  lMarker: TAccessibilityInstalledFormMarker;
+  lRootControl: TWinControl;
+  lRootHwnd: HWND;
+begin
+  if (not fAppInstalled) or fActionMenuWinEventDispatching or (aHwnd = 0) or
+    (aObjectId <> Longint(OBJID_CLIENT)) or
+    (aChildId <= 0) or not TAccessibilityProviderEvents.ClientsAreListening(fUiaApi) then
+  begin
+    Exit;
+  end;
+
+  lControl := FindControl(aHwnd);
+  if not (lControl is TCustomActionBar) then
+  begin
+    Exit;
+  end;
+
+  lActionBar := TCustomActionBar(lControl);
+  lActionControl := lActionBar.ActionControls[Pred(aChildId)];
+  if (lActionControl = nil) or not lActionControl.Selected then
+  begin
+    Exit;
+  end;
+
+  lAnnouncementText := TAccessibilityText.Clean(lActionControl.Caption);
+  if lAnnouncementText = '' then
+  begin
+    Exit;
+  end;
+
+  lForm := GetParentForm(lActionBar);
+  if lForm = nil then
+  begin
+    lRootHwnd := GetAncestor(aHwnd, GA_ROOTOWNER);
+    lRootControl := FindControl(lRootHwnd);
+    if lRootControl is TCustomForm then
+    begin
+      lForm := TCustomForm(lRootControl);
+    end else if lRootControl <> nil then
+    begin
+      lForm := GetParentForm(lRootControl);
+    end;
+  end;
+
+  if lForm = nil then
+  begin
+    Exit;
+  end;
+
+  lMarker := TAccessibilityInstalledFormMarker.FindOn(lForm);
+  if (lMarker = nil) or (lMarker.fHook = nil) or (lMarker.fHook.fProvider = nil) then
+  begin
+    Exit;
+  end;
+
+  fActionMenuWinEventDispatching := True;
+  try
+    TAccessibilityProviderEvents.RaiseNotification(lMarker.fHook.fProvider.RawElementProvider,
+      NotificationKind_Other, NotificationProcessing_MostRecent, lAnnouncementText, 'vcl-action-menu-selection',
+      fUiaApi); //PALOFF WARN53 intentional object-to-interface bridge
+  finally
+    fActionMenuWinEventDispatching := False;
+  end;
+end;
+
 procedure TAccessibilityManagerState.ApplicationIdle(aSender: TObject; var aDone: Boolean);
 var
   i: Integer;
@@ -3928,6 +4021,22 @@ begin
   fIdleHookInstalled := True;
 end;
 
+procedure TAccessibilityManagerState.HookActionMenuWinEvents;
+begin
+  if fActionMenuWinEventHook <> 0 then
+  begin
+    Exit;
+  end;
+
+  fActionMenuWinEventHook := SetWinEventHook(EVENT_OBJECT_FOCUS, EVENT_OBJECT_FOCUS,
+    FindHInstance(@AccessibilityActionMenuWinEventProc),
+    AccessibilityActionMenuWinEventProc, GetCurrentProcessId, GetCurrentThreadId, WINEVENT_INCONTEXT);
+  if fActionMenuWinEventHook = 0 then
+  begin
+    RaiseLastOSError;
+  end;
+end;
+
 procedure TAccessibilityManagerState.InstallHintController(aApplication: TApplication; aAppWide: Boolean);
 var
   lProvider: IAccessibilityProviderNode;
@@ -3987,6 +4096,7 @@ begin
 
   if not fAppInstalled then
   begin
+    HookActionMenuWinEvents;
     fApplicationRegistry := aRegistry;
     fAppInstalled := True;
     HookScreen;
@@ -4191,6 +4301,18 @@ begin
   fIdleHookInstalled := False;
 end;
 
+procedure TAccessibilityManagerState.RestoreActionMenuWinEventHook;
+var
+  lHook: THandle;
+begin
+  lHook := fActionMenuWinEventHook;
+  fActionMenuWinEventHook := 0;
+  if lHook <> 0 then
+  begin
+    UnhookWinEvent(lHook); //PALOFF WARN44 teardown result is non-actionable
+  end;
+end;
+
 procedure TAccessibilityManagerState.ScanCurrentForms;
 var
   i: Integer;
@@ -4217,6 +4339,7 @@ end;
 procedure TAccessibilityManagerState.Uninstall;
 begin
   fAppInstalled := False;
+  RestoreActionMenuWinEventHook;
   fApplicationAdapterRegistrars := nil;
   fApplicationRegistry := nil;
   fApplicationUsesAdapterRegistrars := False;

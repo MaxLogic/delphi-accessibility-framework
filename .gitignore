@@ -144,3 +144,5 @@ msbuild.log
 /projects/*.res
 /tests/*.res
 /demos/*.res
+.codex/
+.claude/skills/

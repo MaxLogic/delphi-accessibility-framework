@@ -1,6 +1,6 @@
 ---
 name: windows-desktop-control
-description: Safely control Windows desktop applications from Codex. Default to pseudo-headless Background Command Mode for routine bridge-enabled workflows such as form input, exact list selection, named action or menu invocation, and modal control without stealing the user's mouse or keyboard. Use announced, leased Foreground Input Mode only when real pointer, keyboard, accelerator, IME, drag/drop, capture, foreground-dependent, or screen-reader behavior must be tested. Also use this skill for window discovery, screenshots, external UIA inspection, and accessibility evidence.
+description: Control Windows apps, discover windows, capture screens, inspect UI Automation, and gather accessibility evidence. Use background commands for forms, lists, menus, and modals. Use announced leased foreground input for real pointer, keyboard, IME, drag/drop, capture, or screen-reader behavior.
 ---
 
 # Windows Desktop Control

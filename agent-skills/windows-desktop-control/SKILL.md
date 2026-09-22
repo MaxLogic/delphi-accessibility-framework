@@ -1,6 +1,8 @@
 ---
 name: windows-desktop-control
 description: Control Windows apps, discover windows, capture screens, inspect UI Automation, and gather accessibility evidence. Use background commands for forms, lists, menus, and modals. Use announced leased foreground input for real pointer, keyboard, IME, drag/drop, capture, or screen-reader behavior.
+metadata:
+  author: Pawel Piotrowski
 ---
 
 # Windows Desktop Control
@@ -27,6 +29,11 @@ Wrap Foreground Input Mode sessions in `try/finally` and require normal release 
 If the active Codex runtime exposes a first-class computer-control tool, prefer that for pointer control when it is safer or more capable. Still use this skill's announcement workflow, bridge protocol, screenshot commands, and evidence rules.
 
 ## Decision Order
+
+Reuse the target, requested outcome, and authorization established in the task.
+Retrieve current window identity and capabilities instead of assuming a previous
+snapshot still applies. Keep discovery scoped to that app and the evidence
+needed for the selected mode; do not inspect unrelated windows or speech history.
 
 1. Default routine bridge-enabled work to Background Command Mode; choose Foreground Input Mode only for real input or foreground-dependent behavior.
 2. Probe the app's MaxLogic bridge and require protocol version 2, enabled mutations, and the capabilities needed by the selected target shape. An incompatible bridge never silently falls back to Foreground Input Mode.
@@ -198,7 +205,7 @@ If the response is a successful `hello`, use:
 - Use `bridge-provider-map --pipe-name <name>` when diagnostics need a UIA-like provider tree with framework virtual children but do not need to prove what an external UIA client receives. It sends `{"cmd":"provider.map","target":"focused","detail":"full","maxDepth":3,"maxChildren":200}` by default and walks provider direct-child access in-process instead of using UIA TreeWalker.
 - Use `bridge-control-info --pipe-name <name> --ref <ref>` after a geometry map when only one or a few controls need caption, value, hint, or native role-specific state. It sends `{"cmd":"control.info","ref":"<ref>","detail":"full","includeAccessibility":false}` by default, so it enriches the selected ref through process-local VCL/RTL reads and RTTI fallback without scanning the whole form. Add `--include-accessibility` only when validating accessible names or help text.
 - Use `bridge-controls-info --pipe-name <name> --ref <ref1> --ref <ref2>` when several mapped controls need detail. It sends one `controls.info` request and avoids repeated pipe setup, repeated focus reads, and repeated per-request RTTI-cache warmup.
-- Use `bridge-batch` for repeated bridge reads or command sequences. It keeps one pipe connection open and sends newline-delimited requests sequentially, avoiding repeated process/pipe setup while still waiting for one response before sending the next request.
+- Use `bridge-batch` for repeated bridge reads or command sequences. It keeps one pipe connection open and sends newline-delimited requests sequentially, avoiding repeated process/pipe setup while still waiting for one response before sending the next request. Batch independent reads when their targets are already known. Sequence state changes, resolve fresh refs after mutations, and inspect each result before issuing a dependent action. Do not parallelize foreground input, lease changes, or operations on the same changing UI.
 - Prefer `bridge-form-map` over `uia-map` for MaxLogic framework-enabled applications when the task is target discovery, coordinates, or background control. Prefer `fast-semantic-map` or `bridge-provider-map` when the task needs fast semantic provider-tree diagnostics but not external UIA-boundary validation. UIA tree walking is a verification path and can make hundreds of client/provider boundary calls even for a small tree. If diagnostics show tiny provider elapsed ticks but a slow external UIA sample, bypass UIA with `bridge-form-map`, `fast-semantic-map`, `bridge-provider-map`, or `win32-map`; do not spend time micro-optimizing process-local Delphi property reads. If `fast-semantic-map` falls back to UIA, read `fallbackAttempts` first; it records the bridge pipe and error so the slow sample is not mistaken for the preferred path. When UIA semantics themselves must be sampled through the external UIA stack, use the default cached `uia-map` path and reserve `--plain` for comparing the slower Python `uiautomation` traversal.
 - Use `{"cmd":"form.map","target":"focused"}` or `target:name/handle` with full detail to get controls, captions, UIA-equivalent role IDs/names, refs, native state, screen rectangles, and target points when the task is validating accessibility metadata or needs all controls.
 - Use `{"cmd":"form.map","target":"focused","includeAccessibility":false,"visibleOnly":true}` for a native full-detail map when captions, hints, values, and role-specific state are useful but accessible-name/help-text scanning is not.
@@ -233,5 +240,12 @@ If NVDA or another screen reader is involved:
 - Do not mention machine-local evidence stores in this skill; keep the instructions portable across machines.
 
 ## Safety
+
+Complete the requested interaction and verify its result through the evidence
+channel it requires. Report the target, outcome, evidence paths, failures or
+unverified claims, and foreground-session release when applicable. A successful
+command exit alone does not prove visible state or speech. Once that evidence
+and release are complete, stop unless a failure or changed state warrants more
+checks; do not extend the session into unrelated desktop exploration.
 
 Never control the desktop silently in Foreground Input Mode. Do not continue if the takeover announcement fails unless the user explicitly allows a silent run. Do not leave the pointer/keyboard under automation without the release announcement. In Background Command Mode, do not activate the application or move the cursor; target current bridge refs, form names, or exact form handles.

@@ -1,251 +1,186 @@
 ---
 name: windows-desktop-control
-description: Control Windows apps, discover windows, capture screens, inspect UI Automation, and gather accessibility evidence. Use background commands for forms, lists, menus, and modals. Use announced leased foreground input for real pointer, keyboard, IME, drag/drop, capture, or screen-reader behavior.
+description: Control Windows apps, inspect windows and UI Automation, capture screenshots, and gather accessibility evidence. Prefer background operations that leave the user's keyboard, mouse, and foreground window alone. Announce necessary foreground control and proceed without waiting for confirmation.
 metadata:
   author: Pawel Piotrowski
 ---
 
 # Windows Desktop Control
 
-## Choose the control mode
+## Default: work in the background
 
-| Requirement | Mode |
+Use an available app API, CLI, automation object model, compatible MaxLogic
+bridge, or non-activating UIA pattern. A missing bridge does not require taking
+control of the desktop. Background operations must leave the user's foreground
+window, keyboard, mouse, and clipboard undisturbed; the target can remain visible.
+
+Use foreground input only when the required action has no usable background
+route, or the task specifically tests real input or foreground behavior. Apply
+this choice per action. Routine inspection, screenshots, form filling, selection,
+and supported menu/modal commands should normally stay in the background.
+
+**Announce and proceed; do not ask for confirmation or wait for a reply.**
+`foreground-session start` plays the audible takeover announcement and waits
+three seconds before input. This is the normal notice; it requires no harness
+visit or approval click. Do not add a separate explanation or approval step.
+If useful, add a short status such as "I'm taking the mouse and keyboard briefly
+in Designer." Respect an explicit user instruction forbidding takeover.
+
+Use the same rules with every computer-control tool. Switching tools must not
+bypass announcements, leases, or target guards.
+
+## Choose the next operation
+
+1. Identify the intended PID/HWND without activation. Prefer explicit targets
+   over `--focused`, which can refer to the user's current application. Reuse
+   settled authorization and keep discovery within the requested app.
+2. Use a supported background command and read back its result. Prefer direct
+   control addressing over focus or Tab navigation. UIA `Value`, `Invoke`,
+   `SelectionItem`, `Toggle`, and `ExpandCollapse` are candidates when the
+   provider supports them without activation or global input. The bundled
+   helper's UIA commands inspect only; mutations need another available API.
+3. If a route is unavailable, check other plausible background capabilities
+   briefly. A stale target requires rediscovery; a transient failure permits a
+   bounded retry. Read state before retrying a mutation with an uncertain result.
+   Do not run an open-ended search just to avoid a necessary foreground step.
+4. If the action still requires real input, use the foreground workflow below.
+   A missing bridge, convenience, or a faster coordinate click alone is not a
+   reason to take over. Never bypass disabled mutations or authorization limits.
+5. Verify through the evidence channel the task needs, then stop. A successful
+   command exit does not by itself prove application state, UIA output, or speech.
+
+Judge background safety by effects. A semantic invoke or app launch can activate
+a window through application code. Use known non-activating behavior; when an
+operation is known to activate the target, announce foreground control first.
+For uncertain provider behavior, check available documentation or prior proof
+and compare `foreground-window` before and after the operation. If it unexpectedly
+steals focus, stop further mutations and inspect read-only. Do not fight the user
+by repeatedly activating windows. `SetFocus`, `click_input`, global typing, and
+clipboard replacement are not background operations.
+
+## Helper and discovery
+
+Use `scripts/windows_desktop_control.py` relative to this skill directory.
+Read [commands and examples](references/commands.md) when choosing arguments or
+preparing a foreground batch; use `<command> --help` for less common options.
+Core commands use Python's standard library and Win32. Cached UIA inspection uses
+Windows PowerShell/.NET; only `uia-map --plain` needs `uiautomation`
+(`python -m pip install uiautomation`, if that diagnostic path is needed).
+
+| Need | Command |
 | --- | --- |
-| Routine smoke/regression workflow in a bridge-enabled app | **Background Command Mode** |
-| Inspect, populate, select, invoke controls or named actions/menu commands, open/dismiss modal, verify state | **Background Command Mode** |
-| Prove actual pointer, key, accelerator, menu, IME, drag/drop, capture, or screen-reader behavior | **Foreground Input Mode** |
-| No bridge and no reliable background semantic API | **Foreground Input Mode**, after starting an announced `foreground-session` lease |
-
-Default to **Background Command Mode** for routine testing. Background Command Mode is pseudo-headless: the application remains visible in the user's session, but a compatible bridge performs control directly. Background Command Mode does not activate the target, move the pointer, synthesize mouse or keyboard input, or announce takeover. This is the normal day-to-day path because the user can keep working.
-
-Choose Foreground Input Mode only when real input or foreground-dependent behavior is the subject of the test. Before touching the user's mouse or keyboard, start one bounded `foreground-session`; it announces takeover and waits three seconds. Release it when finished. Every activation, mouse, keyboard, and semantic OS-input command requires the valid lease.
-
-Bridge control is not an NVDA test. Command-mode evidence proves application-semantic state, not real input. Foreground-input evidence proves OS mouse/keyboard behavior, not accessibility output. External UIA behavior requires an external UIA probe. NVDA speech requires a live NVDA pass.
-
-`foreground-session start` plays the takeover announcement and includes the required three-second safety delay; do not add another sleep. Its matching `foreground-session release` plays the release announcement. The lower-level `takeover` and `release` commands exist for explicit announcement-only work, not as lease authorization.
-
-Wrap Foreground Input Mode sessions in `try/finally` and require normal release before deleting lease evidence.
-
-If the active Codex runtime exposes a first-class computer-control tool, prefer that for pointer control when it is safer or more capable. Still use this skill's announcement workflow, bridge protocol, screenshot commands, and evidence rules.
-
-## Decision Order
-
-Reuse the target, requested outcome, and authorization established in the task.
-Retrieve current window identity and capabilities instead of assuming a previous
-snapshot still applies. Keep discovery scoped to that app and the evidence
-needed for the selected mode; do not inspect unrelated windows or speech history.
-
-1. Default routine bridge-enabled work to Background Command Mode; choose Foreground Input Mode only for real input or foreground-dependent behavior.
-2. Probe the app's MaxLogic bridge and require protocol version 2, enabled mutations, and the capabilities needed by the selected target shape. An incompatible bridge never silently falls back to Foreground Input Mode.
-3. For generic HWND-backed applications, use `win32-map` for cheap title/class/rectangle discovery before using UIA.
-4. Use UIA to inspect virtual/non-HWND elements, operate UIA patterns, or compare actual accessibility output.
-5. Use explicit bridge commands for Background Command Mode mutations. Read-only Win32/UIA inspection may supplement them when it does not steal focus.
-6. Activate and verify the intended foreground window before sending real mouse/keyboard input.
-7. Use screenshots as evidence and for visual targeting when structured APIs are not enough.
-
-When UIA is the thing under test, do not use UIA as the only source of target coordinates. Prefer bridge `form.map` target points, `win32-map` HWND rectangles, or another non-UIA geometry source, then use UIA only as a cross-check.
-
-## Helper Script
-
-`scripts/windows_desktop_control.py` is dependency-light. Critical commands use Python stdlib plus Win32 APIs. UIA enumeration is optional and requires the `uiautomation` Python package.
-
-Useful commands:
-
-```powershell
-# Audio safety announcements. Plays bundled Bella WAV assets; no runtime TTS call.
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py takeover
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py release
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py announce --asset takeover
-
-# MaxLogic bridge. Pipe name may be either a plain name or \\.\pipe\name.
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py probe-bridge --pipe-name MaxLogicAccessibilityAgentBridge.1234
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-window-info --pipe-name MaxLogicAccessibilityAgentBridge.1234 --target focused
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-form-map --pipe-name MaxLogicAccessibilityAgentBridge.1234
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-controls-info --pipe-name MaxLogicAccessibilityAgentBridge.1234 --ref @s12a1 --ref @s12a2
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py fast-map --pipe-name MaxLogicAccessibilityAgentBridge.1234
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py fast-map --pid 1234
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py fast-semantic-map --pid 1234 --max-depth 3 --max-children 200
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-request --pipe-name MaxLogicAccessibilityAgentBridge.1234 --request '{"cmd":"forms.list"}'
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-batch --pipe-name MaxLogicAccessibilityAgentBridge.1234 --request '{"cmd":"window.info","target":"focused"}' --request '{"cmd":"form.map","target":"focused","detail":"geometry","visibleOnly":true}'
-
-# Typed Background Command Mode. Each command validates protocol/capabilities first.
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-set-text --pipe-name <name> --form-name MainForm --control-name edtSearch --text "query"
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-set-checked --pipe-name <name> --form-name MainForm --control-name chkEnabled --checked
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-select --pipe-name <name> --form-name MainForm --control-name cmbQueue --text "Ready"
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-select --pipe-name <name> --form-name MainForm --control-name lstOptions --indices 1 3
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-select --pipe-name <name> --form-name MainForm --control-name lstOptions --texts "Alpha" "Gamma"
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-select --pipe-name <name> --form-name MainForm --control-name lstOptions --clear-selection
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-focus --pipe-name <name> --form-name MainForm --control-name edtSearch
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-tab --pipe-name <name>
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-invoke --pipe-name <name> --form-name MainForm --control-name btnApply
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-invoke --pipe-name <name> --form-name MainForm --control-name btnShowModal --async
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-action-invoke --pipe-name <name> --data-module-name MainDataModule --component-name actRefresh
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-operation-status --pipe-name <name> --operation-id <id>
-
-# Modal round trip: retain the opener operationId and the discovered form handle.
-$lOpen = python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-invoke --pipe-name <name> --form-name MainForm --control-name btnShowModal --async | ConvertFrom-Json
-$lModal = python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py wait-form --pipe-name <name> --class-name TMessageForm --visible true --fields name,className,handle | ConvertFrom-Json
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-invoke --pipe-name <name> --form-hwnd $lModal.matches[0].handle --control-name OK
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-operation-status --pipe-name <name> --operation-id $lOpen.operationId
-
-# Foreground safety.
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py foreground-window
-$lStatePath = '.\.agents\runs\foreground-lease.json'
-$lEventPath = '.\.agents\runs\foreground-events.jsonl'
-$lLease = python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py foreground-session start --target-pid 12345 --controller-pid $PID --ttl-ms 60000 --state-path $lStatePath --event-path $lEventPath | ConvertFrom-Json
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py activate-window --pid 12345 --session-id $lLease.sessionId --session-state-path $lStatePath
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py foreground-session renew --session-id $lLease.sessionId --ttl-ms 60000 --state-path $lStatePath
-
-# Fresh semantic actions. Pass the active session ID and state path for real input.
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py move-to-control --pipe-name <name> --form-name MainForm --control-name btnRun --session-id $lLease.sessionId --session-state-path $lStatePath --require-foreground-pid 12345
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py click-control --pipe-name <name> --form-name MainForm --control-name btnRun --session-id $lLease.sessionId --session-state-path $lStatePath --require-foreground-pid 12345
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py foreground-session release --session-id $lLease.sessionId --state-path $lStatePath --event-path $lEventPath
-
-# Window screenshot. Does not activate the target window.
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py screenshot-window --pid 12345 --output .\.agents\runs\window.bmp
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py screenshot-window --title-contains "Settings" --output .\.agents\runs\settings.bmp
-
-# Generic Win32 HWND tree map. Does not activate the target window.
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py win32-map --focused --max-depth 4
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py win32-map --pid 12345 --max-depth 4
-
-# Generic Windows input.
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py move --x 500 --y 300
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py click --x 500 --y 300
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py type-text --text "hello"
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py tab
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py tab --shift
-
-# Optional UIA inspection.
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py fast-semantic-map --hwnd <handle> --max-depth 3 --max-children 200
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py uia-map --focused --max-depth 4
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py uia-map --hwnd <handle> --max-depth 4 --max-children 100
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py uia-map --hwnd <handle> --detail geometry --max-depth 4
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py uia-map --hwnd <handle> --plain --max-depth 4
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py bridge-provider-map --pipe-name <name> --target handle --handle <handle> --max-depth 3 --max-children 200
-```
-
-Use `--dry-run` on announcement commands when validating the skill without speaking. The announcement files live in `assets/announcements/` and are generated once with ElevenLabs Bella; the helper must not call ElevenLabs or any other TTS provider at runtime.
-
-Use `fast-map` as the default broad target-discovery command when speed matters. With `--pipe-name`, it asks the MaxLogic bridge for one `form.map` snapshot; the default is geometry (`detail:"geometry"`, `includeAccessibility:false`, `visibleOnly:true`). Use `fast-map --detail full` when a bridge-enabled app needs visible captions, values, hints, roles, and role-specific native state without a UIA tree walk; it still uses process-local VCL/RTL reads and cached RTTI fallback with `includeAccessibility:false`. Without an explicit pipe name, it derives the process-specific default pipe `MaxLogicAccessibilityAgentBridge.<pid>` from `--pid`, a `--target handle` HWND, the focused window, or a `--title-contains` match. PID and title matches are first resolved to a native HWND, then sent to the bridge as a handle-targeted `form.map`, so background mode does not depend on whichever app currently has focus. The automatic `fast-map` default-pipe probe is intentionally tiny; `fast-semantic-map` uses a modestly longer semantic bridge probe so a busy bridge-enabled app can still answer from in-process `provider.map` instead of falling through to slow UIA. Pass `--pipe-name` for custom bridge pipe names or when a known bridge target needs the normal command timeout. Without a bridge pipe, it falls back to the native Win32 HWND map using the same `--detail` setting; `geometry` skips per-HWND text reads and does not call UIA. It reports helper wall time as `elapsedMs`; bridge responses also keep the process-local timing as `bridgeElapsedMs` and `bridgeElapsedTicks`. Use `fast-semantic-map` as the bridge-first semantic discovery command: it auto-tries the MaxLogic provider bridge for the selected PID, HWND, title, or focused window, returns the in-process `provider.map` tree when available, and falls back to cached external UIA when the target has no bridge. If fallback happens, the cached UIA result includes `fallbackAttempts` so logs show which bridge pipe was tried and why the native semantic bypass was not used. Use `bridge-provider-map` when a bridge-enabled app needs a fast UIA-like semantic provider tree, including virtual framework children, but the task does not require validating the external UIA client/provider boundary. It walks the MaxLogic provider model in-process with `IAccessibilityProviderChildAccess`, reports `source:"maxlogic-provider"`, and should be preferred over `uia-map` for diagnostic discovery. Use `uia-map` only when validating the actual UIA tree or inspecting UIA-only virtual controls in applications without a MaxLogic bridge provider map; its output is marked `slowSemanticPath`, `recommendedFor:"semanticVerification"`, and includes faster alternatives for coordinate discovery. `uia-map` defaults to the cached .NET UIAutomation path; `--cache` is accepted for explicitness, and `--plain` opts into the slower Python `uiautomation` traversal only for comparison or debugging. When using `uia-map`, prefer `--hwnd`, `--pid`, or `--title-contains` over a desktop-root walk, cap broad branches with `--max-children`, and use `--detail geometry` when rectangle/tree shape is enough and names, AutomationIds, class names, roles, focus state, and enabled state are not needed.
-
-For semantic UIA snapshots, use `uia-map` without `--plain`. The default cache path uses the built-in .NET UIAutomation `CacheRequest` through PowerShell, so common properties are fetched with the returned elements instead of via separate `Current.Name`, `Current.ClassName`, `Current.ControlType`, and similar calls. It is still a semantic verification path, not a coordinate-discovery path.
-
-## Foreground Input Mode
-
-Use Foreground Input Mode when the task needs human-equivalent behavior: actual mouse, keyboard, accelerator, menu, IME, drag/drop, capture, or screen-reader behavior. Modal behavior needs this mode only when the real opener/input path is itself under test; routine modal application workflows stay command-driven.
-
-Workflow:
-
-1. Start one bounded `foreground-session`; it announces takeover once and starts an independent release watchdog.
-2. Start or identify the target app.
-3. Use `activate-window --pid <processId>` or `--hwnd <handle>`.
-4. Verify `foreground-window` reports the expected target before every input batch.
-5. Prefer `move-to-control`, `click-control`, `double-click-control`, or `right-click-control`; each resolves, activates, resolves again, checks actionability and foreground ownership, then dispatches OS input.
-6. Pass the same session ID to guarded `move`, `click`, `press`, `tab`, `key-chord`, `clear-and-type`, or semantic control actions.
-7. Renew only around a bounded wait, then release the session normally. The detached watchdog releases independently on expiry or controller exit.
-
-By default a session guards the target PID and permits that application's foreground HWND to change across owned or modal windows. Add `--target-hwnd` only when the interaction must remain on one exact window.
-
-Activation failure is a hard stop. Do not click or type after it. Report the blocker and continue with Background Command Mode evidence if that can still answer the task.
-
-Treat refs and geometry as expired after activation, window movement, DPI change, mutation, tab/page change, form creation, modal transition, or any response with `snapshotInvalidated:true`. Resolve the named control again immediately before input; never reuse copied coordinates across those transitions.
-
-Do not invoke modal-opening controls through synchronous legacy `control.click`. In Foreground Input Mode use a guarded OS click. In Background Command Mode use `bridge-invoke --async`, discover the modal with `wait-form`, dismiss it through `bridge-invoke`, then consume the opener with `bridge-operation-status`.
-
-`control.setText` is raw property assignment. It does not prove key events, `OnChange` behavior, accelerators, or human-equivalent typing. Use guarded `clear-and-type` or `type-text` when those semantics matter.
-
-Use a bounded best-effort stopping rule: stop after the requested outcome is proved, a reproduced product failure is captured with its required persistence checks, or the agreed retry/time budget is exhausted. Release the session before optional lower-priority exploration.
-
-## Background Command Mode
-
-Use Background Command Mode when the user should be able to keep working while automation inspects or drives a bridge-enabled application. This is the default for routine state inspection, workflow smoke tests, form filling, selection, invocation, focus, tab navigation, and modal application workflows.
-
-Background Command Mode uses:
-
-- Typed `bridge-focus`, `bridge-set-text`, `bridge-set-checked`, `bridge-select`, `bridge-tab`, `bridge-invoke`, and `bridge-action-invoke` commands after a protocol-v2 capability check.
-- `bridge-invoke` and `bridge-action-invoke` waiting for terminal completion by default; use `--async` only when the caller must keep controlling an open modal, then finish with `bridge-operation-status`.
-- `form.map`, `control.resolve`, and other process-local bridge reads for state and target discovery.
-- `win32-map` for fast HWND-backed title/class/rectangle discovery without UIA traversal.
-- `screenshot-window` for visual evidence without activating the target window.
-
-Use `bridge-action-invoke` for one uniquely named `TCustomAction` or `TMenuItem` owned by a selected form or data module. It calls the native VCL `Execute` or `Click` path, so menu-only application commands do not need a proxy button. Wait for completion by default; add `--async` when the action opens a modal that must be controlled through the same bridge.
-
-For a single-select list or combo, use `bridge-select --index` or `--text`. For a `TCustomListBox` with `MultiSelect=True`, use `--indices` or `--texts` to replace the complete selected set, or `--clear-selection` to clear it. Text matching is exact-case and must identify one item. The bridge validates the complete request before mutation and emits the native selection event only when the selected set changes.
-
-If hello reports protocol version 1, disabled mutations, or missing `background-command-mode`, stop the command workflow and report the incompatibility. Targeted control helpers additionally require `snapshot-refs-v2` for `--ref` or `atomic-control-targets` for `--form-name`/`--form-hwnd`; `bridge-action-invoke` requires `action-invoke`; `bridge-tab` and operation status need no target capability. The workflow never silently falls back to Foreground Input Mode.
-
-Do not claim command-mode results are human-equivalent input, external UIA, or NVDA proof. Some applications intentionally behave differently when inactive; actual focus, capture, menus, accelerators, IME, drag/drop, and screen-reader tracking need Foreground Input Mode.
-
-## Screenshots
-
-Use target-window screenshots rather than full desktop screenshots when possible. Prefer:
-
-```powershell
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py screenshot-window --hwnd <handle> --output <path>
-```
-
-The command returns JSON with the selected window metadata, capture method, size, and output path. Store screenshots under a predictable artifact folder such as `.agents\runs\`. If the MaxLogic bridge is available, use `forms.list` or `form.map` to get the HWND and control rectangles, then capture the window through the helper.
-
-## MaxLogic Bridge Workflow
-
-Probe first:
-
-```powershell
-python .\agent-skills\windows-desktop-control\scripts\windows_desktop_control.py probe-bridge --pipe-name <name>
-```
-
-If the response is a successful `hello`, use:
-
-- `{"cmd":"forms.list"}` to identify visible forms.
-- `bridge-window-info` or `{"cmd":"window.info","target":"focused"}` to get form handle, screen/client rectangles, DPI, and window state for screenshots and coordinate-sensitive automation.
-- Use `bridge-form-map --pipe-name <name>` for high-speed broad control/coordinate discovery in the current visible view. It sends `{"cmd":"form.map","target":"focused","detail":"geometry","includeAccessibility":false,"visibleOnly":true}` and returns refs, roles, handles, rectangles, and target points without UIA traversal, accessibility scanning, text/state reads, or RTTI fallback.
-- Use `fast-map --pipe-name <name> --detail full` or `fast-map --pid <pid> --detail full` when the visible map needs captions, values, hints, and native checked/selected/list state. This is still a UIA bypass for bridge-enabled VCL apps because the bridge uses process-local VCL/RTL reads and cached RTTI fallback with `includeAccessibility:false`.
-- Use `fast-semantic-map --pid <pid>` or `fast-semantic-map --target handle --handle <hwnd>` when diagnostics need a semantic provider tree but should bypass UIA whenever the MaxLogic bridge is available. It auto-probes the default bridge pipe, returns `provider.map` with `semanticBypass:true` on bridge-enabled VCL apps, and falls back to cached UIA for generic applications.
-- Use `bridge-provider-map --pipe-name <name>` when diagnostics need a UIA-like provider tree with framework virtual children but do not need to prove what an external UIA client receives. It sends `{"cmd":"provider.map","target":"focused","detail":"full","maxDepth":3,"maxChildren":200}` by default and walks provider direct-child access in-process instead of using UIA TreeWalker.
-- Use `bridge-control-info --pipe-name <name> --ref <ref>` after a geometry map when only one or a few controls need caption, value, hint, or native role-specific state. It sends `{"cmd":"control.info","ref":"<ref>","detail":"full","includeAccessibility":false}` by default, so it enriches the selected ref through process-local VCL/RTL reads and RTTI fallback without scanning the whole form. Add `--include-accessibility` only when validating accessible names or help text.
-- Use `bridge-controls-info --pipe-name <name> --ref <ref1> --ref <ref2>` when several mapped controls need detail. It sends one `controls.info` request and avoids repeated pipe setup, repeated focus reads, and repeated per-request RTTI-cache warmup.
-- Use `bridge-batch` for repeated bridge reads or command sequences. It keeps one pipe connection open and sends newline-delimited requests sequentially, avoiding repeated process/pipe setup while still waiting for one response before sending the next request. Batch independent reads when their targets are already known. Sequence state changes, resolve fresh refs after mutations, and inspect each result before issuing a dependent action. Do not parallelize foreground input, lease changes, or operations on the same changing UI.
-- Prefer `bridge-form-map` over `uia-map` for MaxLogic framework-enabled applications when the task is target discovery, coordinates, or background control. Prefer `fast-semantic-map` or `bridge-provider-map` when the task needs fast semantic provider-tree diagnostics but not external UIA-boundary validation. UIA tree walking is a verification path and can make hundreds of client/provider boundary calls even for a small tree. If diagnostics show tiny provider elapsed ticks but a slow external UIA sample, bypass UIA with `bridge-form-map`, `fast-semantic-map`, `bridge-provider-map`, or `win32-map`; do not spend time micro-optimizing process-local Delphi property reads. If `fast-semantic-map` falls back to UIA, read `fallbackAttempts` first; it records the bridge pipe and error so the slow sample is not mistaken for the preferred path. When UIA semantics themselves must be sampled through the external UIA stack, use the default cached `uia-map` path and reserve `--plain` for comparing the slower Python `uiautomation` traversal.
-- Use `{"cmd":"form.map","target":"focused"}` or `target:name/handle` with full detail to get controls, captions, UIA-equivalent role IDs/names, refs, native state, screen rectangles, and target points when the task is validating accessibility metadata or needs all controls.
-- Use `{"cmd":"form.map","target":"focused","includeAccessibility":false,"visibleOnly":true}` for a native full-detail map when captions, hints, values, and role-specific state are useful but accessible-name/help-text scanning is not.
-- `{"cmd":"hitTest","x":500,"y":300}` to map a screen point back to the framework snapshot.
-- Mutation commands only when the app has explicitly enabled them.
-
-For user-realistic Foreground Input Mode tests, use OS input for actions (`click`, `type-text`, `tab`) and bridge responses to choose coordinates and verify state. For Background Command Mode, use typed bridge commands when mutations are explicitly enabled and the test goal is application control rather than human-equivalent input.
-
-Before each OS input batch, use `activate-window --pid <processId>` for the target process and verify `foreground-window` reports that same PID. If activation fails, do not click or type; collect bridge/UIA evidence instead and report the blocker.
-
-## Generic Win32 Map
-
-Use `win32-map` before `uia-map` when the target likely uses HWND-backed controls. It walks the native child-window tree with User32 calls and returns class, enabled/visible state, rectangles, center target points, PID/thread, and children. Use `--detail geometry` when coordinates are enough; it skips per-HWND title reads because `GetWindowText` on another process can block on window messages. Use the default `--detail full` when titles are needed. This is usually much faster than UIA `TreeWalker` because it avoids per-property UIA provider/client round trips.
-
-Limitations:
-
-- It only sees real HWNDs. WPF, WinUI, browser content, owner-drawn virtual rows, and UIA-only fragments may be missing or too coarse.
-- It gives native window geometry, not screen-reader-facing names, roles, patterns, or states.
-- Use UIA after `win32-map` when the task needs accessibility semantics, not just coordinates or HWND identity.
-
-## Speech Evidence
-
-If NVDA or another screen reader is involved:
-
-- Prefer NVDA's built-in Speech Viewer when exact NVDA text is needed. Open it from **NVDA Menu > Tools > Speech Viewer** before the tested interaction. If the agent must open it, do so inside the announced foreground session.
-- Keep Speech Viewer open, unfocused, and away from the pointer while driving the target application. Hovering over it or focusing inside it pauses incoming updates, and focusing it also changes application focus. Move to it only after the interaction and a bounded settling period; the pause is then useful for freezing the evidence before copying it.
-- Capture a baseline tail or before-snapshot, then copy the relevant final text from Speech Viewer after the interaction. Store the tested action, approximate time, and copied text together so older viewer history is not mistaken for current speech.
-- Treat Speech Viewer as evidence of text generated by NVDA, not proof of final audio pronunciation, timing, volume, or uninterrupted playback. Use audible observation or an audio recording when the requirement specifically concerns what was heard.
-- The helper's takeover and release announcements are WAV files played outside NVDA and therefore do not appear in Speech Viewer. Keep their session events or timestamps beside the NVDA transcript instead of claiming they are part of it.
-- Prefer another configured speech log or screen-reader transcript when Speech Viewer is unavailable. Keep transcript sources readable while the app is running; do not require exclusive locks.
-- Compare three streams when possible: bridge/control state, the external UIA view, and the NVDA Speech Viewer or other spoken transcript. Report disagreements rather than treating one stream as a substitute for another.
-- Do not mention machine-local evidence stores in this skill; keep the instructions portable across machines.
-
-## Safety
-
-Complete the requested interaction and verify its result through the evidence
-channel it requires. Report the target, outcome, evidence paths, failures or
-unverified claims, and foreground-session release when applicable. A successful
-command exit alone does not prove visible state or speech. Once that evidence
-and release are complete, stop unless a failure or changed state warrants more
-checks; do not extend the session into unrelated desktop exploration.
-
-Never control the desktop silently in Foreground Input Mode. Do not continue if the takeover announcement fails unless the user explicitly allows a silent run. Do not leave the pointer/keyboard under automation without the release announcement. In Background Command Mode, do not activate the application or move the cursor; target current bridge refs, form names, or exact form handles.
+| Targeted window/form/control discovery | `windows-list`, `bridge-forms`, `bridge-find`; bounded `wait-window`, `wait-form`, `wait-control` |
+| Fast geometry or native state | `fast-map --pid PID`; add `--detail full` for captions, values, and list/checked state |
+| Native HWND tree | `win32-map --pid PID`; `--detail geometry` skips text reads |
+| Fast semantic diagnostics | `fast-semantic-map --pid PID` or `bridge-provider-map` |
+| Actual external UIA view | `uia-map --hwnd HWND --max-depth 4 --max-children 100` |
+| Non-activating image | `screenshot-window --hwnd HWND --output PATH` |
+
+`fast-map` tries the process-specific bridge, then native Win32. Use an explicit
+`--pipe-name` for custom pipes or a known busy bridge needing the normal timeout.
+`fast-semantic-map` prefers the in-process provider map, then cached external UIA;
+read `fallbackAttempts` before attributing a slow result to the bridge.
+`uia-map --plain` is the slower comparison/debug path. Limit tree depth and width.
+Native HWND maps omit virtual controls; in-process provider maps do not prove
+external UIA behavior. When UIA is under test, obtain targeting geometry from the
+bridge or Win32 and use UIA only as a cross-check.
+
+## Background commands
+
+Probe the MaxLogic bridge first. Typed mutation commands require protocol v2,
+enabled mutations, and `background-command-mode`. `--ref` additionally requires
+`snapshot-refs-v2`; atomic form/control targets require `atomic-control-targets`;
+named actions require `action-invoke`. Stop an incompatible bridge mutation
+workflow; do not silently substitute foreground input.
+
+- Use `bridge-set-text`, `bridge-set-checked`, and `bridge-select` to address
+  controls directly. Text assignment does not prove key events or `OnChange`.
+- For single selection, use `--index` or exact `--text`. Multi-select lists use
+  `--indices`, `--texts`, or `--clear-selection`; text must uniquely match an item.
+- Use `bridge-invoke` for a control and `bridge-action-invoke` for a uniquely named
+  form/data-module `TCustomAction` or `TMenuItem`. Named menus need no proxy button.
+- `bridge-focus` and `bridge-tab` change app focus. Use them only when needed and
+  when they preserve the user's foreground window and input destination.
+- Invocations wait for terminal completion by default. For a modal opener, use
+  `--async`, discover it with `wait-form`, dismiss it through `bridge-invoke`, then
+  consume the opener with `bridge-operation-status`. Do not use synchronous
+  legacy `control.click` for modal openers.
+- Use narrow `bridge-control-info`/`bridge-controls-info` reads after mapping;
+  add `--include-accessibility` only when those properties are needed.
+  `bridge-batch` reuses a connection but raw requests may mutate. Inspect each
+  result before dependent actions; never parallelize actions on changing UI.
+
+Refs and geometry expire after activation, movement, DPI changes, mutations,
+tab/page changes, form creation, modal transitions, or `snapshotInvalidated:true`.
+Resolve fresh targets instead of reusing old refs or coordinates.
+
+## Foreground workflow
+
+Read the checked example in [commands and examples](references/commands.md#foreground-batch).
+
+1. Prepare the input-dependent batch and identify the target before takeover.
+   A launching app that takes focus is itself a foreground operation; do not
+   disguise it as background preparation.
+2. Start one bounded `foreground-session`. Its audible announcement and built-in
+   three-second delay are sufficient; proceed automatically after success.
+   Announcement failure stops input unless the user already authorized silence.
+3. Use the session ID on every activation/input command and keep all commands
+   on the same lease state path, preferably the shared default.
+   `activate-window` must succeed and the intended window must own foreground
+   before input. Semantic pointer commands such as `click-control` resolve,
+   activate, resolve again, and check ownership before dispatch. For generic
+   input, verify `foreground-window` and use PID/HWND guards.
+4. Keep one lease across the related input steps, short waits, and immediate
+   verification. Renew before expiry if the bounded batch is still running;
+   do not release and reacquire for every click. The default lease follows one
+   PID across modal HWNDs; add `--target-hwnd` only for exact-window locking.
+5. Release in `finally` on success or failure. Release promptly when the batch
+   ends, the user resumes input or asks to stop, or a safety check fails. Release
+   before lengthy preparation, waiting for the user, unrelated work, or further
+   work that can run in the background. The watchdog is recovery for expiry or
+   controller exit, not a substitute for normal release.
+
+The matching release plays the audible hand-back announcement. Never leave a
+session running for the entire time the user is away. A restarted process with a
+new PID needs a new lease. Activation failure means no clicking or typing;
+continue with background evidence if useful. Lower-level `takeover`/`release`
+commands only play audio and do not authorize input. Bundled WAV files are used
+locally; do not add runtime TTS calls. `--dry-run` is not an input safety sandbox:
+a session can still write state and start a watchdog.
+
+After opening a dialog or an unchanged input result, inspect native windows as
+well as the bridge. Standard `#32770` message boxes can be absent from bridge
+maps; a matching PID does not prove the parent can receive input. Handle the
+enabled modal first, rediscover its HWND, and retain the current lease where valid.
+If fast typing triggers barcode-scanner handling, inspect that modal, then use
+human-speed typing such as `--delay-ms 150` and verify the resulting field text.
+
+## Evidence and completion
+
+Prefer target-window screenshots over the whole desktop. Capture does not
+activate the window, but `PrintWindow`/`BitBlt` can return incomplete images for
+obscured or minimized windows. Inspect the image; use another background evidence
+source before taking over solely to get a usable capture. Keep screenshots and
+lease/event files in the project's evidence location or an owned run directory
+under its storage policy, outside `.agents/`.
+
+Keep application state, external UIA, real input, and NVDA evidence distinct.
+For screen-reader work:
+
+- Read an existing transcript in the background when possible. Otherwise use
+  NVDA's **Tools > Speech Viewer**; opening or focusing it through desktop input
+  belongs inside an announced lease for that process.
+- Keep Speech Viewer unfocused and away from the pointer during the interaction.
+  Focus or hover pauses updates. Collect a baseline and the relevant new text
+  with the tested action and approximate time; old history is not current proof.
+- Viewer text proves generated speech text, not pronunciation, timing, volume,
+  or uninterrupted audio. Use audible observation/recording for those claims.
+  Takeover/release WAVs are outside NVDA; retain their timestamps separately.
+- Compare bridge state, external UIA, and speech where relevant; report
+  disagreements. Prefer another configured transcript if Speech Viewer is
+  unavailable; do not require exclusive locks or inspect unrelated history.
+
+Stop when the requested result is verified, the reproduced failure and required
+persistence checks are captured, or the retry/time budget is exhausted. Report
+the result, evidence paths, material failures or untested boundaries, and release
+status if foreground control was used.

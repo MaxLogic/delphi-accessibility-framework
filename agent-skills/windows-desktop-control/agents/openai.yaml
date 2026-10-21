@@ -1,4 +1,4 @@
 interface:
   display_name: "Windows Desktop Control"
-  short_description: "Background control or leased real input"
-  default_prompt: "Use pseudo-headless Background Command Mode by default when the app exposes a compatible bridge, including exact selection and named action or menu invocation. Choose announced, leased Foreground Input Mode only for real mouse, keyboard, foreground-dependent, or screen-reader behavior; never silently fall back to it."
+  short_description: "Background first; announce necessary takeover"
+  default_prompt: "Prefer background operations that leave the user's keyboard, mouse, clipboard, and foreground window undisturbed, even without a MaxLogic bridge. When a required action needs foreground input, start an announced bounded foreground-session and proceed after its built-in delay. The announcement is informational: do not ask for confirmation or wait for a harness response. Use guarded commands, release in finally, and resume background work promptly. Respect explicit restrictions on takeover."
